@@ -32,6 +32,8 @@ const { values: args } = parseArgs({
     "cpu-prof": { type: "boolean", default: false },
     "deep-target": { type: "string", default: "560" },
     label: { type: "string", default: "" },
+    project: { type: "string", default: "cello-v2-speed" },
+    port: { type: "string", default: "18190" },
   },
 });
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
@@ -40,8 +42,8 @@ const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
-const COMPOSE_PROJECT = "cello-v2-speed";
-const LOCAL_PORT = 18190;
+const COMPOSE_PROJECT = args.project;
+const LOCAL_PORT = Number(args.port);
 const SHORT = 200;
 const KB100 = 100_000;
 const MB1 = 1_000_000;
@@ -448,6 +450,12 @@ async function waitForPosition(agent: Agent, session: string, position: number):
   return seen;
 }
 
+// How far a session with one sender ends up. "Not sent yet" is saved and lands later, and so holds a position too.
+function expectedTop(sent: Sent[]): number {
+  const saved = sent.filter((s) => s.outcome === "not_sent_yet").length;
+  return Math.max(0, ...sent.flatMap((s) => (s.position === undefined ? [] : [s.position]))) + saved;
+}
+
 // Closes the session from both sides, then compares the two records with each other and with what was sent.
 async function checkSession(name: string, a: Agent, b: Agent, session: string, sent: Sent[], conversationTexts?: string[], readSeqs?: number[]): Promise<Check[]> {
   const checks: Check[] = [];
@@ -457,7 +465,7 @@ async function checkSession(name: string, a: Agent, b: Agent, session: string, s
     add(`${agent.name} closes`, closed.status === 0, closed.stderr.slice(0, 200));
   }
   const landed = sent.filter((s) => s.position !== undefined);
-  const top = Math.max(0, ...landed.map((s) => s.position as number)) + 2;
+  const top = expectedTop(sent) + 2;
   await waitForPosition(a, session, top);
   await waitForPosition(b, session, top);
   const [va, vb] = await Promise.all([a, b].map((agent) => act(agent, ["verify-session", session])));
@@ -505,6 +513,9 @@ async function checkSession(name: string, a: Agent, b: Agent, session: string, s
   if (unconfirmed.length > 0) {
     const arrived = unconfirmed.filter((s) => byText.has(textHash(makeText(s.tag, s.seq, s.size)))).length;
     add(`sends with no acknowledgement (${unconfirmed.length})`, unconfirmed.every((s) => s.outcome !== "sent"), `${arrived} of them landed anyway, outcomes: ${[...new Set(unconfirmed.map((s) => s.outcome))].join("; ").slice(0, 200)}`);
+    const saved = unconfirmed.filter((s) => s.outcome === "not_sent_yet");
+    const landedOnce = saved.filter((s) => byText.get(textHash(makeText(s.tag, s.seq, s.size))) === 1).length;
+    add(`every message told "not sent yet" (${saved.length}) landed later, once`, landedOnce === saved.length, `${landedOnce} did`);
   }
   if (conversationTexts) {
     const inOrder = fromB.flatMap((e) => (e.text ? [e.text] : []));
@@ -540,7 +551,7 @@ async function ciphertextStillOffered(home: Home, url: string, agentName: string
     for (const hex of sessions) {
       let after = 0;
       for (;;) {
-        const page = await link.call("entry.fetch", { agent: toB64(signer.id), sessionId: toB64(new Uint8Array(Buffer.from(hex, "hex"))), after }) as { items: (WitnessedOnWire & { ack: { fields: { position: number } } })[]; tip: number };
+        const page = await link.call("entry.fetch", { agent: toB64(signer.id), sessionId: toB64(new Uint8Array(Buffer.from(hex, "hex"))), after, long: true }) as { items: (WitnessedOnWire & { ack: { fields: { position: number } } })[]; tip: number };
         if (page.items.length === 0) break;
         offered += page.items.filter((item) => item.ciphertext !== null).length;
         after += page.items.length;
@@ -559,6 +570,8 @@ const GAP_MS = 20_000;
 // About what the cloud run measured from this Mac: 100 KB took 3.4 s more than a short message, and 1 MB took 11 to 21 s.
 const SLOW_UP_BYTES_PER_SECOND = 80_000;
 const SLOW_DOWN_BYTES_PER_SECOND = 300_000;
+// About one packet. A short message mixes in between a long upload's packets, instead of waiting for all of them.
+const SLOW_PIECE_BYTES = 1500;
 const linkEvents: unknown[] = [];
 let currentScenario = "";
 const results: Record<string, unknown> = {};
@@ -580,8 +593,12 @@ async function finishHomes(list: Home[]): Promise<void> {
     // How often the daemon lost its server, which a green record check wouldn't show.
     const log = readFileSync(join(home.path, "daemon.log"), "utf8");
     const count = (event: string): number => log.split(`"event":"${event}"`).length - 1;
-    linkEvents.push({ scenario: currentScenario, connected: count("server.connected"), silent: count("server.silent"), socketErrors: count("server.socket_error"), unreachableDuring: count("server.unreachable_during"), backgroundFailed: count("background.failed") });
+    linkEvents.push({ scenario: currentScenario, connected: count("server.connected"), longConnected: count("server_long.connected"), silent: count("server.silent") + count("server_long.silent"), socketErrors: count("server.socket_error") + count("server_long.socket_error"), unreachableDuring: count("server.unreachable_during"), backgroundFailed: count("background.failed") });
     results["link_events"] = linkEvents;
+    if (onSlowLink) {
+      const dropped = count("server.connected") - 1 + count("server_long.connected") - 1;
+      allChecks.push({ name: `${currentScenario}: no connection dropped on the slow link`, ok: dropped === 0, detail: `${dropped} reconnects` });
+    }
     rmSync(home.path, { recursive: true, force: true });
     homes.splice(homes.indexOf(home), 1);
   }
@@ -608,6 +625,7 @@ async function baseline(label: string): Promise<void> {
   const { turns, texts } = await converse({ a, b, session, turns: args.gentle ? 16 : 30, thinkMs: 200, tag: `base-${label}` });
   results[label] = { conversation: conversationSummary(turns) };
   if (label === "baseline_before") noBot = spread(turns.filter((t) => t.ok).map((t) => t.readMs));
+  if (label === "slow_baseline") slowNoBot = spread(turns.filter((t) => t.ok).map((t) => t.readMs));
   allChecks.push(...await checkSession(label, a, b, session, [], texts));
   await finishHomes([home]);
 }
@@ -619,29 +637,38 @@ const MAX_SLOWDOWN_P50 = 1.4;
 const MAX_SLOWDOWN_P90 = 1.7;
 const MIN_TURNS = 5;
 let noBot: Spread | undefined;
+// On a shared slow link a long upload takes half the pipe, so a short message takes about twice as long, and that's all it should cost.
+// Before the second connection, these turns took 6 times as long in the middle and 100 times at worst.
+const SLOW_MAX_SLOWDOWN_P50 = 2.5;
+const SLOW_MAX_SLOWDOWN_P90 = 3;
+const SLOW_MAX_TURN_MS = 3000;
+let slowNoBot: Spread | undefined;
+let onSlowLink = false;
 
-// A far-away link goes through a throttle on another port. Its hold-up is known and awaits a ruling, and a shared server's numbers measure the link.
-function onFastLink(): boolean {
-  return args.local && url === `ws://127.0.0.1:${LOCAL_PORT}/v1`;
-}
-
+// A shared server's numbers measure the link, so these limits apply only to a server this run started.
 async function needBaseline(): Promise<void> {
-  if (onFastLink() && !noBot) await baseline("baseline_before");
+  if (!args.local) return;
+  if (onSlowLink && !slowNoBot) await baseline("slow_baseline");
+  if (!onSlowLink && !noBot) await baseline("baseline_before");
 }
 
 // mustHaveTurns is for a whole flood, where too few turns means the pair was stalled. A short window can't say.
 function checkNotSlowed(name: string, turns: Turn[], mustHaveTurns: boolean): void {
-  if (!onFastLink()) return;
+  if (!args.local) return;
   const check = `${name}: the other conversation didn't slow down`;
-  if (!noBot) {
+  const reference = onSlowLink ? slowNoBot : noBot;
+  if (!reference) {
     allChecks.push({ name: check, ok: false, detail: "this run has no no-bot baseline to compare with" });
     return;
   }
+  const limitP50 = onSlowLink ? SLOW_MAX_SLOWDOWN_P50 : MAX_SLOWDOWN_P50;
+  const limitP90 = onSlowLink ? SLOW_MAX_SLOWDOWN_P90 : MAX_SLOWDOWN_P90;
   const failed = turns.filter((t) => !t.ok).length;
   const seen = spread(turns.filter((t) => t.ok).map((t) => t.readMs));
   const measured = seen.n >= MIN_TURNS;
-  const ok = failed === 0 && (measured ? seen.p50 <= noBot.p50 * MAX_SLOWDOWN_P50 && seen.p90 <= noBot.p90 * MAX_SLOWDOWN_P90 : !mustHaveTurns);
-  allChecks.push({ name: check, ok, detail: `middle ${seen.p50} ms, p90 ${seen.p90} ms, over ${seen.n} turns with ${failed} failed. No bot: ${noBot.p50} and ${noBot.p90}. Limits: ${MAX_SLOWDOWN_P50} and ${MAX_SLOWDOWN_P90} times.` });
+  const worstOk = !onSlowLink || seen.max <= SLOW_MAX_TURN_MS;
+  const ok = failed === 0 && worstOk && (measured ? seen.p50 <= reference.p50 * limitP50 && seen.p90 <= reference.p90 * limitP90 : !mustHaveTurns);
+  allChecks.push({ name: check, ok, detail: `middle ${seen.p50} ms, p90 ${seen.p90} ms, worst ${seen.max} ms, over ${seen.n} turns with ${failed} failed. No bot: ${reference.p50} and ${reference.p90}. Limits: ${limitP50} and ${limitP90} times${onSlowLink ? `, worst ${SLOW_MAX_TURN_MS} ms` : ""}.` });
 }
 
 interface BotPlan { via: "cli" | "socket"; label: string; reader: "keeps_up" | "stops"; separateDaemon: boolean; sizes: number[]; concurrency: number; seconds: number; limit?: number }
@@ -689,7 +716,7 @@ async function withBot(plan: BotPlan): Promise<void> {
   flooding = false;
   await Promise.all([reading, watching]);
 
-  const top = Math.max(0, ...sent.flatMap((s) => (s.position === undefined ? [] : [s.position])));
+  const top = expectedTop(sent);
   const settled = await waitForPosition(reader, botSession, top);
   const settleMs = performance.now() - floodEnded;
 
@@ -830,38 +857,65 @@ async function readerOffline(seconds: number): Promise<void> {
   await finishHomes([home, second]);
 }
 
-// A far-away link, made here so that it can carry 1 MB messages without touching a shared server. Each connection gets its own limit and delay.
+// One direction of a slow link. Every connection shares it, as they share a home uplink. A limit per connection would
+// hand a second connection a link of its own and prove nothing. It serves them in turn, a packet at a time, which is
+// the kindest a real link gets: one with a long queue of its own would hold a short message up for longer.
+function sharedPipe(bytesPerSecond: number): (data: Buffer, to: Socket, done: () => void) => void {
+  const turns: { data: Buffer; to: Socket; done: () => void }[] = [];
+  let running = false;
+  const next = (): void => {
+    const turn = turns.shift();
+    if (!turn) {
+      running = false;
+      return;
+    }
+    running = true;
+    const piece = turn.data.subarray(0, SLOW_PIECE_BYTES);
+    if (!turn.to.destroyed) turn.to.write(piece);
+    if (piece.length < turn.data.length) turns.push({ ...turn, data: turn.data.subarray(piece.length) });
+    else turn.done();
+    setTimeout(next, (1000 * piece.length) / bytesPerSecond);
+  };
+  return (data, to, done) => {
+    turns.push({ data, to, done });
+    if (!running) next();
+  };
+}
+
+// A far-away link, made here so that it can carry 1 MB messages without touching a shared server.
 async function throughSlowLink<T>(work: () => Promise<T>): Promise<T> {
   const target = new URL(url);
-  const throttle = (from: Socket, to: Socket, bytesPerSecond: number): void => {
+  const up = sharedPipe(SLOW_UP_BYTES_PER_SECOND);
+  const down = sharedPipe(SLOW_DOWN_BYTES_PER_SECOND);
+  const throttle = (from: Socket, to: Socket, pipe: ReturnType<typeof sharedPipe>): void => {
     from.on("data", (chunk: Buffer) => {
       from.pause();
-      setTimeout(() => {
-        if (!to.destroyed) to.write(chunk);
-        from.resume();
-      }, (1000 * chunk.length) / bytesPerSecond);
+      pipe(chunk, to, () => from.resume());
     });
     from.on("close", () => setTimeout(() => to.destroy(), 2000));
     from.on("error", () => to.destroy());
   };
   const proxy = createServer((client) => {
     const upstream = createConnection({ host: target.hostname, port: Number(target.port) });
-    throttle(client, upstream, SLOW_UP_BYTES_PER_SECOND);
-    throttle(upstream, client, SLOW_DOWN_BYTES_PER_SECOND);
+    throttle(client, upstream, up);
+    throttle(upstream, client, down);
   });
-  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => proxy.listen(LOCAL_PORT + 1, "127.0.0.1", resolve));
   const previous = url;
   url = `ws://127.0.0.1:${(proxy.address() as AddressInfo).port}${target.pathname}`;
+  onSlowLink = true;
   try {
     return await work();
   } finally {
     url = previous;
+    onSlowLink = false;
     proxy.close();
   }
 }
 
 // Several long messages queued on one daemon's one socket, with a pair sharing that socket.
 async function slowLinkBatch(): Promise<void> {
+  await needBaseline();
   const home = await freshHome();
   const a = await makeAgent(home, "Ana");
   const b = await makeAgent(home, "Ben");
@@ -882,6 +936,7 @@ async function slowLinkBatch(): Promise<void> {
   conversing = false;
   const { turns, texts } = await talking;
   results["slow_link_batch"] = { bot: floodSummary(sent, (floodEnded - started) / 1000), conversationWhileFlooding: conversationSummary(turns) };
+  checkNotSlowed("slow_link_batch while flooding", turns, true);
   for (const [i, session] of sessions.entries()) allChecks.push(...await checkSession(`slow_link_batch ${i}`, bot, readers[i] as Agent, session, sent.filter((s) => s.session === session)));
   allChecks.push(...await checkSession("slow_link_batch pair", a, b, talk, [], texts));
   await finishHomes([home]);
