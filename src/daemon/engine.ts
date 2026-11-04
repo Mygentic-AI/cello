@@ -53,7 +53,10 @@ import {
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
+import { type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
+import { type Settings, SettingError, changeSetting, listSettings, loadSettings } from "./settings.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
+import type { InboundVerdict } from "../screener/inbound.ts";
 
 const OFFER_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const SEND_WINDOW_MS = 10 * 60 * 1000;
@@ -77,6 +80,14 @@ const SEAL_RETRY_CODES: readonly string[] = ["not_authenticated", "internal_erro
 // A timer can stop counting while a machine sleeps, so no wait outlasts this before the clock is read again.
 const STANDBY_CHECK_MAX_MS = 60_000;
 const LATEST_DATE_MS = 8.64e15;
+// How long a run of verdicts is left to settle before the sender is told how far screening has got.
+const SCREENED_ACK_DELAY_MS = 1_000;
+const SENDER_BACKLOG_CHECK_MS = 250;
+const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
+const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
+const WORKER_CRASH_TELL_EVERY_MS = 60_000;
+const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
+export const SCREENING_LEVELS: readonly ScreeningLevel[] = ["full", "deterministic", "off"];
 
 export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
@@ -91,10 +102,37 @@ export class LocalError extends Error {
 }
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed";
   agent: string;
   session_id?: string;
   from_id?: string;
+  position?: number;
+  about_seconds?: number;
+}
+
+interface VerdictDetail {
+  delivered: string | null;
+  findings: InboundVerdict["findings"];
+  reason: string | null;
+  score: number | null;
+  ran: InboundVerdict["ran"];
+}
+
+// Everything an agent is shown of a message. A signal or a number is only passed on if it's a value CELLO itself writes,
+// because the text is the only part that's screened, and a hostile sender could put words in any other field.
+function shownMessage(row: EntryRow, closing: boolean): Record<string, unknown> {
+  const body = parseBody(row.body);
+  const estMinutes = typeof body?.est_minutes === "number" && body.est_minutes > 0 ? { est_minutes: body.est_minutes } : {};
+  if (row.own === 1) {
+    return closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null, ...estMinutes };
+  }
+  if (row.verdict === null) return { screening: { verdict: "not_screened_yet" } };
+  const detail = JSON.parse(row.verdict_detail as string) as VerdictDetail;
+  const screening = { verdict: row.verdict, findings: detail.findings, ...(detail.score === null ? {} : { score: detail.score }), ...(detail.reason ? { reason: detail.reason } : {}), ran: detail.ran };
+  if (row.verdict === "blocked") return { blocked: true, screening };
+  if (closing) return { closed_their_side: true };
+  const signal = SIGNAL_VALUES.includes(body?.signal) ? body?.signal : null;
+  return { text: body ? (detail.delivered ?? body.text) : null, signal, ...estMinutes, ...(body ? {} : { unreadable: true }), screening };
 }
 
 interface AgentContext {
@@ -202,11 +240,25 @@ export class Engine {
   #positionCheck: NodeJS.Timeout | undefined;
   #standbyCheck: NodeJS.Timeout | undefined;
   #standbyCheckAt = 0;
+  readonly #settings: Settings;
+  readonly #screening: ScreeningQueue;
+  readonly #outbound = new OutboundScreen();
+  readonly #ackTimers = new Map<string, NodeJS.Timeout>();
+  #lastCrashTold = 0;
+  #modelMissingTold = false;
 
   constructor(store: Store, url: string, events: EngineEvents) {
     this.#store = store;
     this.#events = events;
     this.#url = url;
+    this.#settings = loadSettings(store);
+    this.#screening = new ScreeningQueue({
+      load: (job) => this.#loadForScreen(job),
+      verdict: (job, verdict) => this.#onVerdict(job, verdict),
+      delayed: (job, aboutSeconds) => this.#onScreenDelayed(job, aboutSeconds),
+      workerCrashed: (message, waiting) => this.#onWorkerCrashed(message, waiting),
+      modelChecked: (model) => this.#onModelChecked(model),
+    }, this.#settings);
     this.#link = new ServerLink(url, {
       checkIdentity: (identity) => this.#checkServerIdentity(identity, url),
       connected: async (server) => {
@@ -231,6 +283,12 @@ export class Engine {
       this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false });
     }
     this.#checkStandbys();
+    this.#screening.start();
+    this.#outbound.start();
+    // A restart repeats no finished work: whatever had no verdict is simply still in the table.
+    for (const row of this.#store.unscreened()) {
+      this.#screening.add({ entryId: row.id, agentHex: toHex(row.agent_id), sessionHex: toHex(row.session_id), position: row.position as number, senderHex: toHex(row.sender), bytes: row.size, arrived: Date.now() });
+    }
     this.#link.start();
     this.#home.longLink.start();
     // Back to every conversation hosted elsewhere, because a restart doesn't end one.
@@ -249,6 +307,9 @@ export class Engine {
   stop(): void {
     clearInterval(this.#positionCheck);
     clearTimeout(this.#standbyCheck);
+    for (const timer of this.#ackTimers.values()) clearTimeout(timer);
+    this.#screening.stop();
+    this.#outbound.stop();
     this.#link.stop();
     this.#home.longLink.stop();
     for (const route of this.#visiting.values()) {
@@ -287,6 +348,155 @@ export class Engine {
       if (route.longServer === server) route.longProved.add(agent.hex);
     }
     return route.longLink.call(method, params, LONG_CALL_TIMEOUT_MS);
+  }
+
+  // ---- Screening. A verdict goes on the entry, and it's the only thing that makes a message deliverable. ----
+
+  // The rule for this sender outranks the rule for its tier, which outranks the default. v2 has no tiers yet, so that step
+  // finds nothing. Tiers slot in here, in #tierOf, and nothing else changes.
+  #screeningRule(agentId: Uint8Array, senderHex: string): { level: ScreeningLevel; from: "agent_rule" | "tier_rule" | "default" } {
+    const own = this.#store.screeningRule(agentId, "sender", senderHex) as ScreeningLevel | undefined;
+    if (own) return { level: own, from: "agent_rule" };
+    const tier = this.#tierOf();
+    const byTier = tier === undefined ? undefined : this.#store.screeningRule(agentId, "tier", tier) as ScreeningLevel | undefined;
+    return byTier ? { level: byTier, from: "tier_rule" } : { level: "full", from: "default" };
+  }
+
+  #tierOf(): string | undefined {
+    return undefined;
+  }
+
+  #loadForScreen(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel } | null {
+    const body = this.#store.bodyOf(job.entryId);
+    const agent = this.#agents.get(job.agentHex);
+    if (!body || !agent) return null;
+    return { body, level: this.#screeningRule(agent.signer.id, job.senderHex).level };
+  }
+
+  // The doorbell comes after the write, so anyone it wakes finds the message there.
+  #onVerdict(job: ScreenJob, verdict: InboundVerdict): void {
+    const agent = this.#agents.get(job.agentHex);
+    if (!agent) return;
+    const sessionId = parseHex(job.sessionHex, 16, "session id");
+    const detail: VerdictDetail = { delivered: verdict.delivered, findings: verdict.findings, reason: verdict.reason, score: verdict.score, ran: verdict.ran };
+    const row = this.#store.entryAt(agent.signer.id, sessionId, job.position);
+    if (!row) return;
+    const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
+    this.#store.transaction(() => {
+      this.#store.setVerdict(job.entryId, verdict.verdict, JSON.stringify(detail));
+      if (verdict.verdict === "blocked") this.#store.addNotice(agent.signer.id, sessionId, `The message at position ${job.position} was not delivered: ${verdict.reason as string}.`);
+    });
+    logEvent("screening.verdict", { agent: job.agentHex, session: job.sessionHex, position: job.position, verdict: verdict.verdict, findings: verdict.findings.map((f) => f.what), score: verdict.score, ms: Date.now() - job.arrived });
+    this.#events.ring(agent.hex, { type: closing ? "peer_closed" : "message", agent: agent.name, session_id: job.sessionHex, from_id: job.senderHex });
+    this.#ackSoon(agent, job.sessionHex);
+  }
+
+  #onScreenDelayed(job: ScreenJob, aboutSeconds: number): void {
+    const agent = this.#agents.get(job.agentHex);
+    if (!agent) return;
+    logEvent("screening.delayed", { agent: job.agentHex, session: job.sessionHex, position: job.position, about_seconds: aboutSeconds });
+    this.#events.ring(agent.hex, { type: "screening_delayed", agent: agent.name, session_id: job.sessionHex, position: job.position, about_seconds: aboutSeconds });
+    const sessionId = parseHex(job.sessionHex, 16, "session id");
+    this.#background("screening delay ack", this.#lane(agent.hex, job.sessionHex, async () => {
+      const local = this.#store.session(agent.signer.id, sessionId);
+      if (local) await this.#deliver(agent, local, aboutSeconds);
+    }));
+  }
+
+  // A database can move to a machine without the model. That's said plainly, once per start, rather than quietly running less.
+  #onModelChecked(model: ModelFact): void {
+    if (model.running) {
+      this.#store.setConfig(CONFIG_MODEL_EVER_RAN, "1");
+      return;
+    }
+    if (this.#store.getConfig(CONFIG_MODEL_EVER_RAN) !== "1" || this.#modelMissingTold) return;
+    this.#modelMissingTold = true;
+    logEvent("screening.model_missing", { state: model.state, reason: model.reason });
+    for (const agent of this.#agents.values()) this.#notify(agent, null, MODEL_MISSING);
+  }
+
+  #onWorkerCrashed(message: string, waiting: number): void {
+    const now = Date.now();
+    if (now - this.#lastCrashTold < WORKER_CRASH_TELL_EVERY_MS) return;
+    this.#lastCrashTold = now;
+    const text = `The screening thread crashed and is restarting (${message}). Nothing unscreened was delivered, and ${waiting} message(s) are waiting for it.`;
+    for (const agent of this.#agents.values()) {
+      this.#store.addNotice(agent.signer.id, null, text);
+      this.#events.ring(agent.hex, { type: "notice", agent: agent.name });
+    }
+  }
+
+  // Sent when a run of verdicts settles, so a burst costs one signature, and it's retried by the next catch-up if it fails.
+  #ackSoon(agent: AgentContext, sessionHex: string): void {
+    const key = agent.hex + sessionHex;
+    if (this.#ackTimers.has(key)) return;
+    this.#ackTimers.set(key, setTimeout(() => {
+      this.#ackTimers.delete(key);
+      const sessionId = parseHex(sessionHex, 16, "session id");
+      this.#background("screened ack", this.#lane(agent.hex, sessionHex, async () => {
+        const local = this.#store.session(agent.signer.id, sessionId);
+        if (local) await this.#deliver(agent, local);
+      }));
+    }, SCREENED_ACK_DELAY_MS));
+  }
+
+  // The highest position with nothing unscreened at or before it.
+  #screenedThrough(agent: AgentContext, local: SessionRow): number {
+    const first = this.#store.firstUnscreened(agent.signer.id, local.session_id);
+    return first === undefined ? local.verified_position : first - 1;
+  }
+
+  screeningFacts(): unknown {
+    const model = this.#screening.model;
+    const missing = model !== null && !model.running && this.#store.getConfig(CONFIG_MODEL_EVER_RAN) === "1";
+    return {
+      deterministic: { running: model !== null, rules: model ? "sanitizing, variants and patterns" : "starting" },
+      model: { ...(model ?? { state: "starting", running: false, backend: null, reason: null }), ...(missing ? { needs_installing: MODEL_MISSING } : {}) },
+      worker: { restarts: this.#screening.restarts, last_crash: this.#screening.lastCrash },
+      queue: this.#screening.pending(),
+    };
+  }
+
+  // Read at the daemon's start, so a change takes effect at the next login.
+  settings(name: unknown, value: unknown): unknown {
+    if (name === undefined) return { settings: listSettings(this.#store) };
+    if (typeof name !== "string" || typeof value !== "string") throw new LocalError("bad_argument", "to change a setting, name it and give its value");
+    try {
+      changeSetting(this.#store, name, value);
+    } catch (err: unknown) {
+      if (err instanceof SettingError) throw new LocalError("bad_setting", err.message);
+      throw err;
+    }
+    logEvent("settings.changed", { name, value });
+    return { settings: listSettings(this.#store), note: "This takes effect at the next login." };
+  }
+
+  reloadScreener(): unknown {
+    this.#screening.reload();
+    return { reloaded: true };
+  }
+
+  // Which screeners really run on what this sender writes, right now.
+  #sessionScreening(agent: AgentContext, local: SessionRow): Record<string, unknown> {
+    const rule = this.#screeningRule(agent.signer.id, toHex(local.counterparty_id));
+    const modelRunning = this.#screening.model?.running === true;
+    const screeners = rule.level === "off" ? [] : rule.level === "full" && modelRunning ? ["deterministic", "model"] : ["deterministic"];
+    const waiting = this.#screening.waiting(agent.hex, toHex(local.session_id));
+    return { level: rule.level, from: rule.from, screeners, ...(waiting ? { waiting_on: waiting } : {}) };
+  }
+
+  setScreeningRule(agentHex: string, sender: string, level: unknown): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const senderId = parseHex(sender, 32, "sender");
+    if (!SCREENING_LEVELS.includes(level as ScreeningLevel)) throw new LocalError("bad_argument", `level must be one of ${SCREENING_LEVELS.join(", ")}`);
+    const senderHex = toHex(senderId);
+    const before = this.#screeningRule(agent.signer.id, senderHex).level;
+    this.#store.setScreeningRule(agent.signer.id, senderHex, level as string);
+    logEvent("screening.rule_changed", { agent: agent.hex, sender: senderHex, from: before, to: level });
+    const text = `The screening rule for messages from ${senderHex} changed from ${before} to ${level as string}, by a person at this machine's terminal. If that wasn't you, run: cello-v2 screening ${senderHex} --level full --agent ${agent.hex}`;
+    this.#store.addNotice(agent.signer.id, null, text);
+    this.#events.ring(agent.hex, { type: "notice", agent: agent.name });
+    return { agent_id: agent.hex, sender: senderHex, level, was: before };
   }
 
   async #visitProof(agent: AgentContext, server: ConnectedServer): Promise<Record<string, unknown>> {
@@ -563,6 +773,12 @@ export class Engine {
         this.#background("session push", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire, route)));
         return;
       }
+      if (frame.push === "delivery") {
+        const { deliveryAck: wire, screeningEtaSeconds } = frame.data as { deliveryAck: WireSigned; screeningEtaSeconds: unknown };
+        const sessionHex = toHex(signedDeliveryAck.decode(wire, "deliveryAck").fields.sessionId);
+        this.#background("delivery push", this.#lane(agent.hex, sessionHex, () => this.#onPeerDeliveryAck(agent, wire, screeningEtaSeconds)));
+        return;
+      }
       const item = frame.data as WitnessedOnWire;
       const sessionHex = toHex(signedEntry.decode(item.entry).fields.sessionId);
       this.#background("entry push", this.#lane(agent.hex, sessionHex, () => this.#onEntryPush(agent, item, route)));
@@ -610,7 +826,7 @@ export class Engine {
     }
     local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
     if (local.state === "active" || local.state === "closed") {
-      const hasWork = wire.tip > local.verified_position || this.#store.pendingEntries(agent.signer.id, sessionId).length > 0 || local.fault !== null || local.delivered_through < this.#latestFromPeer(agent, local);
+      const hasWork = wire.tip > local.verified_position || this.#store.pendingEntries(agent.signer.id, sessionId).length > 0 || local.fault !== null || local.delivered_through < this.#latestFromPeer(agent, local) || (local.delivered_through > 0 && Math.min(this.#screenedThrough(agent, local), local.delivered_through) > local.acked_screened);
       if (hasWork) await this.#settle(agent, local);
       if (this.#store.sealWants(agent.signer.id, sessionId).length > 0) await this.#retrySeals(agent, sessionId);
     }
@@ -832,9 +1048,9 @@ export class Engine {
     }
   }
 
-  #notify(agent: AgentContext, sessionId: Uint8Array, text: string): void {
+  #notify(agent: AgentContext, sessionId: Uint8Array | null, text: string): void {
     this.#store.addNotice(agent.signer.id, sessionId, text);
-    this.#events.ring(agent.hex, { type: "notice", agent: agent.name, session_id: toHex(sessionId) });
+    this.#events.ring(agent.hex, { type: "notice", agent: agent.name, ...(sessionId ? { session_id: toHex(sessionId) } : {}) });
   }
 
   // Doesn't stop the conversation for good: it's rechecked at every catch-up, so a bad deploy thaws by itself.
@@ -927,7 +1143,11 @@ export class Engine {
 
     const sessionHex = toHex(local.session_id);
     const bell = { agent: agent.name, session_id: sessionHex, from_id: toHex(local.counterparty_id) };
-    if (!fromMe) this.#events.ring(agent.hex, { ...bell, type: closing ? "peer_closed" : "message" });
+    // Stored, but not deliverable until it has a verdict. Its doorbell rings then, from #onVerdict.
+    if (!fromMe) {
+      const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
+      this.#screening.add({ entryId, agentHex: agent.hex, sessionHex, position, senderHex: toHex(local.counterparty_id), bytes: (body as Uint8Array).length, arrived: Date.now() });
+    }
     if (nowClosed && local.state !== "closed") {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
@@ -1030,14 +1250,65 @@ export class Engine {
   }
 
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
-  async #deliver(agent: AgentContext, local: SessionRow): Promise<void> {
-    const through = this.#latestFromPeer(agent, local);
-    if (through <= local.delivered_through) return;
+  // It also says how far screening has got, so it goes again when that moves, or when the screen is held up.
+  async #deliver(agent: AgentContext, local: SessionRow, etaSeconds = 0): Promise<void> {
+    const through = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
+    if (through === 0) return;
+    const screened = Math.min(this.#screenedThrough(agent, local), through);
+    if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root };
+    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
-    await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
-    this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through });
+    // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
+    await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
+    this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through, acked_screened: screened });
+  }
+
+  // How far the reader has screened what it holds. This is only ever used to tell and to pace, so a false one costs a delay.
+  async #onPeerDeliveryAck(agent: AgentContext, wire: WireSigned, etaSeconds: unknown): Promise<void> {
+    const signed = signedDeliveryAck.decode(wire, "deliveryAck");
+    const { fields } = signed;
+    const local = this.#store.session(agent.signer.id, fields.sessionId);
+    if (!local || !equalBytes(fields.readerId, local.counterparty_id)) return;
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-delivery-ack", deliveryAckBytes(fields), signed.signature))) return;
+    if (fields.screenedThrough > local.peer_screened_through) this.#store.updateSession(agent.signer.id, local.session_id, { peer_screened_through: fields.screenedThrough });
+    const position = fields.screenedThrough + 1;
+    // Nothing signs the time, so it's only ever a number in a notice, and only a whole one gets that far.
+    if (Number.isSafeInteger(etaSeconds) && (etaSeconds as number) > 0 && position > local.peer_eta_told) {
+      this.#store.updateSession(agent.signer.id, local.session_id, { peer_eta_told: position });
+      this.#notify(agent, local.session_id, `The other side is still screening position ${position}, for about ${etaSeconds as number} more seconds. Its machine has the message, and its agent hasn't been shown it yet.`);
+    }
+  }
+
+  // A bot can outrun its reader. This waits a bounded time for the gap to close, then sends anyway, and says so.
+  async #paceForReader(agent: AgentContext, sessionId: Uint8Array): Promise<Record<string, unknown>> {
+    const gap = (): number => {
+      const local = this.#store.session(agent.signer.id, sessionId);
+      return local ? this.#store.countOwnAfter(agent.signer.id, sessionId, local.peer_screened_through) : 0;
+    };
+    const { sender_backlog_gap: allowed, sender_backlog_wait_ms: limit } = this.#settings;
+    if (gap() <= allowed) return {};
+    const started = Date.now();
+    while (gap() > allowed && Date.now() - started < limit) {
+      await new Promise((resolve) => setTimeout(resolve, SENDER_BACKLOG_CHECK_MS));
+    }
+    const behind = gap();
+    const waited = Date.now() - started;
+    return { slowed: { waited_ms: waited, reader_behind_by: behind, message: `The other side's screening is ${behind} of your messages behind, so this send waited ${Math.round(waited / 1000)} seconds. Your messages are safe, and they're delivered in order as it catches up.` } };
+  }
+
+  // Credentials and hijack artifacts stop here, before anything is signed, on a thread that never runs the model.
+  async #screenOutbound(agent: AgentContext, text: string): Promise<{ text: string; report: Record<string, unknown> }> {
+    const keys = [...this.#agents.keys(), ...this.#store.sessionsOf(agent.signer.id).map((s) => toHex(s.counterparty_id))];
+    let verdict;
+    try {
+      verdict = await this.#outbound.screen(text, keys);
+    } catch (err: unknown) {
+      throw new LocalError("screener_unavailable", `The outbound screen didn't run, so nothing was sent: ${err instanceof Error ? err.message : String(err)}. It restarts by itself, so try again.`);
+    }
+    if (verdict.disposition === "block") throw new LocalError("blocked_by_screening", `Nothing was sent: ${verdict.reason as string}. Categories: ${verdict.categories.join(", ")}.`);
+    if (verdict.disposition === "redact") return { text: verdict.text, report: { redacted: verdict.categories, message: "Parts of your message were replaced before sending: the text that went out isn't exactly what you wrote." } };
+    return { text, report: {} };
   }
 
   // ---- Sending ----
@@ -1172,12 +1443,20 @@ export class Engine {
     const agent = this.#requireAgent(agentHex);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
+    const screened = await this.#screenOutbound(agent, text);
+    // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
+    const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
       if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
       if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {
+        const deliverable = this.#store.deliverableCount(agent.signer.id, local.session_id, local.read_position);
+        const waiting = this.#screening.waiting(agent.hex, sessionHex);
+        if (deliverable === 0 && waiting) {
+          throw new LocalError("session_not_current", `A message has arrived that's still being screened: position ${waiting.position}, for about ${waiting.about_seconds} more seconds. Nothing was sent. A doorbell rings when it's ready. To say something now, such as stop, send it as a notice.`);
+        }
         throw new LocalError("session_not_current", "a message has arrived that you haven't read. Nothing was sent. Call receive, then decide what to say.");
       }
       if (this.#store.pendingEntries(agent.signer.id, local.session_id).length > 0) {
@@ -1187,9 +1466,9 @@ export class Engine {
           throw new LocalError("previous_send_pending", "your previous message hasn't reached the server yet, so this one wasn't queued. Try again once it has.");
         }
       }
-      const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text, signal, est_minutes: estMinutes ?? null };
+      const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: screened.text, signal, est_minutes: estMinutes ?? null };
       const outcome = await this.#append(agent, local, EntryKind.message, notice ? EntryMode.notice : EntryMode.reply, body);
-      return this.#reportSend(agent, local, outcome);
+      return { ...(await this.#reportSend(agent, local, outcome) as object), ...screened.report, ...paced };
     });
   }
 
@@ -1381,6 +1660,10 @@ export class Engine {
   async exportTranscript(agentHex: string, sessionHex: string, choice: { reveal: string | undefined; all: boolean; sealId: string | undefined }): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
+    const unscreened = this.#store.firstUnscreened(agent.signer.id, local.session_id);
+    if (unscreened !== undefined && (choice.all || choice.reveal !== undefined)) {
+      throw new LocalError("not_screened_yet", `Position ${unscreened} is still being screened, so nothing can be revealed yet. Try again once it's done.`);
+    }
     const built = await buildTranscript({
       ...choice,
       session: toHex(local.session_id),
@@ -1506,11 +1789,12 @@ export class Engine {
     const sessions = sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id);
     const messages: unknown[] = [];
     const reads: { sessionId: Uint8Array; through: number }[] = [];
+    const screening: unknown[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
     for (const local of sessions) {
       if (room <= 0) {
-        more ||= this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0;
+        more ||= this.#store.deliverableCount(agent.signer.id, local.session_id, local.read_position) > 0;
         continue;
       }
       const page = this.#store.unreadPage(agent.signer.id, local.session_id, local.read_position, room);
@@ -1518,23 +1802,22 @@ export class Engine {
       more ||= page.more;
       for (const row of unread) {
         room -= row.body.length;
-        const body = parseBody(row.body);
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
         messages.push({
           session_id: toHex(local.session_id),
           from: local.counterparty_name,
           from_id: toHex(local.counterparty_id),
           position: row.position,
-          ...(closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null }),
-          ...(body?.est_minutes ? { est_minutes: body.est_minutes } : {}),
-          ...(!closing && !body ? { unreadable: true } : {}),
+          ...shownMessage(row, closing),
         });
       }
       if (unread.length > 0) reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
+      const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
+      if (held) screening.push({ session_id: toHex(local.session_id), ...held });
     }
     const notices = this.#store.notices(agent.signer.id);
     return {
-      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(more ? { more: true } : {}) },
+      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -1571,6 +1854,7 @@ export class Engine {
         peer_closed: s.peer_closed === 1,
         fault: s.fault,
         standbys: this.#standbyView(agent, s),
+        screening: this.#sessionScreening(agent, s),
       })),
     };
   }
@@ -1580,7 +1864,8 @@ export class Engine {
     const agent = this.#requireAgent(agentHex);
     const waiting = this.#store.sessionsOf(agent.signer.id).flatMap((s) => {
       const unread = this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position);
-      return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread }] : [];
+      const held = this.#screening.waiting(agent.hex, toHex(s.session_id));
+      return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread, ready: this.#store.deliverableCount(agent.signer.id, s.session_id, s.read_position), ...(held ? { still_screening: held } : {}) }] : [];
     });
     return { waiting, notices: this.#store.notices(agent.signer.id).length };
   }
@@ -1590,25 +1875,24 @@ export class Engine {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
     const page = this.#store.recordPage(agent.signer.id, local.session_id, after, local.verified_position, MAX_REPLY_BYTES);
+    // An agent can call this, so it's a way of reading: nothing unscreened or blocked comes through it either.
     const entries = page.rows.map((row) => {
-      const body = parseBody(row.body);
       const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
       return {
         position: row.position,
         from: row.own === 1 ? agent.name : local.counterparty_name,
         from_id: toHex(row.own === 1 ? agent.signer.id : local.counterparty_id),
         own: row.own === 1,
-        ...(closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null }),
-        ...(body?.est_minutes ? { est_minutes: body.est_minutes } : {}),
-        ...(!closing && !body ? { unreadable: true } : {}),
+        ...shownMessage(row, closing),
       };
     });
     return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
   }
 
+  // What can be read right now. A message still being screened isn't in it, or a caller would be told to read and find nothing.
   unreadCount(agentHex: string): number {
     const agent = this.#requireAgent(agentHex);
-    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position), 0);
+    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.deliverableCount(agent.signer.id, s.session_id, s.read_position), 0);
     return messages + this.#store.notices(agent.signer.id).length;
   }
 
@@ -1630,6 +1914,7 @@ export class Engine {
       server: this.#url,
       connected: this.#link.ready,
       problem: this.#link.problem,
+      screening: this.screeningFacts(),
       visiting: [...this.#visiting.values()].map((route) => ({ server: route.url, connected: route.link.ready, problem: route.link.problem, agents: [...route.online].length })),
       agents: [...this.#agents.values()].map((agent) => ({
         name: agent.name,
@@ -1649,6 +1934,7 @@ export class Engine {
           peer_closed: s.peer_closed === 1,
           fault: s.fault,
           standbys: this.#standbyView(agent, s),
+          screening: this.#sessionScreening(agent, s),
         })),
       })),
     };

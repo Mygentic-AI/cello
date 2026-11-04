@@ -1,6 +1,7 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
@@ -56,6 +57,9 @@ function ring(agentHex: string, bell: Doorbell): void {
 }
 
 const engine = new Engine(store, serverUrl, { ring });
+const STALL_RESOLUTION_MS = 5;
+const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
+mainThreadDelay.enable();
 
 function text(params: Record<string, unknown>, key: string): string {
   const value = params[key];
@@ -146,8 +150,12 @@ function waitForEvent(socket: Socket, agent: string, caller: string, seconds: nu
 
 async function handle(socket: Socket, method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
-    case "status":
-      return { pid: process.pid, home, ...(engine.status() as object) };
+    case "status": {
+      // A fact about this thread, measured here. It's the longest it has been held up since the last time anyone asked.
+      const longestStallMs = Math.max(0, Math.round(mainThreadDelay.max / 1e6 - STALL_RESOLUTION_MS));
+      mainThreadDelay.reset();
+      return { pid: process.pid, home, main_thread: { longest_stall_ms: longestStallMs }, ...(engine.status() as object) };
+    }
     case "create_agent":
       return engine.createAgent(text(params, "name"));
     case "use_agent": {
@@ -216,6 +224,13 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+    // Not in the tool table's MCP half: only the command line reaches these, after it has asked a person.
+    case "screening":
+      return engine.setScreeningRule(engine.resolveAgent(text(params, "agent")), text(params, "sender"), params["level"]);
+    case "settings":
+      return engine.settings(params["name"], params["value"]);
+    case "screener_reload":
+      return engine.reloadScreener();
     case "shutdown":
       setImmediate(shutdown);
       return { stopping: true };

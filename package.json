@@ -24,19 +24,20 @@
     "plugins"
   ],
   "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
     "@noble/curves": "latest",
     "@noble/hashes": "latest",
     "@signalapp/sqlcipher": "latest",
+    "re2-wasm": "latest",
     "ws": "latest",
-    "@modelcontextprotocol/sdk": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/ws": "latest",
     "eslint": "latest",
     "typescript": "^6.0.0",
-    "typescript-eslint": "latest",
-    "@types/ws": "latest"
+    "typescript-eslint": "latest"
   },
   "bin": {
     "cello-v2": "./dist/cli.js",

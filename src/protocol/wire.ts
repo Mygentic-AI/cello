@@ -126,7 +126,7 @@ export const entryCodec = codec<Omit<EntryFields, "kind" | "mode"> & { kind: num
 
 
 export const ackCodec = codec<AckFields>({ serverId: "bytes", sessionId: "bytes", position: "int", entryHash: "bytes", root: "bytes", time: "int" });
-export const deliveryAckCodec = codec<DeliveryAckFields>({ sessionId: "bytes", readerId: "bytes", throughPosition: "int", entryHash: "bytes", root: "bytes" });
+export const deliveryAckCodec = codec<DeliveryAckFields>({ sessionId: "bytes", readerId: "bytes", throughPosition: "int", entryHash: "bytes", root: "bytes", screenedThrough: "int" });
 export const offerCodec = codec<OfferFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", x25519Public: "bytes", mlKemPublic: "bytes", expiresAt: "int" });
 export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes" });
 export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes" });
@@ -204,7 +204,7 @@ export interface SessionOnWire {
 
 export type SessionState = "offered" | "accepted" | "active" | "closed";
 
-export type PushKind = "session" | "entry";
+export type PushKind = "session" | "entry" | "delivery";
 
 export interface RequestFrame { v: number; id: number; method: string; params: unknown }
 export type ResponseFrame =
