@@ -453,8 +453,8 @@ async function waitForPosition(agent: Agent, session: string, position: number):
 
 // How far a session with one sender ends up. "Not sent yet" is saved and lands later, and so holds a position too.
 function expectedTop(sent: Sent[]): number {
-  const saved = sent.filter((s) => s.outcome === "not_sent_yet").length;
-  return Math.max(0, ...sent.flatMap((s) => (s.position === undefined ? [] : [s.position]))) + saved;
+  const saved = sent.filter((s) => s.outcome === "sent" || s.outcome === "not_sent_yet").length;
+  return Math.max(saved, ...sent.flatMap((s) => (s.position === undefined ? [] : [s.position])));
 }
 
 // Closes the session from both sides, then compares the two records with each other and with what was sent.
