@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
+import "./require-node.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -159,6 +160,18 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
   return params;
 }
 
+// The build doesn't rewrite a path held in a string, so the daemon is looked for in the form this file is running in:
+// main.ts from source, main.js when installed.
+function daemonEntry(): string {
+  const here = fileURLToPath(import.meta.url);
+  const entry = join(dirname(here), "daemon", `main${extname(here)}`);
+  if (!existsSync(entry)) {
+    process.stderr.write(`${JSON.stringify({ error: "daemon_entry_missing", message: `The daemon's code isn't at ${entry}, so this install is incomplete. Install CELLO again.` })}\n`);
+    process.exit(EXIT_REFUSED);
+  }
+  return entry;
+}
+
 async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient> {
   let exited: number | null | undefined;
   child.once("exit", (code) => { exited = code; });
@@ -192,9 +205,9 @@ async function login(args: string[]): Promise<void> {
   } catch (err: unknown) {
     if (!(err instanceof DaemonGone)) throw err;
   }
+  const entry = daemonEntry();
   mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
   const logFile = openSync(logPath(), "a", 0o600);
-  const entry = fileURLToPath(new URL("./daemon/main.ts", import.meta.url));
   const child = spawn(process.execPath, [entry, server], { detached: true, stdio: ["ignore", logFile, logFile] });
   closeSync(logFile);
   const client = await waitForDaemon(child);

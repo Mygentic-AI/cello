@@ -2,6 +2,7 @@
 // A thin layer for hosts that speak MCP. Its tools come from the same table as the command line, and pass straight
 // through to the daemon. The one thing it adds is what a shell can't do: a doorbell that wakes a Claude Code session.
 // A doorbell never carries message text, or a name another party chose.
+import "./require-node.ts";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
