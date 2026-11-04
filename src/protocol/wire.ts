@@ -33,6 +33,10 @@ export const ERROR_CODES = [
   "seal_beyond_tip",
   "seal_root_mismatch",
   "seal_log_inconsistent",
+  "unknown_channel",
+  "channel_conflict",
+  "channels_unavailable",
+  "rate_limited",
   "internal_error",
 ] as const;
 
@@ -78,7 +82,7 @@ export interface Codec<T> {
   decode(value: unknown, name?: string): T;
 }
 
-function codec<T>(shape: Record<keyof T & string, FieldKind>): Codec<T> {
+export function codec<T>(shape: Record<keyof T & string, FieldKind>): Codec<T> {
   const keys = Object.keys(shape) as (keyof T & string)[];
   return {
     encode(value) {
@@ -198,7 +202,7 @@ export interface SessionOnWire {
 
 export type SessionState = "offered" | "accepted" | "active" | "closed";
 
-export type PushKind = "session" | "entry";
+export type PushKind = "session" | "entry" | "channel_ring";
 
 export interface RequestFrame { v: number; id: number; method: string; params: unknown }
 export type ResponseFrame =
