@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS notices (
   session_id BLOB,
   text       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seals (
+  agent_id         BLOB NOT NULL,
+  seal_id          BLOB NOT NULL,
+  session_id       BLOB NOT NULL,
+  record           TEXT NOT NULL,
+  PRIMARY KEY (agent_id, seal_id),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
+-- A seal asked for and not finished, so it survives a restart. Through 0 means everything held when it goes.
+CREATE TABLE IF NOT EXISTS seal_wants (
+  agent_id   BLOB NOT NULL,
+  session_id BLOB NOT NULL,
+  through    INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, session_id, through),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
 `;
 
 export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number }
@@ -109,6 +127,10 @@ export interface EntryRow {
 }
 
 export interface NoticeRow { id: number; session_id: Uint8Array | null; text: string }
+
+export interface SealRow { seal_id: Uint8Array; session_id: Uint8Array; record: string }
+
+export interface SealWantRow { session_id: Uint8Array; through: number }
 
 type SessionUpdate = Partial<Omit<SessionRow, "agent_id" | "session_id">>;
 
@@ -250,5 +272,32 @@ export class Store {
 
   clearNotices(agentId: Uint8Array, throughId: number): void {
     this.#prep("DELETE FROM notices WHERE agent_id = ? AND id <= ?").run([agentId, throughId]);
+  }
+
+  addSealWant(agentId: Uint8Array, sessionId: Uint8Array, through: number): void {
+    this.#prep("INSERT OR IGNORE INTO seal_wants (agent_id, session_id, through) VALUES (?, ?, ?)").run([agentId, sessionId, through]);
+  }
+
+  removeSealWant(agentId: Uint8Array, sessionId: Uint8Array, through: number): void {
+    this.#prep("DELETE FROM seal_wants WHERE agent_id = ? AND session_id = ? AND through = ?").run([agentId, sessionId, through]);
+  }
+
+  sealWants(agentId: Uint8Array, sessionId?: Uint8Array): SealWantRow[] {
+    if (sessionId) return this.#prep("SELECT session_id, through FROM seal_wants WHERE agent_id = ? AND session_id = ? ORDER BY through").all([agentId, sessionId]) as unknown as SealWantRow[];
+    return this.#prep("SELECT session_id, through FROM seal_wants WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SealWantRow[];
+  }
+
+  // A repeat from the server is the same certificate, so storing it twice changes nothing.
+  addSeal(agentId: Uint8Array, sealId: Uint8Array, sessionId: Uint8Array, record: string): void {
+    this.#prep("INSERT OR IGNORE INTO seals (agent_id, seal_id, session_id, record) VALUES (?, ?, ?, ?)").run([agentId, sealId, sessionId, record]);
+  }
+
+  seals(agentId: Uint8Array, sessionId?: Uint8Array): SealRow[] {
+    if (sessionId) return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? AND session_id = ? ORDER BY rowid").all([agentId, sessionId]) as unknown as SealRow[];
+    return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SealRow[];
+  }
+
+  seal(agentId: Uint8Array, sealId: Uint8Array): SealRow | undefined {
+    return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? AND seal_id = ?").get([agentId, sealId]) as SealRow | undefined;
   }
 }

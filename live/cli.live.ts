@@ -1,22 +1,36 @@
 // A whole conversation by command line alone, with no MCP anywhere: real processes, one call each.
 // This is what any agent that can run a shell command gets. Run it with scripts/live-test.sh.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import WebSocket, { WebSocketServer } from "ws";
 import { IpcClient } from "../src/ipc/client.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
+import { signerFromSeeds } from "../src/protocol/identity.ts";
+import { RunningMerkle } from "../src/protocol/merkle.ts";
+import { type SealRecordOnWire, encodeHashes } from "../src/protocol/seal.ts";
+import { sealCertificateBytes } from "../src/protocol/structures.ts";
+import { fromB64, signedSealCertificate } from "../src/protocol/wire.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
+
+function compose(...args: string[]): string {
+  return execFileSync("docker", ["compose", ...args], { cwd: serverDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+function sql(query: string): string {
+  return compose("exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "cello_owner", "-d", "cello", "-tAc", query).trim();
+}
 
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
-function cello(args: string[], input?: string, caller?: string): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: home, ...(caller ? { CELLO_CALLER: caller } : {}) } });
+function cello(args: string[], input?: string, caller?: string, inHome = home): Run {
+  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -32,9 +46,15 @@ function ok(args: string[], input?: string): Record<string, unknown> {
   return run.json;
 }
 
-async function until<T>(what: string, check: () => T | undefined | false): Promise<T> {
-  for (let i = 0; i < 200; i++) {
-    const value = check();
+function okIn(inHome: string, args: string[]): Record<string, unknown> {
+  const run = cello(args, undefined, undefined, inHome);
+  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  return run.json;
+}
+
+async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>): Promise<T> {
+  for (let i = 0; i < 400; i++) {
+    const value = await check();
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -195,4 +215,284 @@ test("the holder is a caller: the command line is refused an agent a session hol
   assert.equal(cello(["receive"], undefined, "shell-b").json["error"], "no_current_agent", "and shell-b doesn't inherit it");
   assert.equal(cello(["receive", "--agent", "Iris", "--force"], undefined, "shell-b").status, 0);
   assert.equal(cello(["receive"], undefined, "shell-a").json["error"], "agent_held", "shell-a has been displaced");
+});
+
+interface SealOutput {
+  sealed: boolean;
+  status?: string;
+  seal_id: string;
+  seal_key: string;
+  witnessed_through: number;
+  received_through: number;
+  tip_when_sealed: number;
+  partial: boolean;
+  session_closed: boolean;
+  statement: Record<string, string>;
+}
+
+const scratch = mkdtempSync(join(tmpdir(), "cello-v2-seal-files-"));
+let nextFile = 0;
+
+function saved(content: unknown): string {
+  const path = join(scratch, `seal-${nextFile++}.json`);
+  writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content));
+  return path;
+}
+
+function verify(file: string, sealKey: string, inHome = home): Record<string, unknown> {
+  const run = cello(["verify-seal", file, "--seal-key", sealKey], undefined, undefined, inHome);
+  assert.equal(run.status, run.json["ok"] ? 0 : 1, `verify-seal exits by its answer: ${run.stderr}`);
+  return run.json;
+}
+
+test("seals: one party, partial, across a daemon kill, and checked offline with tampering caught", { timeout: 200_000 }, async () => {
+  // Two machines' worth of state: each agent has its own daemon, so one can really be offline.
+  const kitHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-kit-"));
+  okIn(kitHome, ["login", "--server", url]);
+  const kit = okIn(kitHome, ["create-agent", "Kit"]);
+  ok(["create-agent", "Jan"]);
+  await until("both online", () => {
+    const jan = (ok(["status"]) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Jan");
+    return jan?.online && (okIn(kitHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online);
+  });
+  const session = ok(["initiate-session", kit["agent_id"] as string, "--agent", "Jan"])["session_id"] as string;
+  assert.ok(session);
+  const secret = "the price is forty-two";
+
+  // Nothing witnessed yet, so there's nothing to seal.
+  assert.equal(cello(["seal", session, "--agent", "Jan"]).json["error"], "nothing_to_seal");
+
+  // Positions 1 to 3 reach Kit, and he confirms them by machine, not by reading.
+  ok(["send", session, secret, "--over", "--agent", "Jan"]);
+  await until("Kit's copy", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: unknown[] }).waiting.length === 1);
+  okIn(kitHome, ["receive", "--agent", "Kit"]);
+  okIn(kitHome, ["send", session, "understood", "--over", "--agent", "Kit"]);
+  await until("Jan's copy", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: unknown[] }).waiting.length === 1);
+  ok(["receive", "--agent", "Jan"]);
+  ok(["send", session, "third", "--over", "--agent", "Jan"]);
+  const hexSession = `\\x${session}`;
+  await until("Kit's delivery ack through 3", () => sql(`SELECT count(*) FROM delivery_acks WHERE session_id = '${hexSession}' AND reader_id = '\\x${kit["agent_id"] as string}' AND through_position = 3`) === "1");
+
+  // Kit goes offline, and position 4 is witnessed but never reaches him.
+  const kitPid = (okIn(kitHome, ["status"]) as { pid: number }).pid;
+  process.kill(kitPid, "SIGKILL");
+  assert.deepEqual(ok(["send", session, "fourth, while Kit is away", "--over", "--agent", "Jan"]), { sent: true, position: 4 });
+
+  // A whole seal, by one party alone.
+  const whole = ok(["seal", session, "--agent", "Jan"]) as unknown as SealOutput;
+  assert.equal(whole.sealed, true);
+  assert.deepEqual([whole.witnessed_through, whole.received_through, whole.tip_when_sealed, whole.partial, whole.session_closed], [4, 3, 4, false, false]);
+  assert.match(whole.statement["proven_without_trusting_the_server"] as string, /Positions 1 to 3/);
+  assert.match(whole.statement["rests_on_the_server"] as string, /Positions 4 to 4/);
+  assert.match(whole.statement["meaning"] as string, /says nothing about whether the parties agreed/);
+
+  // The seal key a stranger would use comes from the server, apart from the file.
+  const health = await fetch(url.replace(/^ws/, "http").replace(/\/v1$/, "/healthz"));
+  const sealKey = (await health.json() as { seal_key: string }).seal_key;
+  assert.equal(whole.seal_key, sealKey);
+
+  // A repeat with nothing changed is the same seal.
+  assert.equal((ok(["seal", session, "--agent", "Jan"]) as unknown as SealOutput).seal_id, whole.seal_id);
+
+  const exported = ok(["export-seal", whole.seal_id, "--agent", "Jan"]);
+  assert.doesNotMatch(JSON.stringify(exported), /forty-two/, "a seal holds none of what was said");
+  const wholeFile = saved(exported);
+  const wholeCheck = verify(wholeFile, sealKey);
+  assert.deepEqual([wholeCheck["ok"], wholeCheck["witnessed_through"], wholeCheck["received_through"]], [true, 4, 3]);
+
+  // A partial seal shows it's partial. Kit's ack through 3 covers position 2.
+  const partial = ok(["seal", session, "--through", "2", "--agent", "Jan"]) as unknown as SealOutput;
+  assert.deepEqual([partial.witnessed_through, partial.received_through, partial.tip_when_sealed, partial.partial], [2, 2, 4, true]);
+  const partialCheck = verify(saved(ok(["export-seal", partial.seal_id, "--agent", "Jan"])), sealKey) as unknown as SealOutput;
+  assert.equal(partialCheck.partial, true);
+  assert.match(partialCheck.statement["how_much_this_covers"] as string, /partial seal.*2 of the 4.*2 more exist/);
+  assert.equal(cello(["seal", session, "--through", "99", "--agent", "Jan"]).json["error"], "seal_beyond_held");
+  assert.equal(cello(["seal", session, "--through", "0", "--agent", "Jan"]).json["error"], "bad_argument");
+
+  // ---- Tampering, on the real file. ----
+  const tampered = (edit: (r: SealRecordOnWire) => void): string => {
+    const copy = structuredClone(exported) as unknown as SealRecordOnWire;
+    edit(copy);
+    return saved(copy);
+  };
+  const fieldsOf = (r: SealRecordOnWire) => r.certificate.fields as Record<string, string | number>;
+  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey)["fault"], "bad_seal_signature", "a changed certificate");
+  assert.equal(verify(tampered((r) => { fieldsOf(r)["receivedThrough"] = 4; }), sealKey)["fault"], "bad_seal_signature", "a forged M");
+  assert.equal(verify(tampered((r) => { r.deliveryAck = null; }), sealKey)["fault"], "delivery_ack_mismatch", "M with no ack behind it");
+  assert.equal(verify(wholeFile, "00".repeat(32))["fault"], "wrong_seal_key", "a wrong key");
+  assert.equal(verify(saved("not json"), sealKey)["fault"], "unreadable_file");
+  assert.equal(verify(join(scratch, "no-such-file"), sealKey)["fault"], "unreadable_file");
+  assert.equal(verify(wholeFile, "not hex")["fault"], "bad_seal_key");
+
+  // The worst case: someone has stolen the real seal key and signs a forged M with it. Kit's own signature still says 3.
+  const stolen = JSON.parse(compose("exec", "-T", "server", "cat", "/data/seal-key.json")) as { ed: string; pq: string };
+  const thief = await signerFromSeeds({ ed: fromB64(stolen.ed, "ed"), pq: fromB64(stolen.pq, "pq") });
+  assert.equal(Buffer.from(thief.id).toString("hex"), sealKey, "the test must hold the real key");
+  const forged = structuredClone(exported) as unknown as SealRecordOnWire;
+  const certificate = signedSealCertificate.decode(forged.certificate).fields;
+  certificate.receivedThrough = 4;
+  forged.certificate = signedSealCertificate.encode({ fields: certificate, signature: await thief.sign("cello-v2-seal-certificate", sealCertificateBytes(certificate)) });
+  assert.equal(verify(saved(forged), sealKey)["fault"], "delivery_ack_mismatch", "a stolen seal key can't raise M");
+
+  // ---- A daemon kill. The server is down, the seal is saved, the daemon dies, and it finishes by itself. ----
+  compose("stop", "server");
+  await until("the daemon to see the server gone", () => !(ok(["status"]) as { connected: boolean }).connected);
+  const waiting = ok(["seal", session, "--through", "3", "--agent", "Jan"]);
+  assert.deepEqual([waiting["sealed"], waiting["status"]], [false, "not_sealed_yet"], "never reports sealed without the proof");
+  const listed = ok(["seals", "--session-id", session, "--agent", "Jan"]) as { seals: { witnessed_through: number }[]; waiting: { through: number }[] };
+  assert.deepEqual(listed.waiting.map((w) => w.through), [3]);
+  assert.ok(!listed.seals.some((s) => s.witnessed_through === 3));
+  process.kill((ok(["status"]) as { pid: number }).pid, "SIGKILL");
+  compose("start", "server");
+  await until("the server back", async () => {
+    try {
+      return (await fetch(url.replace(/^ws/, "http").replace(/\/v1$/, "/healthz"))).ok;
+    } catch {
+      return false;
+    }
+  });
+  ok(["login", "--server", url]);
+  const afterKill = await until("the saved seal to finish", () => {
+    const now = ok(["seals", "--session-id", session, "--agent", "Jan"]) as { seals: { seal_id: string; witnessed_through: number; received_through: number }[]; waiting: unknown[] };
+    return now.waiting.length === 0 && now.seals.find((s) => s.witnessed_through === 3);
+  });
+  assert.equal(afterKill.received_through, 3);
+  assert.equal(verify(saved(ok(["export-seal", afterKill.seal_id, "--agent", "Jan"])), sealKey)["ok"], true);
+  const notices = ok(["receive", "--agent", "Jan"]) as { notices: { text: string }[] };
+  assert.ok(notices.notices.some((n) => n.text.includes(`Your seal through position 3 is done`)), "the agent is told it finished");
+
+  // Kit comes back. Closing seals each side's copy by itself, and the second closer's seal says it has closed.
+  okIn(kitHome, ["login", "--server", url]);
+  await until("Kit's catch-up", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: unknown[] }).waiting.length === 1);
+  okIn(kitHome, ["receive", "--agent", "Kit"]);
+  const kitClosed = okIn(kitHome, ["close-session", session, "--agent", "Kit"]) as { seal: SealOutput };
+  assert.deepEqual([kitClosed.seal.sealed, kitClosed.seal.session_closed, kitClosed.seal.witnessed_through], [true, false, 5]);
+  await until("Jan's copy of the close", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: unknown[] }).waiting.length === 1);
+  ok(["receive", "--agent", "Jan"]);
+  const janClosed = ok(["close-session", session, "--agent", "Jan"]) as { state: string; seal: SealOutput };
+  assert.equal(janClosed.state, "closed");
+  assert.deepEqual([janClosed.seal.sealed, janClosed.seal.session_closed, janClosed.seal.witnessed_through, janClosed.seal.partial], [true, true, 6, false]);
+  // Repeatable, and it gets better: sealing again once Jan's ack and Kit's copy of the end are in.
+  await until("Jan's delivery ack through 5", () => sql(`SELECT count(*) FROM delivery_acks WHERE session_id = '${hexSession}' AND through_position = 5`) === "1");
+  const again = await until("Kit's whole copy", () => {
+    const seal = cello(["seal", session, "--agent", "Kit"], undefined, undefined, kitHome);
+    return seal.json["witnessed_through"] === 6 && (seal.json as unknown as SealOutput);
+  });
+  assert.deepEqual([again.sealed, again.session_closed, again.received_through], [true, true, 5]);
+
+  // An operator rewrites the hash log, and keeps its stored root in step. The party's own root is what stops the seal.
+  sql(`UPDATE entries SET entry_hash = sha256('tampered'::bytea) WHERE session_id = '${hexSession}' AND position = 1`);
+  const rewritten = new RunningMerkle();
+  for (const hex of sql(`SELECT encode(entry_hash, 'hex') FROM entries WHERE session_id = '${hexSession}' AND position <= 3 ORDER BY position`).split("\n")) rewritten.append(new Uint8Array(Buffer.from(hex, "hex")));
+  sql(`UPDATE entries SET root = '\\x${Buffer.from(rewritten.root()).toString("hex")}' WHERE session_id = '${hexSession}' AND position = 3`);
+  const mismatch = cello(["seal", session, "--through", "3", "--agent", "Jan"]);
+  assert.deepEqual([mismatch.status, mismatch.json["error"]], [1, "seal_root_mismatch"], mismatch.stdout + mismatch.stderr);
+
+  // A log that no longer rebuilds its own root yields no seal, and says the server is at fault rather than the party.
+  const broken = ok(["seal", session, "--through", "2", "--agent", "Jan"]);
+  assert.equal(broken["sealed"], false);
+  assert.match(broken["message"] as string, /failed/);
+
+  // Offline: both daemons gone, the server down, and a home with nothing in it. The file still checks out.
+  okIn(kitHome, ["logout"]);
+  ok(["logout"]);
+  compose("stop", "server");
+  const stranger = mkdtempSync(join(tmpdir(), "cello-v2-stranger-"));
+  assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
+  const offline = verify(wholeFile, sealKey, stranger) as unknown as SealOutput;
+  assert.deepEqual([offline.witnessed_through, offline.received_through], [4, 3]);
+  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey, stranger)["fault"], "bad_seal_signature");
+  compose("start", "server");
+});
+
+// A proxy in front of the real server, which rewrites its answers to seal requests. An honest server would never show these.
+async function lyingProxy(rewrite: { current: ((answer: { record: SealRecordOnWire; logProof: string[] | null }) => void) | null }): Promise<{ url: string; close(): void }> {
+  const wss = new WebSocketServer({ port: 0, maxPayload: 2_000_000 });
+  await new Promise((resolve) => wss.once("listening", resolve));
+  wss.on("connection", (client) => {
+    const server = new WebSocket(url, { maxPayload: 2_000_000 });
+    const queued: Buffer[] = [];
+    const sealCalls = new Set<number>();
+    server.on("open", () => { for (const frame of queued.splice(0)) server.send(frame.toString()); });
+    client.on("message", (raw: Buffer) => {
+      const frame = JSON.parse(raw.toString()) as { id: number; method: string };
+      if (frame.method === "seal.request") sealCalls.add(frame.id);
+      if (server.readyState === server.OPEN) server.send(raw.toString());
+      else queued.push(raw);
+    });
+    server.on("message", (raw: Buffer) => {
+      const frame = JSON.parse(raw.toString()) as { id?: number; ok?: boolean; result?: { record: SealRecordOnWire; logProof: string[] | null } };
+      if (frame.id !== undefined && sealCalls.delete(frame.id) && frame.ok && frame.result && rewrite.current) rewrite.current(frame.result);
+      if (client.readyState === client.OPEN) client.send(JSON.stringify(frame));
+    });
+    server.on("ping", () => client.ping());
+    server.on("close", () => client.close());
+    server.on("error", () => client.close());
+    client.on("close", () => server.close());
+    client.on("error", () => server.close());
+  });
+  return { url: `ws://127.0.0.1:${(wss.address() as { port: number }).port}/v1`, close: () => { for (const socket of wss.clients) socket.terminate(); wss.close(); } };
+}
+
+test("a server that lies about a seal gets a named refusal, and nothing is reported or stored as sealed", { timeout: 120_000 }, async () => {
+  const rewrite: Parameters<typeof lyingProxy>[0] = { current: null };
+  const proxy = await lyingProxy(rewrite);
+  const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
+  // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
+  const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
+    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: liarHome } }, (err, stdout, stderr) => {
+      let json: Record<string, unknown> = {};
+      try {
+        json = JSON.parse(stdout || stderr) as Record<string, unknown>;
+      } catch {
+        // login and logout answer in words.
+      }
+      resolve({ status: err ? (err.code as number) : 0, stdout, stderr, json });
+    });
+  });
+  const must = async (args: string[]): Promise<Record<string, unknown>> => {
+    const done = await run(args);
+    assert.equal(done.status, 0, `cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+    return done.json;
+  };
+  try {
+    await must(["login", "--server", proxy.url]);
+    await must(["create-agent", "Lea"]);
+    const mo = await must(["create-agent", "Mo"]);
+    await until("both online", async () => (await must(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online));
+    const session = (await must(["initiate-session", mo["agent_id"] as string, "--agent", "Lea"]))["session_id"] as string;
+    await must(["send", session, "hello", "--over", "--agent", "Lea"]);
+
+    let seenSeals = 0;
+    const refusedWith = async (fault: string): Promise<void> => {
+      const done = await run(["seal", session, "--agent", "Lea"]);
+      assert.deepEqual([done.status, done.json["error"]], [1, fault], done.stdout + done.stderr);
+      const held = await must(["seals", "--agent", "Lea"]) as { seals: unknown[]; waiting: unknown[] };
+      assert.deepEqual(held.waiting, [], "a final refusal isn't retried forever");
+      assert.equal(held.seals.length, seenSeals, "nothing was stored");
+    };
+
+    // No proof of a place in the log: not sealed.
+    rewrite.current = (answer) => { answer.record.log.path = encodeHashes([new Uint8Array(32)]); };
+    await refusedWith("log_proof_failed");
+    // A certificate that doesn't match what this agent asked to have sealed.
+    rewrite.current = (answer) => { (answer.record.certificate.fields as Record<string, unknown>)["root"] = Buffer.alloc(32, 9).toString("base64url"); };
+    await refusedWith("bad_seal_signature");
+
+    // An honest one goes through, and pins the log's state.
+    rewrite.current = null;
+    assert.equal((await must(["seal", session, "--agent", "Lea"]))["sealed"], true);
+    seenSeals = 1;
+
+    // A second message, so the next seal is new. A log that can't show it still holds what it showed is a rewritten log.
+    await must(["send", session, "again", "--over", "--agent", "Lea"]);
+    rewrite.current = (answer) => { answer.logProof = null; };
+    await refusedWith("seal_log_rewritten");
+
+    rewrite.current = null;
+    assert.equal((await must(["seal", session, "--agent", "Lea"]))["sealed"], true);
+  } finally {
+    await must(["logout"]);
+    proxy.close();
+  }
 });

@@ -190,6 +190,12 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "close_session":
       return engine.close(acting(params), text(params, "session_id"));
+    case "seal":
+      return engine.seal(acting(params), text(params, "session_id"), params["through"] as number | undefined);
+    case "seals":
+      return engine.seals(engine.resolveAgent(text(params, "agent")), params["session_id"] === undefined ? undefined : text(params, "session_id"));
+    case "export_seal":
+      return engine.exportSeal(engine.resolveAgent(text(params, "agent")), text(params, "seal_id"));
     // Reading a record acts as nobody, so these need no hold.
     case "agents":
       return engine.agents();

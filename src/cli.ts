@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { verifySeal } from "./verify-seal.ts";
 
 // Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
 // Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
@@ -26,7 +27,10 @@ const isSignalParam = (op: Operation, param: Param): boolean => op.command === "
 
 function usageLine(op: Operation): string {
   const positional = op.params.filter((p) => p.positional).map((p) => (p.required ? `<${p.name}>` : `[<${p.name}>]`));
-  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => (p.kind === "boolean" ? `[${flag(p.name)}]` : `[${flag(p.name)} <${p.kind}>]`));
+  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => {
+    const text = p.kind === "boolean" ? flag(p.name) : `${flag(p.name)} <${p.kind}>`;
+    return p.required ? text : `[${text}]`;
+  });
   const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
   const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : [])];
   return `cello-v2 ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
@@ -244,6 +248,12 @@ async function main(): Promise<void> {
     return;
   }
   const params = parse(op, args);
+  if (op.local) {
+    const checked = await verifySeal(params);
+    process.stdout.write(`${JSON.stringify(checked, null, 2)}\n`);
+    if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
+    return;
+  }
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean; agent_id?: string };
