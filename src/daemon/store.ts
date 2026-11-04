@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   acked_screened    INTEGER NOT NULL DEFAULT 0,
   peer_screened_through INTEGER NOT NULL DEFAULT 0,
   peer_eta_told     INTEGER NOT NULL DEFAULT 0,
+  server_url        TEXT, -- The server hosting this conversation, when it isn't this daemon's own.
   PRIMARY KEY (agent_id, session_id)
 );
 
@@ -146,6 +147,7 @@ export interface SessionRow {
   bytes_told: number;
   // The server's time on the last entry from either side, so quiet is measured the same after any downtime.
   last_activity_at: number;
+  server_url: string | null;
 }
 
 export interface EntryRow {
@@ -212,6 +214,8 @@ export class Store {
     this.#addColumn("sessions", "bytes_received", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "bytes_told", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "last_activity_at", "INTEGER NOT NULL DEFAULT 0");
+    // A database made before federation. Additive, so its conversations carry on, on their own server.
+    this.#addColumn("sessions", "server_url", "TEXT");
     this.#addColumn("entries", "withheld", "INTEGER NOT NULL DEFAULT 0");
     this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
   }

@@ -13,6 +13,8 @@ Run them whenever you like. They need nobody's OK.
 
 **The install test** is one of them, and it also runs alone: `pnpm run test:install`. It packs the tarball, installs it into an empty prefix, and uses only the installed binaries from outside this repo. It starts its own server, on project `cello-v2-install` and port 18095 (`CELLO_INSTALL_PORT` changes it). It prints the install time and size. After a failure, it keeps its temporary folder and says where.
 
+**The federation test.** `CELLO_SERVER_DIR=<server checkout> scripts/federation-test.sh`. Two real servers from nothing, started with the server's own `scripts/server.sh` as Compose projects `cello-v2-fed-a` and `cello-v2-fed-b` on ports 18400 and 18401, with real daemons as separate processes. An agent on one holds a conversation with an agent on the other, through daemon kills and with its own server down, then closes and seals, and it calls back the other way. It runs the same log check as the real-session test. It also checks both databases, and that the called daemon has no connection to any server but its own. It removes its containers, volumes and daemons however it ends. Evidence goes to `~/cello-v2-live-runs/federation-<time>/`.
+
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 
 ```

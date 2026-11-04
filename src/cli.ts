@@ -221,12 +221,12 @@ async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient
 async function login(args: string[]): Promise<void> {
   const at = args.indexOf("--server");
   const server = at >= 0 ? args[at + 1] : undefined;
-  if (!server) usageError("login needs --server");
+  if (at >= 0 && !server) usageError("--server needs a value");
   try {
     const running = await IpcClient.connect(socketPath());
     const status = await running.call("status") as { pid: number; server: string };
     running.close();
-    if (status.server !== server) {
+    if (server && status.server !== server) {
       fail(`A daemon is already running for ${status.server}. Run: cello-v2 logout\n`, EXIT_REFUSED);
     }
     process.stdout.write(`Already running, process ${status.pid}.\n`);
@@ -237,19 +237,19 @@ async function login(args: string[]): Promise<void> {
   const entry = daemonEntry();
   mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
   const logFile = openSync(logPath(), "a", 0o600);
-  const child = spawn(process.execPath, [entry, server], { detached: true, stdio: ["ignore", logFile, logFile] });
+  const child = spawn(process.execPath, server ? [entry, server] : [entry], { detached: true, stdio: ["ignore", logFile, logFile] });
   closeSync(logFile);
   const client = await waitForDaemon(child);
   child.unref();
   // A far-away server takes a moment. Say what's true rather than implying it's ready.
-  let status = await client.call("status") as { pid: number; connected: boolean; problem: string | null };
+  let status = await client.call("status") as { pid: number; server: string; connected: boolean; problem: string | null };
   for (let i = 0; i < 50 && !status.connected; i++) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     status = await client.call("status") as typeof status;
   }
   client.close();
   const state = status.connected ? "connected" : `not connected yet (${status.problem ?? "still trying"}). It keeps trying by itself`;
-  process.stdout.write(`Daemon started, process ${status.pid}, for ${server}: ${state}.\n`);
+  process.stdout.write(`Daemon started, process ${status.pid}, for ${status.server}: ${state}.\n`);
   // From what's on disk: this runs only at login, and 'status' reports what the running screen really loaded.
   const model = await screenerState({ dir: screenerModelDir(), runtimePresent: await runtimeAvailable(), verifyDigests: false });
   process.stdout.write(model.state === "ready"
@@ -350,7 +350,7 @@ async function main(): Promise<void> {
   const wantsHelp = args[0] === "--help" || args[0] === "-h";
   if (command === "login") {
     if (wantsHelp) {
-      process.stdout.write("Usage: cello-v2 login --server <wss-url>\n\nStart the daemon, and connect it to a server.\n");
+      process.stdout.write("Usage: cello-v2 login [--server <wss-url>]\n\nStart the daemon, and connect it to a server. The first login names the server, and it's kept in the database with everything else, so later ones, and a database moved to a new folder with its key, need no --server.\n");
       return;
     }
     return login(args);
