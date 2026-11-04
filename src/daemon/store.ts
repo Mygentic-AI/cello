@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   own_closed        INTEGER NOT NULL DEFAULT 0,
   peer_closed       INTEGER NOT NULL DEFAULT 0,
   fault             TEXT,
+  server_url        TEXT, -- The server hosting this conversation, when it isn't this daemon's own.
   PRIMARY KEY (agent_id, session_id)
 );
 
@@ -122,6 +123,7 @@ export interface SessionRow {
   own_closed: number;
   peer_closed: number;
   fault: string | null;
+  server_url: string | null;
 }
 
 export interface EntryRow {
@@ -175,6 +177,10 @@ export class Store {
     this.#db.pragma("busy_timeout=5000");
     this.#db.pragma("foreign_keys=ON");
     this.#db.exec(SCHEMA);
+    // A database made before federation. Additive, so its conversations carry on, on their own server.
+    if (!this.#prep("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'server_url'").get([])) {
+      this.#db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT");
+    }
   }
 
   // The driver's types want one exact byte-array type. Our bytes are all plain Uint8Array.

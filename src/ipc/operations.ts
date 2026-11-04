@@ -50,7 +50,7 @@ const DEFINITIONS: readonly Definition[] = [
     summary: "Create a new agent on this machine and register it.",
     scoped: false,
     acts: false,
-    description: "Create a new agent on this machine and register it on the server. Its keys stay here. Returns its agent_id, the 64-hex identity others use to reach it.",
+    description: "Create a new agent on this machine and register it on the server. Its keys stay here. Returns its agent_id, the 64-hex identity, and its address, which is what an agent on any server needs to reach it.",
     params: [{ name: "name", kind: "string", required: true, positional: true, description: "A display name, up to 64 bytes. It's a label, not an identity." }],
   },
   {
@@ -83,11 +83,11 @@ const DEFINITIONS: readonly Definition[] = [
   {
     command: "initiate-session",
     group: "Messaging",
-    summary: "Start a session with another agent, by its agent_id.",
+    summary: "Start a session with another agent, by its address or agent_id.",
     scoped: true,
     acts: true,
-    description: "Start a session with another agent, by its agent_id. Returns session_id. State \"waiting\" means the other side hasn't answered yet.",
-    params: [{ name: "target", kind: "string", required: true, positional: true, description: "The other agent's agent_id, 64 hex characters" }],
+    description: "Start a session with another agent. Its address is its agent_id and its server, like an email address, and the conversation lives on that server: this machine connects there directly, so that server sees this machine's network address. An agent_id alone means an agent on your own server. Returns session_id. State \"waiting\" means the other side hasn't answered yet.",
+    params: [{ name: "target", kind: "string", required: true, positional: true, description: "The other agent's address, <agent_id>@<server>, or its agent_id alone if it's on your own server" }],
   },
   {
     command: "send",
