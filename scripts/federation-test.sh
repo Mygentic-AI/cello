@@ -17,6 +17,10 @@ cleanup() {
       *daemon/main*) kill -9 "$pid" 2>/dev/null ;;
     esac
   done < "$pids"
+  # A daemon the test started but never recorded, such as when it timed out first. Only this run's daemons carry these ports.
+  for port in 18400 18401; do
+    pkill -f "daemon/main.ts ws://127.0.0.1:$port/v1" 2>/dev/null
+  done
   # Killed mid-build: this run still holds the heavy-run lock, and nothing else would free it.
   if [ -f "$pids.locked" ]; then
     rmdir "$HOME/cello-v2-live-runs/.heavy-lock" 2>/dev/null

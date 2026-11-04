@@ -1,0 +1,82 @@
+# Publishes the client to npm's `beta` tag when a v* tag is pushed. Copied from cello-client's ci.yml.
+#
+# Always `pnpm publish`, never `npm publish`.
+#
+# LAST STEP BEFORE THE FIRST REAL PUBLISH: remove `"private": true` from package.json. Until then, this
+# workflow stops at the guard below and burns no version. The package's final name is a separate change.
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    name: Publish to npm (beta)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The package may be published, and the tag matches its version
+        run: |
+          if [ "$(node -p "require('./package.json').private === true")" = "true" ]; then
+            echo "FAIL: package.json still says private: true. Removing it is the last step before going public."
+            exit 1
+          fi
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "FAIL: the tag is $GITHUB_REF_NAME, but package.json says $want."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
+
+      # v1 once shipped a package holding one file where the last held 128, with every test green.
+      - name: The tarball carries what was built
+        run: |
+          built=$(find dist -name '*.js' | wc -l | tr -d ' ')
+          packed=$(pnpm pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          shipped=$(tar tzf "$packed" | grep -c '^package/dist/.*\.js$' || true)
+          echo "$shipped of $built built files are in the tarball"
+          if [ "$built" -eq 0 ] || [ "$shipped" -lt "$built" ]; then
+            echo "FAIL: packing dropped files, so nothing was published."
+            exit 1
+          fi
+
+      - name: Publish
+        run: pnpm publish --access public --no-git-checks --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Asks for the exact version in the registry's time map, because a dist-tag read can be stale.
+      # npm can take minutes to list an accepted upload, so a 60-second wait failed good releases on v1.
+      - name: The version is on the registry
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          encoded=$(node -p "encodeURIComponent(process.argv[1])" "$name")
+          for attempt in $(seq 1 60); do
+            if curl -s -H 'Cache-Control: no-cache' "https://registry.npmjs.org/$encoded" \
+                 | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.exit(JSON.parse(d).time?.[process.argv[1]]?0:1)}catch{process.exit(1)}})" "$version"; then
+              echo "OK: $name@$version is on the registry"
+              exit 0
+            fi
+            echo "$name@$version isn't on the registry yet (attempt $attempt of 60)"
+            sleep 10
+          done
+          echo "FAIL: $name@$version is missing after 10 minutes. The version isn't burned, so re-run this job."
+          exit 1

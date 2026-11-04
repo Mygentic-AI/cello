@@ -15,7 +15,10 @@ cd "$server_dir"
 # Builds running at once have frozen this machine, so only the build takes the shared lock. The test itself doesn't need it.
 lock="$HOME/cello-v2-live-runs/.heavy-lock"
 held=""
-trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+# A test's own cleanup is skipped when it times out or is force-exited. Only this run's daemons carry this port.
+trap 'pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 waited=0
 until mkdir "$lock" 2>/dev/null; do
   waited=$((waited + 5))

@@ -14,7 +14,7 @@
     "typecheck": "tsc",
     "check": "./scripts/check-protocol-copy.sh && pnpm run test && pnpm run lint && pnpm run typecheck",
     "test:live": "./scripts/live-test.sh",
-    "test:install": "node --test --test-force-exit live/install.live.ts",
+    "test:install": "./scripts/install-test.sh",
     "prepare": "test ! -f scripts/prepare.sh || sh scripts/prepare.sh"
   },
   "files": [

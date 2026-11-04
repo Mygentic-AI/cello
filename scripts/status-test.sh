@@ -21,6 +21,11 @@ cleanup() {
       *daemon/main*) kill -9 "$pid" 2>/dev/null ;;
     esac
   done < "$pids"
+  # A daemon the test started but never recorded, such as when it timed out first. Only this run's daemons carry these ports.
+  first_port="${CELLO_STATUS_PORT:-18800}"
+  for port in "$first_port" "$((first_port + 1))"; do
+    pkill -f "daemon/main.ts ws://127.0.0.1:$port/v1" 2>/dev/null
+  done
   rm -f "$pids"
   for name in "$project-a" "$project-b"; do
     "$server_dir/scripts/server.sh" down --name "$name" --delete-data >/dev/null 2>&1
