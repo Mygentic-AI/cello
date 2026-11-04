@@ -201,6 +201,17 @@ export function refuseBytes(r: RefuseFields): Uint8Array {
   return encodeFields([VERSION, exact("offer hash", r.offerHash, HASH_BYTES), exact("ML-KEM ciphertext", r.mlKemCiphertext, ML_KEM_CIPHERTEXT_BYTES), r.sealedReason]);
 }
 
+// A callee's away greeting. Outside the chain, so it's no part of what the parties said. It's signed so the caller knows who wrote it,
+// and the signature covers only ciphertext, because a hash of so short a text would let the server guess it.
+export interface GreetingFields {
+  offerHash: Uint8Array;
+  sealedText: Uint8Array;
+}
+
+export function greetingBytes(g: GreetingFields): Uint8Array {
+  return encodeFields([VERSION, exact("offer hash", g.offerHash, HASH_BYTES), g.sealedText]);
+}
+
 export interface ConfirmFields {
   acceptHash: Uint8Array;
   sealedSalt: Uint8Array;

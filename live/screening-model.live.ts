@@ -69,6 +69,7 @@ test("with the model running, a long screen doesn't stall the main thread, and a
   assert.equal(model.running, true, `the model isn't running: ${model.reason}`);
 
   const readerId = cello(reader, ["create-agent", "Rae"])["agent_id"] as string;
+  cello(reader, ["settings-set", "away.answering", "false", "--agent", "Rae"]);
   cello(sender, ["create-agent", "Sam"]);
   cello(other, ["create-agent", "Oli"]);
   for (const made of [sender, reader, other]) await until("online", () => (cello(made, ["status"]) as unknown as Status).agents[0]?.online, 20_000);
