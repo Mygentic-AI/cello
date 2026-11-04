@@ -29,6 +29,7 @@ const { values: args } = parseArgs({
     scenarios: { type: "string" },
     seconds: { type: "string", default: "30" },
     "cpu-prof": { type: "boolean", default: false },
+    "deep-target": { type: "string", default: "560" },
     label: { type: "string", default: "" },
   },
 });
@@ -249,8 +250,13 @@ interface Turn { turn: number; sendMs: number; readMs: number; at: number; ok: b
 
 interface Conversation { a: Agent; b: Agent; session: string; turns?: number; thinkMs: number; tag: string; stop?: () => boolean }
 
+// The turns so far, so that a burst can be timed while the conversation is still going.
+let liveTurns: Turn[] = [];
+const talkingTurns = (): Turn[] => liveTurns;
+
 async function converse(plan: Conversation): Promise<{ turns: Turn[]; texts: string[] }> {
   const turns: Turn[] = [];
+  liveTurns = turns;
   const texts: string[] = [];
   for (let turn = 0; plan.turns === undefined ? !plan.stop?.() : turn < plan.turns; turn++) {
     const writer = turn % 2 === 0 ? plan.a : plan.b;
@@ -781,11 +787,18 @@ async function deepQueue(): Promise<void> {
   const sampler = new Sampler();
   sampler.start({ daemon: home });
   const sent: Sent[] = [];
-  const target = 560;
+  const target = Number(args["deep-target"]);
+  const bursts: unknown[] = [];
+  let conversing = true;
+  const talking = converse({ a, b, session: talk, thinkMs: 200, tag: "talk-deep", stop: () => !conversing || Boolean(guard.tripped) });
   for (let burst = 0; burst < 8 && sent.length < target && !guard.tripped; burst++) {
     say(`deep queue: burst ${burst + 1}, ${sent.length} of ${target} messages so far`);
+    const burstStarted = performance.now();
     const more = await flood({ from: bot, sessions: [botSession], sizes: [MB1], concurrency: 3, seconds: 30, limit: target - sent.length, tag: `deep${burst}` });
     sent.push(...more);
+    bursts.push({ burst, sent: more.length, perSecond: Number((more.length / ((performance.now() - burstStarted) / 1000)).toFixed(2)), queueMbAfter: sent.length, conversation: conversationSummary(during(talkingTurns(), burstStarted, performance.now())) });
+    results["deep_queue"] = { bursts };
+    saveResults();
     await pause(10_000);
   }
   const top = Math.max(0, ...sent.flatMap((s) => (s.position === undefined ? [] : [s.position])));
@@ -793,9 +806,6 @@ async function deepQueue(): Promise<void> {
   const inbox = await reader.home.run(["inbox", "--agent", reader.name], reader.caller);
   const queued = { unread: ((inbox.json["waiting"] ?? []) as { unread: number }[])[0]?.unread ?? 0, inboxMs: Math.round(inbox.ms), databaseMb: Math.round(home.dbBytes() / 1e6) };
 
-  let conversing = true;
-  const talking = converse({ a, b, session: talk, thinkMs: 200, tag: "talk-deep", stop: () => !conversing || Boolean(guard.tripped) });
-  await pause(5000);
   const drainStarted = performance.now();
   const reads: { messages: number; ms: number; error?: string }[] = [];
   let total = 0;
@@ -815,6 +825,7 @@ async function deepQueue(): Promise<void> {
   const { turns, texts } = await talking;
   const processes = await sampler.stop();
   results["deep_queue"] = {
+    bursts,
     sent: floodSummary(sent, 1),
     queued,
     drain: { messagesRead: total, ms: Math.round(drainMs), reads: reads.length, slowestReadMs: Math.max(0, ...reads.map((r) => r.ms)), error: reads.find((r) => r.error)?.error },
@@ -920,7 +931,7 @@ function summariseProfiles(dir: string): unknown[] {
       self.set(key, (self.get(key) ?? 0) + delta);
     });
     return { name, seconds: Math.round(totalUs / 1e6), top: [...self].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([fn, us]) => ({ fn, percent: Number(((100 * us) / totalUs).toFixed(1)) })) };
-  });
+  }).filter((profile) => profile.seconds >= 5); // The rest are the health check's short-lived processes.
 }
 
 const meta = {

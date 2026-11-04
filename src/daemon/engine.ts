@@ -53,6 +53,8 @@ const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
 const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
+// One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
+const MAX_REPLY_BYTES = 8_000_000;
 const CONFIG_SERVER_URL = "server_url";
 const CONFIG_SERVER_IDENTITY = "server_identity";
 
@@ -465,7 +467,7 @@ export class Engine {
       server: this.#serverIdentity(),
       participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)],
     });
-    for (const row of this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position)) {
+    for (const row of this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position)) {
       verifier.adopt(signedEntry.decode(JSON.parse(row.entry)).fields);
     }
     this.#verifiers.set(key, verifier);
@@ -630,16 +632,14 @@ export class Engine {
   }
 
   #latestFromPeer(agent: AgentContext, local: SessionRow): number {
-    const rows = this.#store.unreadEntries(agent.signer.id, local.session_id, local.delivered_through);
-    return rows.length > 0 ? (rows[rows.length - 1] as EntryRow).position as number : 0;
+    return this.#store.unreadBounds(agent.signer.id, local.session_id, local.delivered_through)?.last ?? 0;
   }
 
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
   async #deliver(agent: AgentContext, local: SessionRow): Promise<void> {
     const through = this.#latestFromPeer(agent, local);
     if (through <= local.delivered_through) return;
-    const row = this.#store.verifiedEntries(agent.signer.id, local.session_id, through).at(-1) as EntryRow;
-    const ack = signedAck.decode(JSON.parse(row.ack as string)).fields;
+    const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
     const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
     await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
@@ -682,8 +682,8 @@ export class Engine {
     if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", `this message is ${bodyBytes.length} bytes, over the limit of about 1 MB`);
 
     const verifier = this.#verifier(agent, local);
-    const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
-    const readPosition = unread.length > 0 ? (unread[0] as EntryRow).position as number - 1 : verifier.position;
+    const unread = this.#store.unreadBounds(agent.signer.id, local.session_id, local.read_position);
+    const readPosition = unread ? unread.first - 1 : verifier.position;
     const readRoot = verifier.rootAt(readPosition);
     if (!readRoot) throw new Error(`no root is held for position ${readPosition}`);
 
@@ -740,7 +740,7 @@ export class Engine {
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
       if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
-      if (!notice && this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position).length > 0) {
+      if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {
         throw new LocalError("session_not_current", "a message has arrived that you haven't read. Nothing was sent. Call receive, then decide what to say.");
       }
       if (this.#store.pendingEntries(agent.signer.id, local.session_id).length > 0) {
@@ -875,9 +875,18 @@ export class Engine {
     const sessions = sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id);
     const messages: unknown[] = [];
     const reads: { sessionId: Uint8Array; through: number }[] = [];
+    let room = MAX_REPLY_BYTES;
+    let more = false;
     for (const local of sessions) {
-      const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
+      if (room <= 0) {
+        more ||= this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0;
+        continue;
+      }
+      const page = this.#store.unreadPage(agent.signer.id, local.session_id, local.read_position, room);
+      const unread = page.rows;
+      more ||= page.more;
       for (const row of unread) {
+        room -= row.body.length;
         const body = parseBody(row.body);
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
         messages.push({
@@ -894,7 +903,7 @@ export class Engine {
     }
     const notices = this.#store.notices(agent.signer.id);
     return {
-      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })) },
+      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -925,7 +934,7 @@ export class Engine {
         with_id: toHex(s.counterparty_id),
         state: s.state,
         position: s.verified_position,
-        unread: this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length,
+        unread: this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position),
         own_closed: s.own_closed === 1,
         peer_closed: s.peer_closed === 1,
         fault: s.fault,
@@ -937,17 +946,18 @@ export class Engine {
   inbox(agentHex: string): unknown {
     const agent = this.#requireAgent(agentHex);
     const waiting = this.#store.sessionsOf(agent.signer.id).flatMap((s) => {
-      const unread = this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length;
+      const unread = this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position);
       return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread }] : [];
     });
     return { waiting, notices: this.#store.notices(agent.signer.id).length };
   }
 
   // Everything this agent holds of a conversation, its own messages included, in the order the server set.
-  transcript(agentHex: string, sessionHex: string): unknown {
+  transcript(agentHex: string, sessionHex: string, after = 0): unknown {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
-    const entries = this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => {
+    const page = this.#store.recordPage(agent.signer.id, local.session_id, after, local.verified_position, MAX_REPLY_BYTES);
+    const entries = page.rows.map((row) => {
       const body = parseBody(row.body);
       const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
       return {
@@ -960,12 +970,12 @@ export class Engine {
         ...(!closing && !body ? { unreadable: true } : {}),
       };
     });
-    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries };
+    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
   }
 
   unreadCount(agentHex: string): number {
     const agent = this.#requireAgent(agentHex);
-    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length, 0);
+    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position), 0);
     return messages + this.#store.notices(agent.signer.id).length;
   }
 
@@ -973,7 +983,7 @@ export class Engine {
   async verifySession(agentHex: string, sessionHex: string): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
-    const items: WitnessedEntry[] = this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => {
+    const items: WitnessedEntry[] = this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position).map((row) => {
       const entry = signedEntry.decode(JSON.parse(row.entry));
       const ack = signedAck.decode(JSON.parse(row.ack as string));
       return { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };

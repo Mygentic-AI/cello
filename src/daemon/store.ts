@@ -236,8 +236,50 @@ export class Store {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position <= ? ORDER BY position").all([agentId, sessionId, throughPosition]) as unknown as EntryRow[];
   }
 
-  unreadEntries(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): EntryRow[] {
-    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? ORDER BY position").all([agentId, sessionId, readPosition]) as unknown as EntryRow[];
+  // The rest of these leave the message bodies on disk. They run for every message, and the reads are synchronous,
+  // so loading a long history here stops every other agent on this daemon until it's done.
+  unreadCount(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number {
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { c: number }).c;
+  }
+
+  unreadBounds(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): { first: number; last: number } | undefined {
+    const row = this.#prep("SELECT min(position) AS first, max(position) AS last FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { first: number | null; last: number | null };
+    return row.first === null || row.last === null ? undefined : { first: row.first, last: row.last };
+  }
+
+  ackAt(agentId: Uint8Array, sessionId: Uint8Array, position: number): string | null | undefined {
+    return (this.#prep("SELECT ack FROM entries WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) as { ack: string | null } | undefined)?.ack;
+  }
+
+  signedRecord(agentId: Uint8Array, sessionId: Uint8Array, throughPosition: number): Pick<EntryRow, "entry" | "ack" | "position">[] {
+    return this.#prep("SELECT entry, ack, position FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position <= ? ORDER BY position").all([agentId, sessionId, throughPosition]) as unknown as Pick<EntryRow, "entry" | "ack" | "position">[];
+  }
+
+  // The last position that fits in maxBytes of bodies, and at least the first. Sizes come from the row header, not the body.
+  #pageEnd(where: string, params: unknown[], maxBytes: number): { through: number; more: boolean } | undefined {
+    const sizes = this.#prep(`SELECT position, length(body) AS size FROM entries WHERE ${where} ORDER BY position`).all(params) as { position: number; size: number }[];
+    let used = 0;
+    let through: number | undefined;
+    for (const row of sizes) {
+      used += row.size;
+      if (through !== undefined && used > maxBytes) return { through, more: true };
+      through = row.position;
+    }
+    return through === undefined ? undefined : { through, more: false };
+  }
+
+  unreadPage(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number, maxBytes: number): { rows: EntryRow[]; more: boolean } {
+    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND state = 'received' AND position > ?", [agentId, sessionId, readPosition], maxBytes);
+    if (!end) return { rows: [], more: false };
+    const rows = this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position <= ? ORDER BY position").all([agentId, sessionId, readPosition, end.through]) as unknown as EntryRow[];
+    return { rows, more: end.more };
+  }
+
+  recordPage(agentId: Uint8Array, sessionId: Uint8Array, after: number, throughPosition: number, maxBytes: number): { rows: EntryRow[]; more: boolean } {
+    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND position IS NOT NULL AND position > ? AND position <= ?", [agentId, sessionId, after, throughPosition], maxBytes);
+    if (!end) return { rows: [], more: false };
+    const rows = this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position > ? AND position <= ? ORDER BY position").all([agentId, sessionId, after, end.through]) as unknown as EntryRow[];
+    return { rows, more: end.more };
   }
 
   addNotice(agentId: Uint8Array, sessionId: Uint8Array | null, text: string): void {

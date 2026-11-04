@@ -198,7 +198,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "inbox":
       return engine.inbox(engine.resolveAgent(text(params, "agent")));
     case "transcript":
-      return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+      return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "shutdown":
