@@ -24,6 +24,8 @@ node live/speed.ts --server wss://host/v1 --gentle                         # a s
 
 Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree. Don't aim it without `--gentle` at a server others use.
 
+**The screening tests.** `live/screening.live.ts` is one of the scripted tests, on the deterministic screener: hostile text in a tail, a queue through a daemon kill, a real worker crash, the person-only setting, and a database moved to a new home. `live/screening-model.live.ts` is short and run by hand with the model: one long message, to show the main thread doesn't stall. Set `MODEL_SOURCE` to a folder holding `screener/` and `screener-runtime/`, which it clones and never changes. Big test messages are prose, because the outbound screen redacts hash-like text, so a hash-heavy load has to come from a sender that doesn't run it.
+
 **The real-session test.** Two real Claude Code sessions through the server on the test instance, on the cheapest model. It's the only proof that a doorbell wakes a session. One run costs about 40 model turns.
 
 ```

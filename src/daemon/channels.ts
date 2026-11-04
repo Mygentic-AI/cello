@@ -37,18 +37,14 @@ import { type PublicIdentity, type Signer, generateIdentitySeeds, signerFromSeed
 import { mlKemGenerateSeed, mlKemKeypairFromSeed } from "../protocol/ml-kem.ts";
 import { ChannelPosting, ChannelVisibility, type ChannelInfoFields, type ChannelPostFields, channelPostBytes } from "../protocol/structures.ts";
 import { type PushFrame, type WireSigned, fromB64, identityCodec, toB64 } from "../protocol/wire.ts";
-import { screenForContext } from "./channel-screen.ts";
+import type { InboundVerdict } from "../screener/inbound.ts";
 import { ChannelStore, type FollowRow, type PostRow, type Verdict } from "./channel-store.ts";
 import { type Doorbell, LocalError } from "./engine.ts";
 import { ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
+import { type SettingName, currentSetting } from "./settings.ts";
 import type { Store } from "./store.ts";
 
-// Settings live in the database with everything else, so moving the database and its key moves them too.
-// Each default is written there on first start. lost_wait_seconds: ruled that a post really gone is told to reader
-// and publisher and the reader moves on, and this is how long a reader waits first.
-const SETTING_DEFAULTS = { channel_check_seconds: 30, channel_lost_wait_seconds: 3600, channel_default_retention_days: 7 } as const;
-type Setting = keyof typeof SETTING_DEFAULTS;
 const MAX_PAGES_PER_COLLECT = 20;
 const READ_ROWS = 50;
 const MAX_REPLY_BYTES = 8_000_000;
@@ -64,7 +60,13 @@ export interface ChannelHost {
   call(method: string, params: unknown): Promise<unknown>;
   serverIdentity(): PublicIdentity;
   ring(agentHex: string, bell: Doorbell): void;
+  // Waits for its turn in the one screening queue. Always answers: a screen that keeps failing answers blocked.
+  screen(agentHex: string, scope: string, position: number, senderHex: string, text: Uint8Array): Promise<InboundVerdict>;
+  screenOutbound(agentHex: string, text: string): Promise<{ text: string; report: Record<string, unknown> }>;
 }
+
+type ScreenPart = "title" | "body";
+interface ScreenDetail { delivered: string | null; findings: InboundVerdict["findings"]; reason: string | null; score: number | null; ran: InboundVerdict["ran"] }
 
 function parseChannel(value: string, name = "channel_id"): Uint8Array {
   if (value.length !== 64 || !/^[0-9a-fA-F]+$/.test(value)) throw new LocalError("bad_argument", `${name} must be 64 hex characters`);
@@ -101,21 +103,18 @@ export class Channels {
   readonly #queues = new Map<string, Promise<unknown>>();
   readonly #records = new Map<string, ChannelRecord>();
   readonly #pendingSeen = new Map<string, number>();
+  readonly #screening = new Map<string, Promise<void>>();
+  readonly #arrivalRunning = new Set<string>();
   #timer: NodeJS.Timeout | undefined;
 
   constructor(store: Store, host: ChannelHost) {
     this.#store = store;
     this.#db = new ChannelStore(store);
     this.#host = host;
-    for (const [name, value] of Object.entries(SETTING_DEFAULTS)) {
-      if (store.getConfig(name) === undefined) store.setConfig(name, String(value));
-    }
   }
 
-  #setting(name: Setting): number {
-    const value = Number(this.#store.getConfig(name));
-    if (!(value > 0)) throw new Error(`the setting ${name} in this database isn't a positive number`);
-    return value;
+  #setting(name: SettingName): number {
+    return currentSetting(this.#store, name);
   }
 
   // Read again for each wait, so a change takes effect with no restart.
@@ -128,23 +127,16 @@ export class Channels {
     this.#timer.unref();
   }
 
+  settingsChanged(): void {
+    this.#schedule();
+  }
+
   start(): void {
     this.#schedule();
   }
 
   stop(): void {
     clearTimeout(this.#timer);
-  }
-
-  config(changes: Record<string, unknown>): unknown {
-    for (const name of Object.keys(SETTING_DEFAULTS) as Setting[]) {
-      const value = changes[name];
-      if (value === undefined) continue;
-      if (typeof value !== "number" || !(value > 0)) throw new LocalError("bad_argument", `${name} must be a positive number`);
-      this.#store.setConfig(name, String(value));
-    }
-    this.#schedule();
-    return Object.fromEntries((Object.keys(SETTING_DEFAULTS) as Setting[]).map((name) => [name, this.#setting(name)]));
   }
 
   #background(what: string, work: Promise<unknown>): void {
@@ -472,8 +464,12 @@ export class Channels {
 
   async post(agentHex: string, channelHex: string, text: string, title: string | undefined): Promise<unknown> {
     const channel = parseChannel(channelHex);
-    const bodyBytes = ENC.encode(text);
-    const titleBytes = ENC.encode(title ?? "");
+    // Outside the channel's queue, so a slow screen doesn't hold up what's arriving.
+    const screenedBody = await this.#host.screenOutbound(agentHex, text);
+    const screenedTitle = title === undefined ? undefined : await this.#host.screenOutbound(agentHex, title);
+    const report = { ...screenedTitle?.report, ...screenedBody.report };
+    const bodyBytes = ENC.encode(screenedBody.text);
+    const titleBytes = ENC.encode(screenedTitle?.text ?? "");
     const signer = this.#host.signer(agentHex);
     return this.#serial(agentHex, channelHex, async () => {
       const follow = this.#requireFollow(signer.id, channel);
@@ -485,7 +481,7 @@ export class Channels {
       const seq = this.#db.nextAuthorSeq(signer.id, channel);
       const wire = await this.#signPost(signer, channel, info.generation, seq, key, titleBytes, bodyBytes);
       this.#db.addLog(signer.id, channel, seq, titleBytes, bodyBytes, wire);
-      return this.#sendLogged(agentHex, channel, seq, wire, titleBytes, bodyBytes, true);
+      return { ...await this.#sendLogged(agentHex, channel, seq, wire, titleBytes, bodyBytes, true) as object, ...report };
     });
   }
 
@@ -608,6 +604,7 @@ export class Channels {
         this.#tellLost(agentHex, channel, tip.lost);
         await this.#resendWaiting(agentHex, channel);
         if (this.#db.owned(channel)) await this.#adminCheck(agentHex, channel);
+        this.#screenArrivals(agentHex, channel);
         if (follow.delivery === "follow" && (tip.tip > follow.high || this.#db.gaps(signer.id, channel).some((gap) => gap.state === "missing") || this.#db.highestKey(signer.id, channel) < tip.generation)) {
           await this.#collect(agentHex, channel);
         }
@@ -681,7 +678,6 @@ export class Channels {
     const isPrivate = record.fields.visibility === ChannelVisibility.private;
     if (isPrivate) await this.#refreshKeys(agentHex, channel);
     let want = this.#db.gaps(signer.id, channel).filter((gap) => gap.state === "missing").map((gap) => gap.position);
-    let fresh = 0;
     let screenedKeyAgain = false;
     for (let page = 0; page < MAX_PAGES_PER_COLLECT; page++) {
       const current = this.#requireFollow(signer.id, channel);
@@ -722,7 +718,7 @@ export class Channels {
       let high = after.high;
       for (const item of reply.items) {
         if (!this.#db.hasPost(signer.id, channel, item.position)) {
-          if (await this.#ingest(agentHex, after, record, info, item)) fresh += 1;
+          await this.#ingest(agentHex, after, record, info, item);
         }
         high = Math.max(high, item.position);
       }
@@ -731,7 +727,7 @@ export class Channels {
       if (!reply.more) break;
     }
     await this.#advance(agentHex, channel, channelHex);
-    if (fresh > 0) this.#host.ring(agentHex, { type: "channel_post", agent: agentHex, channel_id: channelHex });
+    this.#screenArrivals(agentHex, channel);
   }
 
   // Everything that could have been forged or replayed is checked here. A refused post counts as delivered, so it can't stall a channel.
@@ -774,48 +770,92 @@ export class Channels {
       this.#db.addNotice(agent, channel, `Post number ${item.position} couldn't be opened: this agent doesn't hold its key.`);
       return false;
     }
-    const titleVerdict: Verdict = own ? "clean" : "pending";
-    this.#db.insertPost(agent, channel, { ...base, title, body, state: own ? "read" : "unread", title_verdict: titleVerdict, body_verdict: titleVerdict });
-    if (!own) await this.#screenOnArrival(agentHex, follow, item.position);
+    const initial: Verdict = own ? "allow" : "pending";
+    this.#db.insertPost(agent, channel, { ...base, title, body, state: own ? "read" : "unread", title_verdict: initial, body_verdict: initial });
     return !own;
   }
 
-  // Titles on arrival, and bodies too if this reader chose that for this channel. A screener that's unavailable holds the post, and it's tried again at read.
-  async #screenOnArrival(agentHex: string, follow: FollowRow, position: number): Promise<void> {
-    const row = this.#db.post(follow.agent_id, follow.channel_id, position);
-    if (!row) return;
-    try {
-      const verdicts = await this.#forContext(agentHex, follow, row, follow.screen_bodies === "arrival");
-      if (verdicts.title === "blocked" || verdicts.body === "blocked") this.#db.addNotice(follow.agent_id, follow.channel_id, `Post ${position} was blocked by your screen.`);
-    } catch (err: unknown) {
-      if (!(err instanceof LocalError)) throw err;
-      logEvent("channel.screen_waiting", { channel: toHex(follow.channel_id), position, code: err.code });
-    }
+  // THE point where channel text is screened before it can reach an agent. Every verdict is written here, and nothing
+  // leaves this file for an agent without one: see #shown. A post is screened once, however many ways it's asked for.
+  #forContext(agentHex: string, agent: Uint8Array, channel: Uint8Array, row: PostRow, part: ScreenPart): Promise<void> {
+    const verdictNow = part === "title" ? row.title_verdict : row.body_verdict;
+    if (verdictNow !== "pending") return Promise.resolve();
+    const channelHex = toHex(channel);
+    const key = `${agentHex}${channelHex}${row.position}${part}`;
+    const running = this.#screening.get(key);
+    if (running) return running;
+    const text = part === "title" ? row.title : row.body;
+    const work = (text && text.length > 0 && row.author_id
+      // Titles and bodies queue apart, so a long body can't hold up the titles that come after it.
+      ? this.#host.screen(agentHex, `${channelHex}:${part}`, row.position, toHex(row.author_id), text)
+      : Promise.resolve<InboundVerdict>({ verdict: "allow", delivered: null, findings: [], reason: null, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } })
+    ).then((verdict) => {
+      const detail: ScreenDetail = { delivered: verdict.delivered, findings: verdict.findings, reason: verdict.reason, score: verdict.score, ran: verdict.ran };
+      this.#db.setVerdict(agent, channel, row.position, part, verdict.verdict, JSON.stringify(detail));
+      logEvent("channel.screen.verdict", { channel: channelHex, position: row.position, part, verdict: verdict.verdict, findings: verdict.findings.map((finding) => finding.what) });
+      if (verdict.verdict !== "blocked") return;
+      // Blocked counts as delivered, and the position never waits on a verdict, so it can't stall the channel.
+      this.#db.blockPost(agent, channel, row.position);
+      this.#db.addNotice(agent, channel, `Post ${row.position} was blocked by your screen: ${verdict.reason ?? "no reason given"}.`);
+      logEvent("channel.screen.blocked", { channel: channelHex, position: row.position, agent: agentHex });
+      this.#host.ring(agentHex, { type: "channel_notice", agent: agentHex, channel_id: channelHex });
+    }).finally(() => this.#screening.delete(key));
+    this.#screening.set(key, work);
+    return work;
   }
 
-  // THE point where channel text is screened before it can reach an agent. Nothing goes to an agent except through here.
-  // Returns the row's verdicts, and records them, so a post is screened once however it's read.
-  async #forContext(agentHex: string, follow: FollowRow, row: PostRow, includeBody: boolean): Promise<{ title: Verdict; body: Verdict; reason: string | null }> {
-    let title = row.title_verdict;
-    let body = row.body_verdict;
-    let reason: string | null = null;
-    if (title === "pending" && row.title) {
-      const verdict = await screenForContext(DEC.decode(row.title));
-      title = verdict.verdict === "clean" ? "clean" : "blocked";
-      if (verdict.verdict === "blocked") reason = verdict.reason;
-    }
-    if (includeBody && title !== "blocked" && body === "pending" && row.body) {
-      const verdict = await screenForContext(DEC.decode(row.body));
-      body = verdict.verdict === "clean" ? "clean" : "blocked";
-      if (verdict.verdict === "blocked") reason = verdict.reason;
-    }
-    if (title === "blocked" || body === "blocked") {
-      this.#db.blockPost(follow.agent_id, follow.channel_id, row.position, title, body);
-      logEvent("channel.screen.blocked", { channel: toHex(follow.channel_id), position: row.position, agent: agentHex });
-    } else if (title !== row.title_verdict || body !== row.body_verdict) {
-      this.#db.setVerdicts(follow.agent_id, follow.channel_id, row.position, title, body);
-    }
-    return { title, body, reason };
+  // Titles on arrival, and bodies too if this reader chose that for this channel. The doorbell rings after the verdicts,
+  // so whoever it wakes finds them. Runs apart from the channel's queue, so a slow screen doesn't hold up a post or a fetch.
+  #screenArrivals(agentHex: string, channel: Uint8Array): void {
+    const key = agentHex + toHex(channel);
+    if (this.#arrivalRunning.has(key)) return;
+    this.#arrivalRunning.add(key);
+    const agent = this.#host.signer(agentHex).id;
+    this.#background("arrival screen", (async () => {
+      let screened = false;
+      for (;;) {
+        const bodiesToo = this.#db.follow(agent, channel)?.screen_bodies === "arrival";
+        const rows = this.#db.needingArrivalScreen(agent, channel, bodiesToo, READ_ROWS);
+        if (rows.length === 0) break;
+        screened = true;
+        await Promise.all(rows.flatMap((row) => [this.#forContext(agentHex, agent, channel, row, "title"), ...(bodiesToo ? [this.#forContext(agentHex, agent, channel, row, "body")] : [])]));
+      }
+      if (screened && this.#db.unreadCount(agent, channel) > 0) this.#host.ring(agentHex, { type: "channel_post", agent: agentHex, channel_id: toHex(channel) });
+    })().finally(() => this.#arrivalRunning.delete(key)));
+  }
+
+  // Asks for what these rows still need, and waits as long as the setting says. What isn't ready by then carries on,
+  // and rings when it's done. Answers false if it ran out of time.
+  async #awaitScreens(agentHex: string, agent: Uint8Array, channel: Uint8Array, rows: readonly PostRow[], includeBody: boolean): Promise<boolean> {
+    const screens = Promise.all(rows.flatMap((row) => [this.#forContext(agentHex, agent, channel, row, "title"), ...(includeBody ? [this.#forContext(agentHex, agent, channel, row, "body")] : [])]));
+    let timer: NodeJS.Timeout | undefined;
+    const finished = await Promise.race([
+      screens.then(() => true),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), this.#setting("channel_read_wait_seconds") * 1000); }),
+    ]);
+    clearTimeout(timer);
+    if (!finished) this.#background("late screen", screens.then(() => this.#host.ring(agentHex, { type: "channel_post", agent: agentHex, channel_id: toHex(channel) })));
+    return finished;
+  }
+
+  // The only way channel text leaves for an agent: with its verdict, as the screen says to deliver it. Null means no verdict yet.
+  #shown(row: PostRow, includeBody: boolean): Record<string, unknown> | null {
+    if (row.title_verdict === "pending" || (includeBody && row.body_verdict === "pending")) return null;
+    const detail = (raw: string | null | undefined): ScreenDetail | null => (raw ? JSON.parse(raw) as ScreenDetail : null);
+    const titleDetail = detail(row.title_detail);
+    const bodyDetail = detail(row.body_detail);
+    const flagged = row.title_verdict === "flagged" || (includeBody && row.body_verdict === "flagged");
+    const findings = [...(titleDetail?.findings ?? []), ...(includeBody ? bodyDetail?.findings ?? [] : [])];
+    return {
+      position: row.position,
+      from_id: row.author_id ? toHex(row.author_id) : null,
+      from_name: row.author_name,
+      published_at: row.published_at,
+      generation: row.generation,
+      title: titleDetail?.delivered ?? (row.title ? DEC.decode(row.title) : ""),
+      ...(includeBody ? { text: bodyDetail?.delivered ?? (row.body ? DEC.decode(row.body) : "") } : {}),
+      screening: { verdict: flagged ? "flagged" : "allow", findings },
+    };
   }
 
   // Only three things move a position: a held post, a signed first-held position above it, or a post given up on after a wait.
@@ -934,32 +974,34 @@ export class Channels {
     const agent = this.#host.signer(agentHex).id;
     const channel = parseChannel(channelHex);
     const follow = this.#requireFollow(agent, channel);
-    const rows = this.#db.unread(agent, channel, READ_ROWS);
-    const posts: unknown[] = [];
-    const blocked: unknown[] = [];
+    const asked = this.#db.unread(agent, channel, READ_ROWS);
+    await this.#awaitScreens(agentHex, agent, channel, asked.filter((row) => row.state === "unread"), !titlesOnly);
+    const posts: Record<string, unknown>[] = [];
     const unopenable: number[] = [];
+    const stillScreening: number[] = [];
     const read: number[] = [];
     let size = 0;
-    let more = rows.length === READ_ROWS;
-    for (const row of rows) {
-      if (row.state === "unopenable") {
-        unopenable.push(row.position);
-        read.push(row.position);
+    let more = asked.length === READ_ROWS;
+    for (const was of asked) {
+      if (was.state === "unopenable") {
+        unopenable.push(was.position);
+        read.push(was.position);
         continue;
       }
-      const verdicts = await this.#forContext(agentHex, follow, row, !titlesOnly);
-      if (verdicts.title === "blocked" || verdicts.body === "blocked") {
-        blocked.push({ position: row.position, from_id: row.author_id ? toHex(row.author_id) : null, message: `Post ${row.position} was blocked by your screen.`, reason: verdicts.reason });
+      // Read again, because the screen has just written its verdicts. A blocked post is named in the notices below.
+      const row = this.#db.post(agent, channel, was.position);
+      if (!row || row.state === "blocked") continue;
+      const shown = this.#shown(row, !titlesOnly);
+      if (!shown) {
+        stillScreening.push(row.position);
         continue;
       }
-      const title = row.title ? DEC.decode(row.title) : "";
-      const text = titlesOnly || !row.body ? undefined : DEC.decode(row.body);
-      size += title.length + (text?.length ?? 0);
+      size += String(shown["title"]).length + String(shown["text"] ?? "").length;
       if (posts.length > 0 && size > MAX_REPLY_BYTES) {
         more = true;
         break;
       }
-      posts.push({ position: row.position, from_id: row.author_id ? toHex(row.author_id) : null, from_name: row.author_name, published_at: row.published_at, generation: row.generation, title, ...(text === undefined ? {} : { text }) });
+      posts.push(shown);
       read.push(row.position);
     }
     const notices = this.#db.notices(agent, channel);
@@ -968,8 +1010,8 @@ export class Channels {
       result: {
         channel_id: channelHex,
         posts,
-        blocked,
         could_not_open: unopenable,
+        still_screening: stillScreening,
         position: follow.position,
         missing: gaps.filter((gap) => gap.state === "missing").map((gap) => gap.position),
         lost: gaps.filter((gap) => gap.state === "lost").map((gap) => gap.position),
@@ -989,32 +1031,33 @@ export class Channels {
   async history(agentHex: string, channelHex: string, after: number): Promise<unknown> {
     const agent = this.#host.signer(agentHex).id;
     const channel = parseChannel(channelHex);
-    const follow = this.#requireFollow(agent, channel);
-    const rows = this.#db.history(agent, channel, after, READ_ROWS);
-    const posts = [];
+    this.#requireFollow(agent, channel);
+    const asked = this.#db.history(agent, channel, after, READ_ROWS);
+    await this.#awaitScreens(agentHex, agent, channel, asked.filter((row) => row.state !== "blocked"), true);
+    const posts: unknown[] = [];
+    const stillScreening: number[] = [];
     let size = 0;
-    let more = rows.length === READ_ROWS;
-    for (const row of rows) {
+    let more = asked.length === READ_ROWS;
+    for (const was of asked) {
+      const row = this.#db.post(agent, channel, was.position);
+      if (!row) continue;
       if (row.state === "blocked") {
         posts.push({ position: row.position, from_id: row.author_id ? toHex(row.author_id) : null, blocked: true });
         continue;
       }
-      const verdicts = await this.#forContext(agentHex, follow, row, true);
-      if (verdicts.title === "blocked" || verdicts.body === "blocked") {
-        posts.push({ position: row.position, from_id: row.author_id ? toHex(row.author_id) : null, blocked: true });
+      const shown = this.#shown(row, true);
+      if (!shown) {
+        stillScreening.push(row.position);
         continue;
       }
-      const title = row.title ? DEC.decode(row.title) : "";
-      const text = row.body ? DEC.decode(row.body) : "";
-      size += title.length + text.length;
+      size += String(shown["title"]).length + String(shown["text"]).length;
       if (posts.length > 0 && size > MAX_REPLY_BYTES) {
         more = true;
         break;
       }
-      const own = row.author_id !== null && equalBytes(row.author_id, agent);
-      posts.push({ position: row.position, from_id: row.author_id ? toHex(row.author_id) : null, from_name: row.author_name, own, published_at: row.published_at, title, text });
+      posts.push({ ...shown, own: row.author_id !== null && equalBytes(row.author_id, agent) });
     }
-    return { channel_id: channelHex, posts, more };
+    return { channel_id: channelHex, posts, still_screening: stillScreening, more };
   }
 }
 

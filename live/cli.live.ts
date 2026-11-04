@@ -103,7 +103,7 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   assert.deepEqual(ok(["send", session, "-", "--over", "--agent", "Gail"], "--hello from a pipe"), { sent: true, position: 1 });
 
   // The inbox says who wrote, with no text, and looking doesn't count as reading.
-  await until("the message to reach Hugo", () => ((ok(["inbox", "--agent", "Hugo"]) as { waiting: unknown[] }).waiting.length === 1));
+  await until("the message to reach Hugo", () => (ok(["inbox", "--agent", "Hugo"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   const inbox = ok(["inbox", "--agent", "Hugo"]) as { waiting: { from_id: string; unread: number }[] };
   assert.deepEqual(inbox.waiting.map((w) => [w.from_id, w.unread]), [[gail["agent_id"], 1]]);
   assert.doesNotMatch(JSON.stringify(inbox), /hello from a pipe/);
@@ -265,10 +265,10 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
 
   // Positions 1 to 3 reach Kit, and he confirms them by machine, not by reading.
   ok(["send", session, secret, "--over", "--agent", "Jan"]);
-  await until("Kit's copy", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: unknown[] }).waiting.length === 1);
+  await until("Kit's copy", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   okIn(kitHome, ["receive", "--agent", "Kit"]);
   okIn(kitHome, ["send", session, "understood", "--over", "--agent", "Kit"]);
-  await until("Jan's copy", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: unknown[] }).waiting.length === 1);
+  await until("Jan's copy", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   ok(["receive", "--agent", "Jan"]);
   ok(["send", session, "third", "--over", "--agent", "Jan"]);
   const hexSession = `\\x${session}`;
@@ -364,11 +364,11 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
 
   // Kit comes back. Closing seals each side's copy by itself, and the second closer's seal says it has closed.
   okIn(kitHome, ["login", "--server", url]);
-  await until("Kit's catch-up", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: unknown[] }).waiting.length === 1);
+  await until("Kit's catch-up", () => (okIn(kitHome, ["inbox", "--agent", "Kit"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   okIn(kitHome, ["receive", "--agent", "Kit"]);
   const kitClosed = okIn(kitHome, ["close-session", session, "--agent", "Kit"]) as { seal: SealOutput };
   assert.deepEqual([kitClosed.seal.sealed, kitClosed.seal.session_closed, kitClosed.seal.witnessed_through], [true, false, 5]);
-  await until("Jan's copy of the close", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: unknown[] }).waiting.length === 1);
+  await until("Jan's copy of the close", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   ok(["receive", "--agent", "Jan"]);
   const janClosed = ok(["close-session", session, "--agent", "Jan"]) as { state: string; seal: SealOutput };
   assert.equal(janClosed.state, "closed");

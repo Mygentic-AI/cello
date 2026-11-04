@@ -69,8 +69,11 @@ CREATE TABLE IF NOT EXISTS channel_posts (
   title         BLOB,
   body          BLOB,
   state         TEXT NOT NULL CHECK (state IN ('unread', 'read', 'blocked', 'unopenable', 'refused')),
-  title_verdict TEXT NOT NULL DEFAULT 'pending' CHECK (title_verdict IN ('pending', 'clean', 'blocked')),
-  body_verdict  TEXT NOT NULL DEFAULT 'pending' CHECK (body_verdict IN ('pending', 'clean', 'blocked')),
+  title_verdict TEXT NOT NULL DEFAULT 'pending' CHECK (title_verdict IN ('pending', 'allow', 'flagged', 'blocked')),
+  body_verdict  TEXT NOT NULL DEFAULT 'pending' CHECK (body_verdict IN ('pending', 'allow', 'flagged', 'blocked')),
+  -- What the screen found and what the agent reads, which isn't always the text as posted.
+  title_detail  TEXT,
+  body_detail   TEXT,
   PRIMARY KEY (agent_id, channel_id, position)
 );
 CREATE INDEX IF NOT EXISTS channel_posts_state ON channel_posts(agent_id, channel_id, state, position);
@@ -140,7 +143,7 @@ export interface FollowRow {
   roster_revision: number;
   roster_hash: Uint8Array | null;
 }
-export type Verdict = "pending" | "clean" | "blocked";
+export type Verdict = "pending" | "allow" | "flagged" | "blocked";
 export interface PostRow {
   position: number;
   author_id: Uint8Array | null;
@@ -153,6 +156,8 @@ export interface PostRow {
   state: "unread" | "read" | "blocked" | "unopenable" | "refused";
   title_verdict: Verdict;
   body_verdict: Verdict;
+  title_detail?: string | null;
+  body_detail?: string | null;
 }
 export interface GapRow { position: number; first_seen: number; state: "missing" | "lost" }
 export interface LogRow { author_seq: number; title: Uint8Array | null; body: Uint8Array | null; wire: string; position: number | null }
@@ -278,21 +283,26 @@ export class ChannelStore {
     return this.#db.all("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND position > ? AND state IN ('unread', 'read', 'blocked') ORDER BY position LIMIT ?", [agent, channel, after, limit]) as PostRow[];
   }
 
-  pendingVerdicts(agent: Uint8Array, channel: Uint8Array, limit: number): PostRow[] {
-    return this.#db.all("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state = 'unread' AND title_verdict = 'pending' ORDER BY position LIMIT ?", [agent, channel, limit]) as PostRow[];
+  // What's waiting for the arrival screen, read from here so a restart picks it up again.
+  needingArrivalScreen(agent: Uint8Array, channel: Uint8Array, bodiesToo: boolean, limit: number): PostRow[] {
+    return this.#db.all(
+      "SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state = 'unread' AND (title_verdict = 'pending' OR (? = 1 AND body_verdict = 'pending')) ORDER BY position LIMIT ?",
+      [agent, channel, bodiesToo ? 1 : 0, limit],
+    ) as PostRow[];
   }
 
   unreadCount(agent: Uint8Array, channel: Uint8Array): number {
     return (this.#db.get("SELECT count(*) AS c FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state = 'unread'", [agent, channel]) as { c: number }).c;
   }
 
-  setVerdicts(agent: Uint8Array, channel: Uint8Array, position: number, title: Verdict, body: Verdict): void {
-    this.#db.run("UPDATE channel_posts SET title_verdict = ?, body_verdict = ? WHERE agent_id = ? AND channel_id = ? AND position = ?", [title, body, agent, channel, position]);
+  setVerdict(agent: Uint8Array, channel: Uint8Array, position: number, part: "title" | "body", verdict: Verdict, detail: string): void {
+    const columns = part === "title" ? "title_verdict = ?, title_detail = ?" : "body_verdict = ?, body_detail = ?";
+    this.#db.run(`UPDATE channel_posts SET ${columns} WHERE agent_id = ? AND channel_id = ? AND position = ?`, [verdict, detail, agent, channel, position]);
   }
 
   // A blocked post's text has no further use on this machine, and it counts as delivered.
-  blockPost(agent: Uint8Array, channel: Uint8Array, position: number, title: Verdict, body: Verdict): void {
-    this.#db.run("UPDATE channel_posts SET state = 'blocked', title = NULL, body = NULL, title_verdict = ?, body_verdict = ? WHERE agent_id = ? AND channel_id = ? AND position = ?", [title, body, agent, channel, position]);
+  blockPost(agent: Uint8Array, channel: Uint8Array, position: number): void {
+    this.#db.run("UPDATE channel_posts SET state = 'blocked', title = NULL, body = NULL, title_detail = NULL, body_detail = NULL WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]);
   }
 
   markRead(agent: Uint8Array, channel: Uint8Array, positions: readonly number[]): void {

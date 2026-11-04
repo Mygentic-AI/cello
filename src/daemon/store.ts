@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   own_closed        INTEGER NOT NULL DEFAULT 0,
   peer_closed       INTEGER NOT NULL DEFAULT 0,
   fault             TEXT,
+  acked_screened    INTEGER NOT NULL DEFAULT 0,
+  peer_screened_through INTEGER NOT NULL DEFAULT 0,
+  peer_eta_told     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (agent_id, session_id)
 );
 
@@ -54,6 +57,9 @@ CREATE TABLE IF NOT EXISTS entries (
   ack         TEXT,
   ciphertext  BLOB,
   body        BLOB NOT NULL,
+  -- Null means not screened yet, and such a message is never delivered. It's set once, by the screen, never by arrival.
+  verdict     TEXT CHECK (verdict IN ('allow', 'flagged', 'blocked')),
+  verdict_detail TEXT,
   UNIQUE (agent_id, session_id, position),
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
@@ -85,6 +91,25 @@ CREATE TABLE IF NOT EXISTS seal_wants (
   through    INTEGER NOT NULL,
   PRIMARY KEY (agent_id, session_id, through),
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
+-- What a person chose for one sender. The subject is the sender's agent id. A tier rule would be scope 'tier', ranked below this.
+CREATE TABLE IF NOT EXISTS screening_rules (
+  agent_id BLOB NOT NULL REFERENCES agents(agent_id),
+  scope    TEXT NOT NULL CHECK (scope IN ('sender', 'tier')),
+  subject  TEXT NOT NULL,
+  level    TEXT NOT NULL CHECK (level IN ('full', 'deterministic', 'off')),
+  set_at   INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, scope, subject)
+);
+
+-- Every change, so a weakening shows afterwards, whoever made it.
+CREATE TABLE IF NOT EXISTS screening_changes (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id BLOB NOT NULL REFERENCES agents(agent_id),
+  subject  TEXT NOT NULL,
+  level    TEXT NOT NULL,
+  at       INTEGER NOT NULL
 );
 
 -- A standby whose lateness has been told, so a restart can neither repeat that nor lose it. Its position names the promise.
@@ -122,6 +147,9 @@ export interface SessionRow {
   own_closed: number;
   peer_closed: number;
   fault: string | null;
+  acked_screened: number;
+  peer_screened_through: number;
+  peer_eta_told: number;
 }
 
 export interface EntryRow {
@@ -136,7 +164,11 @@ export interface EntryRow {
   ack: string | null;
   ciphertext: Uint8Array | null;
   body: Uint8Array;
+  verdict: "allow" | "flagged" | "blocked" | null;
+  verdict_detail: string | null;
 }
+
+export type UnscreenedRow = Pick<EntryRow, "id" | "agent_id" | "session_id" | "position"> & { sender: Uint8Array; size: number };
 
 export interface NoticeRow { id: number; session_id: Uint8Array | null; text: string }
 
@@ -175,6 +207,18 @@ export class Store {
     this.#db.pragma("busy_timeout=5000");
     this.#db.pragma("foreign_keys=ON");
     this.#db.exec(SCHEMA);
+    // A table made before these columns existed. Old rows come out unscreened, and the screen picks them up.
+    this.#addColumn("entries", "verdict", "TEXT CHECK (verdict IN ('allow', 'flagged', 'blocked'))");
+    this.#addColumn("entries", "verdict_detail", "TEXT");
+    this.#addColumn("sessions", "acked_screened", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "peer_screened_through", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "peer_eta_told", "INTEGER NOT NULL DEFAULT 0");
+    this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
+  }
+
+  #addColumn(table: string, column: string, definition: string): void {
+    const columns = this.#prep(`PRAGMA table_info(${table})`).all([]) as { name: string }[];
+    if (!columns.some((c) => c.name === column)) this.#db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   // The driver's types want one exact byte-array type. Our bytes are all plain Uint8Array.
@@ -250,7 +294,7 @@ export class Store {
     return this.#prep("SELECT * FROM sessions WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SessionRow[];
   }
 
-  insertEntry(row: Omit<EntryRow, "id" | "ciphertext" | "ack" | "position"> & { position?: number | null; ack?: string | null; ciphertext?: Uint8Array | null }): void {
+  insertEntry(row: Omit<EntryRow, "id" | "ciphertext" | "ack" | "position" | "verdict" | "verdict_detail"> & { position?: number | null; ack?: string | null; ciphertext?: Uint8Array | null }): void {
     this.#prep(
       "INSERT INTO entries (agent_id, session_id, entry_hash, position, state, own, entry, ack, ciphertext, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run([row.agent_id, row.session_id, row.entry_hash, row.position ?? null, row.state, row.own, row.entry, row.ack ?? null, row.ciphertext ?? null, row.body]);
@@ -299,6 +343,56 @@ export class Store {
     return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { c: number }).c;
   }
 
+  firstUnscreened(agentId: Uint8Array, sessionId: Uint8Array): number | undefined {
+    return (this.#prep("SELECT min(position) AS first FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND verdict IS NULL").get([agentId, sessionId]) as { first: number | null }).first ?? undefined;
+  }
+
+  deliverableCount(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number {
+    const stop = this.firstUnscreened(agentId, sessionId) ?? Number.MAX_SAFE_INTEGER;
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position < ?").get([agentId, sessionId, readPosition, stop]) as { c: number }).c;
+  }
+
+  // Sizes and ids only: a queue can be long, and this runs on the thread every agent shares.
+  unscreened(): UnscreenedRow[] {
+    return this.#prep("SELECT e.id, e.agent_id, e.session_id, e.position, s.counterparty_id AS sender, length(e.body) AS size FROM entries e JOIN sessions s ON s.agent_id = e.agent_id AND s.session_id = e.session_id WHERE e.state = 'received' AND e.verdict IS NULL ORDER BY e.position").all([]) as unknown as UnscreenedRow[];
+  }
+
+  entryAt(agentId: Uint8Array, sessionId: Uint8Array, position: number): Pick<EntryRow, "entry" | "verdict"> | undefined {
+    return this.#prep("SELECT entry, verdict FROM entries WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) as Pick<EntryRow, "entry" | "verdict"> | undefined;
+  }
+
+  bodyOf(id: number): Uint8Array | undefined {
+    return (this.#prep("SELECT body FROM entries WHERE id = ?").get([id]) as { body: Uint8Array } | undefined)?.body;
+  }
+
+  setVerdict(id: number, verdict: string, detail: string): void {
+    this.#prep("UPDATE entries SET verdict = ?, verdict_detail = ? WHERE id = ? AND verdict IS NULL").run([verdict, detail, id]);
+  }
+
+  entryIdAt(agentId: Uint8Array, sessionId: Uint8Array, position: number): number | undefined {
+    return (this.#prep("SELECT id FROM entries WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) as { id: number } | undefined)?.id;
+  }
+
+  countOwnAfter(agentId: Uint8Array, sessionId: Uint8Array, position: number): number {
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND state = 'landed' AND position > ?").get([agentId, sessionId, position]) as { c: number }).c;
+  }
+
+  screeningRule(agentId: Uint8Array, scope: "sender" | "tier", subject: string): string | undefined {
+    return (this.#prep("SELECT level FROM screening_rules WHERE agent_id = ? AND scope = ? AND subject = ?").get([agentId, scope, subject]) as { level: string } | undefined)?.level;
+  }
+
+  setScreeningRule(agentId: Uint8Array, subject: string, level: string): void {
+    const now = Date.now();
+    this.transaction(() => {
+      this.#prep("INSERT INTO screening_rules (agent_id, scope, subject, level, set_at) VALUES (?, 'sender', ?, ?, ?) ON CONFLICT (agent_id, scope, subject) DO UPDATE SET level = excluded.level, set_at = excluded.set_at").run([agentId, subject, level, now]);
+      this.#prep("INSERT INTO screening_changes (agent_id, subject, level, at) VALUES (?, ?, ?, ?)").run([agentId, subject, level, now]);
+    });
+  }
+
+  screeningRules(agentId: Uint8Array): { subject: string; level: string; set_at: number }[] {
+    return this.#prep("SELECT subject, level, set_at FROM screening_rules WHERE agent_id = ? AND scope = 'sender' ORDER BY set_at").all([agentId]) as unknown as { subject: string; level: string; set_at: number }[];
+  }
+
   unreadBounds(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): { first: number; last: number } | undefined {
     const row = this.#prep("SELECT min(position) AS first, max(position) AS last FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { first: number | null; last: number | null };
     return row.first === null || row.last === null ? undefined : { first: row.first, last: row.last };
@@ -325,8 +419,10 @@ export class Store {
     return through === undefined ? undefined : { through, more: false };
   }
 
+  // What can be delivered: everything unread with a verdict, up to the first without one. Nothing overtakes.
   unreadPage(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number, maxBytes: number): { rows: EntryRow[]; more: boolean } {
-    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND state = 'received' AND position > ?", [agentId, sessionId, readPosition], maxBytes);
+    const stop = this.firstUnscreened(agentId, sessionId) ?? Number.MAX_SAFE_INTEGER;
+    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position < ?", [agentId, sessionId, readPosition, stop], maxBytes);
     if (!end) return { rows: [], more: false };
     const rows = this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position <= ? ORDER BY position").all([agentId, sessionId, readPosition, end.through]) as unknown as EntryRow[];
     return { rows, more: end.more };
