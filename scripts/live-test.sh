@@ -10,4 +10,4 @@ cd "$server_dir"
 trap 'docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 docker compose up -d --build --wait server
 cd "$here"
-CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-timeout=240000 live/daemon.live.ts
+CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-timeout=240000 live/daemon.live.ts live/mcp.live.ts
