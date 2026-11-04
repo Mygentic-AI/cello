@@ -8,7 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdirSync, mkdtempSync, appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { cpus, homedir, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
@@ -209,7 +209,9 @@ async function worker(caller: string): Promise<void> {
       await sleep(100);
     }
     const best = answers.sort((a, b) => a.rtt - b.rtt)[0];
-    return best ? { host: NTP_HOST, answers: answers.length, offset: best.offset, rtt: best.rtt } : { host: NTP_HOST, answers: 0, failed: true };
+    // Load beside each reading, so that anything else busy on this machine during a phase is on the record.
+    const load = { load_1min: loadavg()[0], cores: cpus().length };
+    return best ? { host: NTP_HOST, answers: answers.length, offset: best.offset, rtt: best.rtt, ...load } : { host: NTP_HOST, answers: 0, failed: true, ...load };
   }
 
   function tcpConnect(host: string): Promise<number> {
@@ -446,13 +448,13 @@ function summary(values: number[]): Json {
   return { n: values.length, median: Math.round(median(values)), p95: Math.round(percentile(values, 95)), worst: Math.round(Math.max(...values)) };
 }
 
-interface ClockFix { offset: number; rtt: number }
+interface ClockFix { offset: number; rtt: number; load_1min: number; cores: number }
 
 async function clocks(sides: Side[]): Promise<Map<string, ClockFix | null>> {
   const fixes = new Map<string, ClockFix | null>();
   for (const side of sides) {
-    const answer = await side.call<{ offset?: number; rtt?: number; failed?: boolean }>("clock");
-    fixes.set(side.name, answer.failed ? null : { offset: answer.offset as number, rtt: answer.rtt as number });
+    const answer = await side.call<{ offset?: number; rtt?: number; failed?: boolean; load_1min: number; cores: number }>("clock");
+    fixes.set(side.name, answer.failed ? null : { offset: answer.offset as number, rtt: answer.rtt as number, load_1min: answer.load_1min, cores: answer.cores });
   }
   return fixes;
 }
@@ -570,7 +572,8 @@ async function converse(a: Side, b: Side, tag: string, bytes: number, rounds: nu
   const fixes = [before, after];
   const problems = compareRecords(recordA, recordB, expected);
   const whole = [...samplesA, ...samplesB].filter((s) => s["kind"] === "expect" && s["whole"] !== true).map((s) => `line ${String(s["id"])} arrived damaged`);
-  return { result: { [`${a.name} to ${b.name}`]: analyse(samples, fixes, a, b), [`${b.name} to ${a.name}`]: analyse(samples, fixes, b, a) }, problems: [...problems, ...whole] };
+  const load = Object.fromEntries([a, b].map((side) => [side.name, fixes.map((fix) => fix.get(side.name)?.load_1min ?? null)]));
+  return { result: { [`${a.name} to ${b.name}`]: analyse(samples, fixes, a, b), [`${b.name} to ${a.name}`]: analyse(samples, fixes, b, a), load_1min_before_and_after: load }, problems: [...problems, ...whole] };
 }
 
 async function sessionStarts(a: Side, b: Side, tag: string, count: number, raw: string): Promise<Json> {
@@ -674,7 +677,7 @@ async function orchestrate(): Promise<void> {
   const { values: args } = parseArgs({ options: {
     server: { type: "string" }, instance: { type: "string" }, zone: { type: "string" }, project: { type: "string", default: "cello-infra" },
     short: { type: "string", default: "100" }, kb100: { type: "string", default: "40" }, mb1: { type: "string", default: "20" },
-    starts: { type: "string", default: "15" }, kills: { type: "string", default: "3" }, "no-sync": { type: "boolean", default: false }, "kills-only": { type: "boolean", default: false },
+    starts: { type: "string", default: "15" }, kills: { type: "string", default: "3" }, "no-sync": { type: "boolean", default: false },
   } });
   if (!args.server || !args.instance || !args.zone) throw new Error("--server, --instance and --zone are required");
   const here = new URL("..", import.meta.url).pathname;
@@ -739,7 +742,8 @@ async function orchestrate(): Promise<void> {
     results["measured_alone"] = { mac: benches[0], vm: benches[1] };
     save();
 
-    if (!args["kills-only"]) await phase("session starts", async () => {
+    // A count of zero skips a phase, to rerun the others alone.
+    if (Number(args.starts) > 0) await phase("session starts", async () => {
       results["session_start"] = {
         "mac calls vm": await sessionStarts(mac, vm, `st${tagBase}m`, Number(args.starts), raw),
         "vm calls mac": await sessionStarts(vm, mac, `st${tagBase}v`, Number(args.starts), raw),
@@ -751,7 +755,7 @@ async function orchestrate(): Promise<void> {
     results["mac_and_vm"] = conversations;
     const control_: Json = {};
     results["vm_and_vm_control"] = control_;
-    for (const size of args["kills-only"] ? [] : SIZES) {
+    for (const size of SIZES.filter((candidate) => (rounds[candidate.label] as number) > 0)) {
       await phase(`mac and vm, ${size.label}`, async () => {
         const { result, problems } = await converse(mac, vm, `${size.bytes}m${tagBase}`, size.bytes, rounds[size.label] as number, raw);
         conversations[size.label] = result;
@@ -769,7 +773,7 @@ async function orchestrate(): Promise<void> {
       return row?.send_command_ms.median ?? 1500;
     };
     results["kills"] = {};
-    for (const [victim, peer] of [[mac, vm], [vm, mac]] as [Side, Side][]) {
+    for (const [victim, peer] of (Number(args.kills) > 0 ? [[mac, vm], [vm, mac]] : []) as [Side, Side][]) {
       await phase(`daemon kills on ${victim.name}`, async () => {
         const start = (benches[victim === mac ? 0 : 1]?.["process_start_ms"] as number) ?? 200;
         const { result, problems } = await killTest(victim, peer, `k${victim.name}${tagBase}`, Number(args.kills), { short: typical(victim.name, "short"), large: typical(victim.name, "100 KB"), start }, raw);
