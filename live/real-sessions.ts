@@ -30,7 +30,9 @@ const MCP = new URL("../src/mcp.ts", import.meta.url).pathname;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const CONVERSATION_LIMIT_MS = 15 * 60 * 1000;
 const KILL_AT_POSITION = 5;
-const CHANNEL_TAG = /<channel source=\\?"[^"\\]*cello-v2/;
+// A doorbell that asks for a read, as opposed to one that only says a session started or closed.
+const READ_DOORBELL = /<channel source="[^"]*cello-v2"[^>]* type="(message|peer_closed|notice|daemon_back)"/;
+const ANY_DOORBELL = /<channel source="[^"]*cello-v2"/;
 
 // A short path, because a Unix socket path can't be long.
 // Resolved, because macOS's /tmp is a link and Claude Code files its transcripts under the real path.
@@ -126,7 +128,7 @@ function remoteSql(query: string): string {
 }
 
 // Claude Code's own transcript of one session. It answers two questions a final state can't:
-// did doorbells reach the session, and did it read only after one? A session that polled would reach the same end.
+// did doorbells reach the session, and did each read follow one? A session that polled would reach the same end.
 function sessionFacts(folder: string): { turns: number; models: string[]; input: number; output: number; doorbells: number; reads: number; readsWithoutDoorbell: number } {
   const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
   const dir = join(homedir(), ".claude", "projects", slug);
@@ -138,7 +140,7 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
   let doorbells = 0;
   let reads = 0;
   let readsWithoutDoorbell = 0;
-  let doorbellSinceLastRead = false;
+  let readsOwed = 0;
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
     for (const line of readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean)) {
       const row = JSON.parse(line) as {
@@ -147,11 +149,10 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
         content?: unknown;
         message?: { id?: string; model?: string; content?: unknown; usage?: { input_tokens?: number; output_tokens?: number } };
       };
-      if (row.type === "queue-operation" && row.operation === "enqueue" && typeof row.content === "string" && CHANNEL_TAG.test(row.content)) {
+      if (row.type === "queue-operation" && row.operation === "enqueue" && typeof row.content === "string" && ANY_DOORBELL.test(row.content)) {
         doorbells += 1;
-        doorbellSinceLastRead = true;
+        if (READ_DOORBELL.test(row.content)) readsOwed += 1;
       }
-      if (row.type === "user" && CHANNEL_TAG.test(JSON.stringify(row.message?.content ?? ""))) doorbellSinceLastRead = true;
       if (row.type !== "assistant" || !row.message?.id) continue;
       if (!seen.has(row.message.id)) {
         seen.add(row.message.id);
@@ -163,8 +164,9 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
         if (block.type !== "tool_use" || !block.id || seenCalls.has(block.id) || !block.name?.endsWith("cello_receive")) continue;
         seenCalls.add(block.id);
         reads += 1;
-        if (!doorbellSinceLastRead) readsWithoutDoorbell += 1;
-        doorbellSinceLastRead = false;
+        // Each read has to be paid for by a doorbell. Polling runs out of them.
+        if (readsOwed > 0) readsOwed -= 1;
+        else readsWithoutDoorbell += 1;
       }
     }
   }
