@@ -244,4 +244,10 @@ test("a message waits on the server for a laptop that's shut, unreadable, then g
   });
   assert.deepEqual(received.messages.map((m) => m.text), ["the secret word is zebra-lantern"]);
   await until("the encrypted text to go", () => sql(`SELECT ciphertext IS NULL FROM entries WHERE ${row}`) === "t");
+
+  // Real encrypted conversations passed through the server, and no text or address went into its log.
+  const logs = compose("logs", "--no-log-prefix", "server");
+  assert.match(logs, /session\.active/, "the check must be reading the real log");
+  assert.doesNotMatch(logs, /zebra-lantern|purple-walrus/);
+  assert.doesNotMatch(logs, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, "the server's log holds an IP address");
 });

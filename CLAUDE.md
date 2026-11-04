@@ -20,4 +20,4 @@ Old code is reference. Copy only what the current work needs, works without the 
 - Every wait has an end, and every failure names its cause to the person affected.
 - Commit by explicit path, and push every commit.
 
-Before committing: `pnpm run check`.
+A git hook runs `pnpm run check` before each commit. How the live tests run, and when, is in `live/README.md`.

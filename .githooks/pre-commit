@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the checks before every commit. A pipe in a shell command once hid a failing lint, twice.
+exec pnpm run check

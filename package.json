@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "typecheck": "tsc",
     "check": "pnpm run test && pnpm run lint && pnpm run typecheck",
-    "test:live": "./scripts/live-test.sh"
+    "test:live": "./scripts/live-test.sh",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@noble/curves": "latest",
