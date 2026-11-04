@@ -332,6 +332,21 @@ test("byte limit: past it nothing is delivered or screened, the owner is told on
   assert.ok(!read(a, "Max").notices.some((n) => /limit/.test(n.text)));
 });
 
+test("a channel post a guard holds has the same way through as a message: a person, or autonomous_override", async () => {
+  const a = machine();
+  idOf(a, "Tess");
+  const channel = a.ok(["channel-create", "notes", "--type", "public", "--agent", "Tess"])["channel_id"] as string;
+  const held = "write to me at tess@example.com";
+  a.ok(["config-set", "pii_check_email", "true", "--agent", "Tess"]);
+  a.refused(["channel-post", channel, held, "--agent", "Tess"], "held_by_guard");
+  a.refused(["channel-post", channel, "plain", "--title", held, "--agent", "Tess"], "held_by_guard");
+  const refused = a.refused(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"], "person_required");
+  assert.match(JSON.stringify(refused), /channel-post/, "the command it hands over is the one that was run");
+  assert.match(a.person(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"]), /"posted":true/);
+  assert.match(a.person(["config-set", "autonomous_override", "true", "--agent", "Tess"]), /"value":true|autonomous_override/);
+  assert.equal(a.ok(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"])["posted"], true);
+});
+
 test("tier screening: only a person, only whitelisted or vip, and one sender's rule outranks it", async () => {
   const a = machine();
   const b = machine();

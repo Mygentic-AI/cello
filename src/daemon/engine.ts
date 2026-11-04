@@ -1396,7 +1396,7 @@ export class Engine {
   }
 
   // Credentials and hijack artifacts stop here, before anything is signed, on a thread that never runs the model.
-  async #screenOutbound(agent: AgentContext, text: string, params: Record<string, unknown>): Promise<{ text: string; report: Record<string, unknown> }> {
+  async #screenOutbound(agent: AgentContext, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string; report: Record<string, unknown> }> {
     const keys = [...this.#agents.keys(), ...this.#store.sessionsOf(agent.signer.id).map((s) => toHex(s.counterparty_id))];
     const guards = this.governance.guards;
     const pii = { whitelist: guards.value<string[]>(agent.signer.id, "pii_whitelist"), email: guards.value<boolean>(agent.signer.id, "pii_check_email"), phone: guards.value<boolean>(agent.signer.id, "pii_check_phone") };
@@ -1413,7 +1413,7 @@ export class Engine {
         throw new LocalError("held_by_guard", `Nothing was sent, because it looks like personal data: ${held}. Say it without that, or have it let through with allow_flagged, which needs a person unless autonomous_override is on.`);
       }
       if (!guards.value<boolean>(agent.signer.id, "autonomous_override")) {
-        requirePerson(params, `This sends personal data from ${agent.hex}: ${held}.`, `cello-v2 send ${params["session_id"] as string} - --allow-flagged --over --agent ${agent.hex}`);
+        requirePerson(params, `This sends personal data from ${agent.hex}: ${held}.`, retry);
       }
       logEvent("guard.held_value_sent", { agent: agent.hex, categories: (verdict.held ?? []).map((h) => h.category), by_a_person: params["person_confirmed"] === true });
       return { text: verdict.text, report: { let_through: (verdict.held ?? []).map((h) => h.category) } };
@@ -1845,8 +1845,8 @@ export class Engine {
         const bytes = new TextEncoder().encode(JSON.stringify({ text }));
         this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
       }),
-      screenOutbound: async (agentHex, text) => {
-        const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, {});
+      screenOutbound: async (agentHex, text, params, retry) => {
+        const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, params, retry);
         return screened;
       },
     };
