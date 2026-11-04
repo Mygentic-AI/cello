@@ -87,7 +87,7 @@ function say(caller: string, session: string, text: string): void {
   ok(homeP, ["receive", "--session-id", session, "--agent", caller]);
   ok(homeP, ["send", session, "-", "--over", "--agent", caller], text);
 }
-const conciergeClosed = (caller: string, session: string): Promise<true> => until("the Concierge to close its side", () => record(caller, session).some((e) => !e.own && e.closed_their_side) as true | false);
+const conciergeClosed = (caller: string, session: string, seconds?: number): Promise<true> => until("the Concierge to close its side", () => record(caller, session).some((e) => !e.own && e.closed_their_side) as true | false, seconds);
 
 before(async () => {
   ok(homeC, ["login", "--server", url]);
@@ -146,11 +146,17 @@ test("a caller who floods gets no more replies than anyone else", async () => {
   const session = call(caller);
   await hears(caller, session, 1);
   ok(homeP, ["receive", "--session-id", session, "--agent", caller]);
+  let landed = 0;
+  const refusals = new Set<unknown>();
   for (let i = 0; i < 30; i++) {
     const sent = cello(homeP, ["send", session, "-", "--over", "--notice", "--agent", caller], `flood ${i}`);
-    if (sent.status !== 0) break;
+    if (sent.status === 0) landed += 1;
+    else refusals.add(sent.json["error"]);
   }
-  await conciergeClosed(caller, session);
+  process.stdout.write(`flood: ${landed} of 30 landed, refusals: ${[...refusals].join(",") || "none"}\n`);
+  assert.ok(landed >= 10, `only ${landed} landed`);
+  // A flood that all lands before a reply counts as one turn, so silence may be what ends this one.
+  await conciergeClosed(caller, session, SILENT_SECONDS + 30);
   await new Promise((resolve) => setTimeout(resolve, 2000));
   assert.ok(heard(caller, session).length <= 3, `heard ${heard(caller, session).length} lines`);
 });
