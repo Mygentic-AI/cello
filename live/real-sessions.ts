@@ -16,6 +16,7 @@ import { parseArgs } from "node:util";
 import { toHex } from "../src/protocol/encode.ts";
 import { signedEntry } from "../src/protocol/wire.ts";
 import { Store } from "../src/daemon/store.ts";
+import { checkLogsClean } from "./log-check.ts";
 
 const { values: args } = parseArgs({
   options: {
@@ -279,22 +280,7 @@ function serverLogs(): string {
 async function checkServerLogs(texts: readonly string[]): Promise<void> {
   const logs = serverLogs();
   assert.match(logs, /session\.active/, "the check must be reading the real log");
-  for (const text of texts) {
-    if (text.length >= 8) assert.ok(!logs.includes(text), `a message's text is in the server's logs: ${text.slice(0, 40)}`);
-  }
-  // Finding out this machine's address depends on someone else's service, and its outage mustn't fail a good run. The report says what was checked.
-  const addressesChecked: string[] = [];
-  for (const lookup of ["https://api.ipify.org", "https://api6.ipify.org"]) {
-    let address: string;
-    try {
-      address = (await (await fetch(lookup, { signal: AbortSignal.timeout(10_000) })).text()).trim();
-    } catch {
-      continue;
-    }
-    if (!/^[0-9a-f.:]+$/i.test(address)) continue;
-    assert.ok(!logs.includes(address), "this machine's address is in the server's logs");
-    addressesChecked.push(address.includes(":") ? "IPv6" : "IPv4");
-  }
+  const addressesChecked = await checkLogsClean(logs, texts);
   report["server_log_addresses_checked"] = addressesChecked;
   report["server_logs_clean"] = true;
   say(`the server's logs hold no message text, and not this machine's address (checked: ${addressesChecked.join(", ") || "none, the lookup failed"})`);
