@@ -97,8 +97,9 @@ CREATE TABLE IF NOT EXISTS channel_log (
   agent_id   BLOB NOT NULL,
   channel_id BLOB NOT NULL,
   author_seq INTEGER NOT NULL,
-  title      BLOB NOT NULL,
-  body       BLOB NOT NULL,
+  -- Nullable because the driver stores an empty byte string as NULL, and a post needn't have a title.
+  title      BLOB,
+  body       BLOB,
   wire       TEXT NOT NULL,
   position   INTEGER,
   ack        TEXT,
@@ -154,7 +155,7 @@ export interface PostRow {
   body_verdict: Verdict;
 }
 export interface GapRow { position: number; first_seen: number; state: "missing" | "lost" }
-export interface LogRow { author_seq: number; title: Uint8Array; body: Uint8Array; wire: string; position: number | null }
+export interface LogRow { author_seq: number; title: Uint8Array | null; body: Uint8Array | null; wire: string; position: number | null }
 
 type FollowProgress = Partial<Pick<FollowRow, "position" | "high" | "first_held" | "tip" | "readers" | "state" | "info" | "info_revision" | "delivery" | "screen_bodies" | "roster" | "roster_revision" | "roster_hash">>;
 

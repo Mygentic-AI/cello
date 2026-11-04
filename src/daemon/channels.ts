@@ -524,7 +524,7 @@ export class Channels {
     const signer = this.#host.signer(agentHex);
     for (const row of this.#db.waitingLog(signer.id, channel)) {
       try {
-        const result = await this.#sendLogged(agentHex, channel, row.author_seq, row.wire, row.title, row.body, true) as { posted: boolean };
+        const result = await this.#sendLogged(agentHex, channel, row.author_seq, row.wire, row.title ?? new Uint8Array(0), row.body ?? new Uint8Array(0), true) as { posted: boolean };
         if (!result.posted) return;
       } catch (err: unknown) {
         if (err instanceof LocalError) {

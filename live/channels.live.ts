@@ -337,8 +337,7 @@ test("aged out, a gap, a gap filled and a post lost are told apart, and only the
   row = row.lost.length > 0 ? row : collect("cyd", channel);
   assert.deepEqual([row.position, row.missing, row.lost], [13, [], [12]], `lost, and moved on: ${JSON.stringify(row)}`);
   assert.ok(row.notices.some((n) => /number 12 is lost/.test(n)), "the reader is told");
-  const told = await until("the publisher to be told", () => view("ada", channel).notices.find((n) => /number 12/.test(n)));
-  assert.match(told, /your post/, "the publisher hears it was its own post");
+  await until("the publisher to be told it was its own post", () => view("ada", channel).notices.find((n) => /your post at number 12/.test(n)));
   assert.equal(sql(`SELECT count(*) FROM channel_lost WHERE channel_id = ${bytea(channel)} AND position = 12`), "1");
 });
 
@@ -419,7 +418,7 @@ test("a hostile server: an old post re-issued under a new number, a changed body
 
   // A key the server sealed itself, for the next generation, and a roster it signed itself.
   const fake = await signerFromSeeds(generateIdentitySeeds());
-  const fakeRoster = await signRoster(fake, null, 2, [await signMemberKey(fake, new Uint8Array(Buffer.from(channel, "hex")), { x25519Public: new Uint8Array(32).fill(9), mlKemPublic: new Uint8Array(1184) }, 1)]);
+  const fakeRoster = await signRoster(fake, null, 2, [await signMemberKey(fake, fake.id, { x25519Public: new Uint8Array(32).fill(9), mlKemPublic: new Uint8Array(1184) }, 1)]);
   assert.equal(await readRoster(fakeRoster, fake.publicIdentity).then((r) => r !== null), true, "the forgery is well formed, under its own key");
   const before = view("bea", channel).generation;
   sql(`INSERT INTO channel_rosters (channel_id, revision, roster) SELECT channel_id, roster_revision + 1, '${JSON.stringify(fakeRoster)}'::jsonb FROM channels WHERE channel_id = ${bytea(channel)}; UPDATE channels SET roster_revision = roster_revision + 1 WHERE channel_id = ${bytea(channel)}`);
