@@ -4,6 +4,8 @@ Everything else in this repo was written new. Source repo: `cello-client`, branc
 
 Each file was copied by script, with comments on their own lines removed and long error messages shortened. Conditions and logic are unchanged except as noted.
 
+One change applies to both post-quantum key files: they now get the public key through `subtle.getPublicKey`, because the original route is deprecated in Node and printed a warning.
+
 - `src/protocol/ml-dsa.ts`, from `core/crypto/src/ml-dsa.ts`. Post-quantum signing on Node's own crypto.
 - `src/protocol/ml-kem.ts`, from `core/crypto/src/ml-kem.ts`. Post-quantum key exchange on Node's own crypto.
 - `src/protocol/pq-errors.ts`, `src/protocol/pq-warnings.ts`, same names. The errors the two above throw, and a filter for Node's warnings about them.

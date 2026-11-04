@@ -1,5 +1,5 @@
 import "./pq-warnings.ts";
-import { createPublicKey, KeyObject, webcrypto } from "node:crypto";
+import { webcrypto } from "node:crypto";
 import { PqCryptoError, isUnsupportedAlgorithm } from "./pq-errors.ts";
 
 export const ML_KEM_PUBLIC_KEY_BYTES = 1184;
@@ -13,6 +13,7 @@ const subtle = webcrypto.subtle;
 interface PqSubtle {
   importKey(format: "raw-seed" | "raw-public", keyData: Uint8Array, algorithm: typeof ALG, extractable: boolean, usages: string[]): Promise<webcrypto.CryptoKey>;
   encapsulateBits(algorithm: typeof ALG, key: webcrypto.CryptoKey): Promise<{ ciphertext: ArrayBuffer; sharedKey: ArrayBuffer }>;
+  getPublicKey(key: webcrypto.CryptoKey, usages: string[]): Promise<webcrypto.CryptoKey>;
   decapsulateBits(algorithm: typeof ALG, key: webcrypto.CryptoKey, ciphertext: Uint8Array): Promise<ArrayBuffer>;
 }
 const pq = subtle as unknown as PqSubtle;
@@ -43,8 +44,8 @@ export function mlKemGenerateSeed(): Uint8Array {
 
 export async function mlKemKeypairFromSeed(seed: Uint8Array): Promise<{ publicKey: Uint8Array }> {
   const key = await importSeed(seed);
-  const pub = createPublicKey(KeyObject.from(key)).export({ format: "raw-public" } as never) as unknown as Buffer;
-  return { publicKey: new Uint8Array(pub) };
+  const pub = await subtle.exportKey("raw-public" as never, await pq.getPublicKey(key, ["encapsulateBits"]));
+  return { publicKey: new Uint8Array(pub as ArrayBuffer) };
 }
 
 export async function mlKemEncapsulate(publicKey: Uint8Array): Promise<{ ciphertext: Uint8Array; sharedSecret: Uint8Array }> {

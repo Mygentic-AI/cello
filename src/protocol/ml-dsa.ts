@@ -1,5 +1,5 @@
 import "./pq-warnings.ts";
-import { createPublicKey, KeyObject, webcrypto } from "node:crypto";
+import { webcrypto } from "node:crypto";
 import { PqCryptoError, isUnsupportedAlgorithm } from "./pq-errors.ts";
 
 export const ML_DSA_PUBLIC_KEY_BYTES = 1312;
@@ -27,6 +27,11 @@ function mlDsaUnsupported(err: unknown): PqCryptoError {
   );
 }
 
+// @types/node doesn't type getPublicKey yet. Node 24.7+ implements it.
+interface PublicKeySubtle {
+  getPublicKey(key: webcrypto.CryptoKey, usages: string[]): Promise<webcrypto.CryptoKey>;
+}
+
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
 export class InMemoryMlDsaKeyProvider implements MlDsaKeyProvider {
@@ -49,8 +54,9 @@ export class InMemoryMlDsaKeyProvider implements MlDsaKeyProvider {
       if (isUnsupportedAlgorithm(err)) throw mlDsaUnsupported(err);
       throw new PqCryptoError("ml_dsa_seed_invalid", "ML-DSA-44 seed import failed", { cause: err });
     }
-    const pub = createPublicKey(KeyObject.from(key)).export({ format: "raw-public" } as never) as unknown as Buffer;
-    return new InMemoryMlDsaKeyProvider(key, new Uint8Array(pub));
+    const publicKey = await (webcrypto.subtle as unknown as PublicKeySubtle).getPublicKey(key, ["verify"]);
+    const pub = await webcrypto.subtle.exportKey("raw-public" as never, publicKey);
+    return new InMemoryMlDsaKeyProvider(key, new Uint8Array(pub as ArrayBuffer));
   }
 
   async getPublicKey(): Promise<MlDsaPublicKey> {
