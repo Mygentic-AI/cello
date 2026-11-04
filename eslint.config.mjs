@@ -6,7 +6,9 @@ export default tseslint.config(
   {
     languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
     rules: {
-      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-floating-promises": ["error", {
+        allowForKnownSafeCalls: [{ from: "package", name: "test", package: "node:test" }],
+      }],
       "@typescript-eslint/no-misused-promises": "error",
       "no-restricted-imports": ["error", { paths: [{ name: "node:sqlite", message: "SQLCipher only: node:sqlite stores plaintext." }] }],
     },
