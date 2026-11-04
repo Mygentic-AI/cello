@@ -1,6 +1,6 @@
 // Checks a session's history: every signature, each author's chain, the order, and the running root.
 // It needs only the parties' and the server's public keys, so a record can be checked without the server.
-import { HASH_BYTES, ZERO_HASH, equalBytes, toHex } from "./encode.ts";
+import { ZERO_HASH, equalBytes, toHex } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, identityId, verifySignature } from "./identity.ts";
 import { EMPTY_ROOT, RunningMerkle } from "./merkle.ts";
 import { type AckFields, type EntryFields, ackBytes, entryBytes, entryHash } from "./structures.ts";
