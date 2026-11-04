@@ -50,7 +50,7 @@ import {
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
-import { formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
+import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
@@ -1430,7 +1430,7 @@ export class Engine {
     try {
       address = parseAddress(target);
     } catch (err: unknown) {
-      throw new LocalError("bad_argument", err instanceof Error ? err.message : String(err));
+      throw new LocalError(err instanceof PlainTextServer ? err.code : "bad_argument", err instanceof Error ? err.message : String(err));
     }
     const targetId = parseHex(address.id, 32, "target");
     if (equalBytes(targetId, agent.signer.id)) throw new LocalError("bad_argument", "an agent can't start a session with itself");

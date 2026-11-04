@@ -1,7 +1,7 @@
 // An address decides where this machine connects and whether that's encrypted, and a mistake wouldn't show in a working run.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatAddress, parseAddress, serverUrlFrom } from "../src/daemon/address.ts";
+import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "../src/daemon/address.ts";
 
 const id = "ab".repeat(32);
 
@@ -16,12 +16,19 @@ test("the short form is encrypted, except on this machine", () => {
 });
 
 test("an address parses back to what it was made from", () => {
-  for (const url of ["wss://cello.example.com/v1", "ws://127.0.0.1:18400/v1", "ws://10.0.0.5:8080/v1", "wss://acme.example/other/path"]) {
+  for (const url of ["wss://cello.example.com/v1", "ws://127.0.0.1:18400/v1", "wss://acme.example/other/path"]) {
     const address = formatAddress(id, url);
     assert.deepEqual(parseAddress(address), { id, server: url }, address);
   }
   assert.equal(formatAddress(id, "wss://cello.example.com/v1"), `${id}@cello.example.com`);
-  assert.equal(formatAddress(id, "ws://10.0.0.5:8080/v1"), `${id}@ws://10.0.0.5:8080/v1`, "plain ws off this machine stays spelled out");
+});
+
+test("an address can't get a daemon talking in plain text to another machine", () => {
+  for (const host of ["ws://10.0.0.5:8080/v1", "ws://evil.example/v1", "ws://127.0.0.1.evil.example/v1", "ws://localhost.evil.example/v1", "ws://127.0.0.1@evil.example/v1", "WS://evil.example/v1"]) {
+    assert.throws(() => parseAddress(`${id}@${host}`), PlainTextServer, host);
+  }
+  assert.deepEqual(parseAddress(`${id}@ws://127.0.0.1:18401/v1`), { id, server: "ws://127.0.0.1:18401/v1" });
+  assert.deepEqual(parseAddress(`${id}@wss://evil.example/v1`), { id, server: "wss://evil.example/v1" }, "encrypted is allowed: the key still can't be faked");
 });
 
 test("a key alone means this daemon's own server, and nonsense is refused", () => {
