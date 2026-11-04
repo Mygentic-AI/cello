@@ -68,7 +68,8 @@ Usage: cello-v2 <command> [args]
 ${sections.join("\n\n")}
 
 Run 'cello-v2 <command> --help' for details on any command.
-Commands print JSON on one line, and --pretty indents it. A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
+Commands print JSON on one line, and --pretty indents it.
+A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
 Any agent that can run a shell command can use all of this with no MCP.
 Each agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
