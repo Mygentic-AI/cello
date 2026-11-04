@@ -72,7 +72,6 @@ export interface Doorbell {
   type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice";
   agent: string;
   session_id?: string;
-  from?: string;
   from_id?: string;
 }
 
@@ -445,7 +444,7 @@ export class Engine {
     });
     const sessionHex = toHex(local.session_id);
     logEvent("session.active", { agent: agent.hex, session: sessionHex });
-    this.#events.ring(agent.hex, { type: "session_started", agent: agent.name, session_id: sessionHex, from: local.counterparty_name, from_id: toHex(local.counterparty_id) });
+    this.#events.ring(agent.hex, { type: "session_started", agent: agent.name, session_id: sessionHex, from_id: toHex(local.counterparty_id) });
     this.#activation.get(agent.hex + sessionHex)?.();
   }
 
@@ -621,7 +620,7 @@ export class Engine {
     }
 
     const sessionHex = toHex(local.session_id);
-    const bell = { agent: agent.name, session_id: sessionHex, from: local.counterparty_name, from_id: toHex(local.counterparty_id) };
+    const bell = { agent: agent.name, session_id: sessionHex, from_id: toHex(local.counterparty_id) };
     if (!fromMe) this.#events.ring(agent.hex, { ...bell, type: closing ? "peer_closed" : "message" });
     if (nowClosed && local.state !== "closed") {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });

@@ -19,6 +19,9 @@ export class DaemonGone extends Error {
   }
 }
 
+// A wedged daemon mustn't hang a tool forever. It outlasts every wait the daemon has of its own.
+const CALL_TIMEOUT_MS = 90_000;
+
 export class IpcClient {
   readonly #socket: Socket;
   readonly #waiting = new Map<number, { resolve(value: unknown): void; reject(err: Error): void }>();
@@ -66,7 +69,14 @@ export class IpcClient {
         reject(new DaemonGone());
         return;
       }
-      this.#waiting.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.#waiting.delete(id);
+        reject(new DaemonRefused("daemon_no_answer", `the daemon didn't answer ${method} within ${CALL_TIMEOUT_MS / 1000} seconds, so its outcome is unknown`));
+      }, CALL_TIMEOUT_MS);
+      this.#waiting.set(id, {
+        resolve(value) { clearTimeout(timer); resolve(value); },
+        reject(err) { clearTimeout(timer); reject(err); },
+      });
       this.#socket.write(`${JSON.stringify(request)}\n`);
     });
   }
