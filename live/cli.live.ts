@@ -15,8 +15,8 @@ const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
-function cello(args: string[], input?: string): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: home } });
+function cello(args: string[], input?: string, caller?: string): Run {
+  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: home, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -136,7 +136,7 @@ test("the holder is a caller: the command line is refused an agent a session hol
 
   const refused = cello(["receive", "--agent", "Iris"]);
   assert.deepEqual([refused.status, refused.json["error"]], [1, "agent_held"]);
-  assert.match(refused.json["message"] as string, /another session holds Iris/);
+  assert.match(refused.json["message"] as string, /"some-session" holds Iris/);
   assert.equal(cello(["verify-session", "00000000000000000000000000000000", "--agent", "Iris"]).json["error"], "unknown_session", "reading a record isn't refused for being held");
 
   assert.deepEqual(ok(["receive", "--agent", "Iris", "--force"]), { messages: [], notices: [] });
@@ -159,4 +159,15 @@ test("the holder is a caller: the command line is refused an agent a session hol
   crashing.close();
   await waiting;
   await until("the dead session's hold to end", () => cello(["receive", "--agent", "Iris"]).status === 0);
+
+  // Two shell agents with their own names are kept apart, just as sessions are. Each remembers its own choice.
+  ok(["stop-using-agent", "--agent", "Iris"]);
+  assert.equal(cello(["use-agent", "--agent", "Iris"], undefined, "shell-a").status, 0);
+  const otherShell = cello(["receive", "--agent", "Iris"], undefined, "shell-b");
+  assert.deepEqual([otherShell.status, otherShell.json["error"]], [1, "agent_held"]);
+  assert.match(otherShell.json["message"] as string, /"shell-a" holds Iris/);
+  assert.equal(cello(["receive"], undefined, "shell-a").status, 0, "shell-a remembers its choice");
+  assert.equal(cello(["receive"], undefined, "shell-b").json["error"], "no_current_agent", "and shell-b doesn't inherit it");
+  assert.equal(cello(["receive", "--agent", "Iris", "--force"], undefined, "shell-b").status, 0);
+  assert.equal(cello(["receive"], undefined, "shell-a").json["error"], "agent_held", "shell-a has been displaced");
 });

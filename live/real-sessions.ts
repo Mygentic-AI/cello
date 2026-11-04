@@ -178,7 +178,7 @@ function remoteSql(query: string): string {
 
 // Claude Code's own transcript of one session. It answers two questions a final state can't:
 // did doorbells reach the session, and did each read follow one? A session that polled would reach the same end.
-function sessionFacts(folder: string): { turns: number; models: string[]; input: number; output: number; doorbells: number; reads: number; readsWithoutDoorbell: number } {
+function sessionFacts(folder: string): { turns: number; models: string[]; input: number; output: number; doorbells: number; reads: number; readsWithoutDoorbell: number; waits: number } {
   const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
   const dir = join(homedir(), ".claude", "projects", slug);
   const seen = new Set<string>();
@@ -190,6 +190,7 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
   let reads = 0;
   let readsWithoutDoorbell = 0;
   let readsOwed = 0;
+  let waits = 0;
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
     for (const line of readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean)) {
       const row = JSON.parse(line) as {
@@ -210,8 +211,11 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
         output += row.message.usage?.output_tokens ?? 0;
       }
       for (const block of Array.isArray(row.message.content) ? row.message.content as { type?: string; id?: string; name?: string }[] : []) {
-        if (block.type !== "tool_use" || !block.id || seenCalls.has(block.id) || !block.name?.endsWith("cello_receive")) continue;
+        if (block.type !== "tool_use" || !block.id || seenCalls.has(block.id)) continue;
         seenCalls.add(block.id);
+        // A session blocked in wait isn't being woken, and doorbells still ring, so the count below wouldn't show it.
+        if (block.name?.endsWith("cello_wait")) waits += 1;
+        if (!block.name?.endsWith("cello_receive")) continue;
         reads += 1;
         // Each read has to be paid for by a doorbell. Polling runs out of them.
         if (readsOwed > 0) readsOwed -= 1;
@@ -219,7 +223,7 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
       }
     }
   }
-  return { turns: seen.size, models: [...models], input, output, doorbells, reads, readsWithoutDoorbell };
+  return { turns: seen.size, models: [...models], input, output, doorbells, reads, readsWithoutDoorbell, waits };
 }
 
 // A readable copy of what a session said and did, kept with the evidence, for a person to judge.
@@ -408,6 +412,7 @@ async function run(): Promise<void> {
     assert.ok(fact.doorbells > 0, `${name} must have received doorbells`);
     assert.ok(fact.reads > 0, `${name} must have read messages`);
     assert.equal(fact.readsWithoutDoorbell, 0, `${name} read without a doorbell, so it may have polled rather than being woken`);
+    assert.equal(fact.waits, 0, `${name} blocked in cello_wait, so a doorbell didn't do the waking`);
   }
   say(`woken by doorbells: Alpha ${facts.alpha.doorbells}, Beta ${facts.beta.doorbells}, with no read before a doorbell`);
 

@@ -108,7 +108,7 @@ const DEFINITIONS: readonly Definition[] = [
     summary: "Block until something happens for an agent. The shell's doorbell.",
     scoped: true,
     acts: true,
-    description: "Block until something happens for this agent, or the timeout passes, then say what. It returns at once if something is already unread. Exit code 3 means the time ran out. In Claude Code, run it as a background command and end your turn: finishing wakes the session.",
+    description: "Only for callers that get no doorbells. If doorbells reach you, never use this: end your turn and let one wake you. Blocks until something happens for this agent, or the timeout passes, then says what. It returns at once if something is already unread. From a shell, exit code 3 means the time ran out. In Claude Code's shell, run it as a background command and end your turn: finishing wakes the session.",
     params: [{ name: "timeout_seconds", kind: "number", description: "How long to wait. The default is 300." }],
   },
   {

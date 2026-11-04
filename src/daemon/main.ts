@@ -61,7 +61,8 @@ function text(params: Record<string, unknown>, key: string): string {
 }
 
 function describeCaller(caller: string): string {
-  return caller === "cli" ? "the command line on this machine" : "another session";
+  if (caller === "cli") return "the command line on this machine";
+  return caller.startsWith("mcp:") ? "another session" : `the caller "${caller}"`;
 }
 
 function takeHold(agentHex: string, caller: string, force: boolean): void {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,8 +9,9 @@ import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 
-// The command line counts as one caller per machine (ruled 1 November).
-const CALLER = "cli";
+// Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
+// Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
+const CALLER = process.env["CELLO_CALLER"] || "cli";
 const EXIT_REFUSED = 1;
 const EXIT_USAGE = 2;
 const EXIT_TIMEOUT = 3;
@@ -64,6 +66,7 @@ Run 'cello-v2 <command> --help' for details on any command.
 Commands print JSON. A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
 Any agent that can run a shell command can use all of this with no MCP.
+Each agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
 Where there's a tool, it has the same name: cello-v2 send ↔ cello_send.
 `;
 }
@@ -74,7 +77,8 @@ function usageError(message: string, op?: Operation): never {
   process.exit(EXIT_USAGE);
 }
 
-const currentAgentFile = (): string => join(celloHome(), "current-agent");
+// Per caller, so one caller's choice can't make another act as the wrong agent.
+const currentAgentFile = (): string => join(celloHome(), CALLER === "cli" ? "current-agent" : `current-agent-${createHash("sha256").update(CALLER).digest("hex").slice(0, 16)}`);
 
 function currentAgent(): string | undefined {
   return existsSync(currentAgentFile()) ? readFileSync(currentAgentFile(), "utf8").trim() || undefined : undefined;
