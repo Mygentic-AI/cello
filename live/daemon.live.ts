@@ -127,7 +127,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await assert.rejects(alice.client.call("send", { session_id: sessionId, text: "no signal" }), { code: "missing_signal" });
   await assert.rejects(alice.send(sessionId, "no time", "standby"), { code: "missing_est_minutes" });
 
-  assert.deepEqual(await alice.send(sessionId, "the launch code is purple-walrus", "over"), { sent: true, witnessed: true, position: 1 });
+  assert.deepEqual(await alice.send(sessionId, "the launch code is purple-walrus", "over"), { sent: true, position: 1 });
   assert.equal((await bob.bell("message")).data["session_id"], sessionId);
   const first = await bob.receive();
   assert.deepEqual(first.messages.map((m) => [m.position, m.text, m.signal]), [[1, "the launch code is purple-walrus", "over"]]);
@@ -158,7 +158,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   bob = await daemon.attach("Bob");
   const stillWaiting = await alice.receive();
   assert.deepEqual(stillWaiting.messages.map((m) => m.text), ["stopped"], "the unread message survived the restart");
-  assert.deepEqual(await alice.send(sessionId, "carrying on after the restart", "over"), { sent: true, witnessed: true, position: 5 });
+  assert.deepEqual(await alice.send(sessionId, "carrying on after the restart", "over"), { sent: true, position: 5 });
   await bob.bell("message");
   assert.deepEqual((await bob.receive()).messages.map((m) => m.text), ["carrying on after the restart"]);
 

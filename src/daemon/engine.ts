@@ -266,18 +266,23 @@ export class Engine {
     }
   }
 
+  // Frames come from outside, and one bad frame mustn't take down every agent on this daemon.
   #onPush(frame: PushFrame): void {
-    const agent = this.#agents.get(frame.agent);
-    if (!agent) return;
-    if (frame.push === "session") {
-      const wire = frame.data as SessionOnWire;
-      const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
-      this.#background("session push", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire)));
-      return;
+    try {
+      const agent = this.#agents.get(frame.agent);
+      if (!agent) return;
+      if (frame.push === "session") {
+        const wire = frame.data as SessionOnWire;
+        const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
+        this.#background("session push", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire)));
+        return;
+      }
+      const item = frame.data as WitnessedOnWire;
+      const sessionHex = toHex(signedEntry.decode(item.entry).fields.sessionId);
+      this.#background("entry push", this.#lane(agent.hex, sessionHex, () => this.#onEntryPush(agent, item)));
+    } catch (err: unknown) {
+      logEvent("server.bad_push", { kind: frame.push, message: err instanceof Error ? err.message : String(err) });
     }
-    const item = frame.data as WitnessedOnWire;
-    const sessionHex = toHex(signedEntry.decode(item.entry).fields.sessionId);
-    this.#background("entry push", this.#lane(agent.hex, sessionHex, () => this.#onEntryPush(agent, item)));
   }
 
   // ---- Session setup ----
@@ -486,16 +491,21 @@ export class Engine {
     const sessionId = start.session_id;
     await this.#resendPending(agent, start);
     let local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
-    const verifier = this.#verifier(agent, local);
     for (;;) {
-      const result = await this.#link.call("entry.fetch", { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: verifier.position }) as { items: WitnessedOnWire[]; tip: number };
+      const before = this.#verifier(agent, local).position;
+      const result = await this.#link.call("entry.fetch", { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: before }) as { items: WitnessedOnWire[]; tip: number };
       for (const item of result.items) {
         local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
         if (!(await this.#ingest(agent, local, item))) return;
       }
-      const current = this.#verifier(agent, this.#store.session(agent.signer.id, sessionId) as SessionRow);
-      if (current.position >= result.tip) break;
-      if (result.items.length === 0) throw new Error(`the server says the session reaches ${result.tip} but sent nothing after ${current.position}`);
+      local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+      const after = this.#verifier(agent, local).position;
+      if (after >= result.tip) break;
+      // A server that claims more but gives nothing new would otherwise keep this lane fetching forever.
+      if (after === before) {
+        this.#hold(agent, local, "server_sent_nothing_new", before + 1);
+        return;
+      }
     }
     local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
     if (local.fault) {
@@ -579,30 +589,36 @@ export class Engine {
     const ownClosed = local.own_closed === 1 || (closing && fromMe);
     const peerClosed = local.peer_closed === 1 || (closing && !fromMe);
     const nowClosed = ownClosed && peerClosed;
-    this.#store.transaction(() => {
-      if (fromMe) {
-        const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash) as EntryRow;
-        this.#store.markLanded(own.id, position, JSON.stringify(item.ack));
-      } else {
-        this.#store.insertEntry({
-          agent_id: agent.signer.id,
-          session_id: local.session_id,
-          entry_hash: hash,
-          position,
-          state: "received",
-          own: 0,
-          entry: JSON.stringify(item.entry),
-          ack: JSON.stringify(item.ack),
-          body: body as Uint8Array,
+    try {
+      this.#store.transaction(() => {
+        if (fromMe) {
+          const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash) as EntryRow;
+          this.#store.markLanded(own.id, position, JSON.stringify(item.ack));
+        } else {
+          this.#store.insertEntry({
+            agent_id: agent.signer.id,
+            session_id: local.session_id,
+            entry_hash: hash,
+            position,
+            state: "received",
+            own: 0,
+            entry: JSON.stringify(item.entry),
+            ack: JSON.stringify(item.ack),
+            body: body as Uint8Array,
+          });
+        }
+        this.#store.updateSession(agent.signer.id, local.session_id, {
+          verified_position: position,
+          own_closed: ownClosed ? 1 : 0,
+          peer_closed: peerClosed ? 1 : 0,
+          ...(nowClosed ? { state: "closed" as const, session_key: null } : {}),
         });
-      }
-      this.#store.updateSession(agent.signer.id, local.session_id, {
-        verified_position: position,
-        own_closed: ownClosed ? 1 : 0,
-        peer_closed: peerClosed ? 1 : 0,
-        ...(nowClosed ? { state: "closed" as const, session_key: null } : {}),
       });
-    });
+    } catch (err) {
+      // The check above already advanced the cached chain, so rebuild it from what's on disk.
+      this.#verifiers.delete(agent.hex + toHex(local.session_id));
+      throw err;
+    }
 
     const sessionHex = toHex(local.session_id);
     const bell = { agent: agent.name, session_id: sessionHex, from: local.counterparty_name, from_id: toHex(local.counterparty_id) };
@@ -745,7 +761,7 @@ export class Engine {
     if (outcome.status === "landed") {
       const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
       if (outcome.position > this.#verifier(agent, fresh).position) await this.#settle(agent, fresh);
-      return { sent: true, witnessed: true, position: outcome.position };
+      return { sent: true, position: outcome.position };
     }
     if (outcome.status === "pending") return { sent: false, status: "not_sent_yet", message: "The server can't be reached. Your message is saved, and it goes when the server is back. You'll get a notice." };
     if (outcome.code === "not_current") {
