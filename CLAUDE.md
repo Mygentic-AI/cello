@@ -12,6 +12,8 @@ Old code is reference. Copy only what the current work needs, works without the 
 
 ## Rules
 
+- **Everything is a CLI command, and MCP is a shim on top.** Every operation goes in `src/ipc/operations.ts`, which builds both. MCP adds only what a shell can't do: the wake.
+- **Identity and state never live in a connection.** Every call names its agent and caller. The holder is a caller, not a socket. A read counts only after the reply is written.
 - Comments say what's not obvious, in a line or two. History belongs in commit messages.
 - Everything signed gets both signatures, Ed25519 and ML-DSA-44, and both must verify.
 - Signed bytes come only from `src/protocol/structures.ts`.

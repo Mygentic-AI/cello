@@ -868,33 +868,44 @@ export class Engine {
     }
   }
 
-  // Moving the read position is what makes these count as read, so an operator's look at a record never does.
-  receive(agentHex: string, sessionHex?: string): unknown {
+  // Reading changes nothing. Only commit() moves the position, and the daemon calls it after the reply is written,
+  // so a caller that hangs up first leaves the messages unread. An operator's look at a record never moves it either.
+  receive(agentHex: string, sessionHex?: string): { result: unknown; commit(): void } {
     const agent = this.#requireAgent(agentHex);
     const sessions = sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id);
-    return this.#store.transaction(() => {
-      const messages: unknown[] = [];
-      for (const local of sessions) {
-        const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
-        for (const row of unread) {
-          const body = parseBody(row.body);
-          const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
-          messages.push({
-            session_id: toHex(local.session_id),
-            from: local.counterparty_name,
-            from_id: toHex(local.counterparty_id),
-            position: row.position,
-            ...(closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null }),
-            ...(body?.est_minutes ? { est_minutes: body.est_minutes } : {}),
-            ...(!closing && !body ? { unreadable: true } : {}),
-          });
-        }
-        if (unread.length > 0) this.#store.updateSession(agent.signer.id, local.session_id, { read_position: (unread.at(-1) as EntryRow).position as number });
+    const messages: unknown[] = [];
+    const reads: { sessionId: Uint8Array; through: number }[] = [];
+    for (const local of sessions) {
+      const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
+      for (const row of unread) {
+        const body = parseBody(row.body);
+        const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
+        messages.push({
+          session_id: toHex(local.session_id),
+          from: local.counterparty_name,
+          from_id: toHex(local.counterparty_id),
+          position: row.position,
+          ...(closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null }),
+          ...(body?.est_minutes ? { est_minutes: body.est_minutes } : {}),
+          ...(!closing && !body ? { unreadable: true } : {}),
+        });
       }
-      const notices = this.#store.notices(agent.signer.id);
-      if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
-      return { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })) };
-    });
+      if (unread.length > 0) reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
+    }
+    const notices = this.#store.notices(agent.signer.id);
+    return {
+      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })) },
+      commit: () => {
+        this.#store.transaction(() => {
+          for (const read of reads) {
+            // Two reads can overlap, so a position only ever moves forward.
+            const current = this.#store.session(agent.signer.id, read.sessionId) as SessionRow;
+            if (read.through > current.read_position) this.#store.updateSession(agent.signer.id, read.sessionId, { read_position: read.through });
+          }
+          if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
+        });
+      },
+    };
   }
 
   unreadCount(agentHex: string): number {

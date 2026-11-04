@@ -1,5 +1,7 @@
 # Running the live tests
 
+**Everything is a command.** `node src/cli.ts --help` lists them. The Claude Code tools come from the same table, in `src/ipc/operations.ts`, so a new operation goes there and both get it. `live/cli.live.ts` runs a whole conversation by command line alone.
+
 **Scripted tests.** Real server, real daemons and real processes, and no model turns. They need Docker running, and they cover everything except a real session waking.
 
 ```

@@ -38,25 +38,34 @@ class Daemon {
     process.kill(this.status().pid, "SIGKILL");
   }
   createAgent(name: string): string {
-    return (JSON.parse(this.cli("agent", "create", name)) as { agent_id: string }).agent_id;
+    return (JSON.parse(this.cli("create-agent", name)) as { agent_id: string }).agent_id;
   }
   log(): string {
     return readFileSync(join(this.home, "daemon.log"), "utf8");
   }
   async attach(agent: string): Promise<Session> {
     const client = await IpcClient.connect(join(this.home, "daemon.sock"));
-    const session = new Session(client);
-    await client.call("use_agent", { agent });
+    const session = new Session(client, agent);
+    await session.call("subscribe");
     return session;
   }
 }
 
+let nextCaller = 1;
+
+// Each call carries its agent and caller. Nothing is kept on the connection.
 class Session {
   readonly bells: IpcNotification[] = [];
   readonly client: IpcClient;
-  constructor(client: IpcClient) {
+  readonly agent: string;
+  readonly caller = `test:${nextCaller++}`;
+  constructor(client: IpcClient, agent: string) {
     this.client = client;
+    this.agent = agent;
     client.onNotification = (frame) => this.bells.push(frame);
+  }
+  call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    return this.client.call(method, { agent: this.agent, caller: this.caller, ...params });
   }
   async bell(type: string): Promise<IpcNotification> {
     return until(`a ${type} doorbell`, () => {
@@ -66,10 +75,10 @@ class Session {
     });
   }
   async receive(): Promise<{ messages: { position: number; text?: string; signal?: string; est_minutes?: number; closed_their_side?: boolean; session_id: string }[]; notices: { text: string }[] }> {
-    return await this.client.call("receive") as never;
+    return await this.call("receive") as never;
   }
   send(sessionId: string, text: string, signal: string, extra: Record<string, unknown> = {}): Promise<unknown> {
-    return this.client.call("send", { session_id: sessionId, text, signal, ...extra });
+    return this.call("send", { session_id: sessionId, text, signal, ...extra });
   }
 }
 
@@ -113,10 +122,15 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
 
   let alice = await daemon.attach("Alice");
   let bob = await daemon.attach("Bob");
-  await assert.rejects((await IpcClient.connect(join(daemon.home, "daemon.sock"))).call("use_agent", { agent: "Alice" }), { code: "agent_held" });
+  // The holder is a caller, not a socket: the same caller on a new socket is fine, and another caller isn't.
+  const newSocket = await IpcClient.connect(join(daemon.home, "daemon.sock"));
+  await assert.rejects(newSocket.call("receive", { agent: "Alice", caller: "someone-else" }), { code: "agent_held" });
+  assert.deepEqual(await newSocket.call("receive", { agent: "Alice", caller: alice.caller }), { messages: [], notices: [] });
+  await assert.rejects(newSocket.call("receive", { agent: "Alice" }), { code: "bad_argument" }, "a call must say who's calling");
+  newSocket.close();
 
   // Starting a session wakes the other side.
-  const started = await alice.client.call("initiate_session", { target: bobId }) as { session_id: string; state: string };
+  const started = await alice.call("initiate_session", { target: bobId }) as { session_id: string; state: string };
   assert.equal(started.state, "active");
   const sessionId = started.session_id;
   const hello = await bob.bell("session_started");
@@ -124,7 +138,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal(hello.data["from_id"], aliceId);
 
   // All three signals, each waking the reader. A signal is required, and standby needs a time.
-  await assert.rejects(alice.client.call("send", { session_id: sessionId, text: "no signal" }), { code: "missing_signal" });
+  await assert.rejects(alice.call("send", { session_id: sessionId, text: "no signal" }), { code: "missing_signal" });
   await assert.rejects(alice.send(sessionId, "no time", "standby"), { code: "missing_est_minutes" });
 
   assert.deepEqual(await alice.send(sessionId, "the launch code is purple-walrus", "over"), { sent: true, position: 1 });
@@ -190,12 +204,12 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await alice.send(sessionId, "that's all from me", "wrap");
   await bob.bell("message");
   await bob.receive();
-  const closedA = await bob.client.call("close_session", { session_id: sessionId }) as { closed: boolean; state: string };
+  const closedA = await bob.call("close_session", { session_id: sessionId }) as { closed: boolean; state: string };
   assert.deepEqual([closedA.closed, closedA.state], [true, "active"]);
   await alice.bell("peer_closed");
   assert.deepEqual((await alice.receive()).messages.map((m) => m.closed_their_side), [true]);
   await assert.rejects(bob.send(sessionId, "after my close", "over"), { code: "session_closed" });
-  const closedB = await alice.client.call("close_session", { session_id: sessionId }) as { state: string };
+  const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
   await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed" });
@@ -206,8 +220,8 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal(sql(`SELECT count(*) FROM entries WHERE session_id = '\\x${sessionId}'`), "9");
 
   // Each side's own record checks out with public keys only, and the two agree.
-  const reportA = JSON.parse(daemon.cli("verify", "Alice", sessionId)) as { ok: boolean; position: number; root: string };
-  const reportB = JSON.parse(daemon.cli("verify", "Bob", sessionId)) as { ok: boolean; position: number; root: string };
+  const reportA = JSON.parse(daemon.cli("verify", sessionId, "--agent", "Alice")) as { ok: boolean; position: number; root: string };
+  const reportB = JSON.parse(daemon.cli("verify", sessionId, "--agent", "Bob")) as { ok: boolean; position: number; root: string };
   assert.deepEqual([reportA.ok, reportA.position], [true, 9]);
   assert.deepEqual([reportB.ok, reportB.position], [true, 9]);
   assert.equal(reportA.root, reportB.root);
@@ -226,7 +240,7 @@ test("a message waits on the server for a laptop that's shut, unreadable, then g
   await online(mine, "Dana");
   await online(theirs, "Erin");
   const dana = await mine.attach("Dana");
-  const started = await dana.client.call("initiate_session", { target: erinId }) as { session_id: string; state: string };
+  const started = await dana.call("initiate_session", { target: erinId }) as { session_id: string; state: string };
   assert.equal(started.state, "active");
 
   theirs.kill();

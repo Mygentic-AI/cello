@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
+import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
 import { type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
 import { logEvent } from "./log.ts";
@@ -27,36 +28,70 @@ async function clearStaleSocket(): Promise<void> {
   unlinkSync(path);
 }
 
-interface Client { socket: Socket; current: string | null }
+// Identity and state never live on a connection. Every call names its agent and its caller.
+// The holder is a caller. Sockets here are only a way to reach a caller right now, and can vanish at any moment.
+interface Holder { caller: string; since: number }
+interface Listener { socket: Socket; caller: string; releaseOnClose: boolean; onBell?: (bell: Doorbell) => void }
 
 await clearStaleSocket();
 const store = new Store(databasePath(home));
-const clients = new Set<Client>();
-const holders = new Map<string, Client>();
+const sockets = new Set<Socket>();
+const holders = new Map<string, Holder>();
+const listeners = new Map<string, Set<Listener>>();
+
+function writeFrame(socket: Socket, frame: IpcNotification): void {
+  if (!socket.destroyed) socket.write(`${JSON.stringify(frame)}\n`);
+}
 
 function ring(agentHex: string, bell: Doorbell): void {
-  const holder = holders.get(agentHex);
-  if (!holder) return;
-  const frame: IpcNotification = { notification: bell.type, data: { ...bell } };
-  holder.socket.write(`${JSON.stringify(frame)}\n`);
+  for (const listener of listeners.get(agentHex) ?? []) {
+    if (listener.onBell) listener.onBell(bell);
+    else writeFrame(listener.socket, { notification: bell.type, data: { ...bell } });
+  }
 }
 
 const engine = new Engine(store, serverUrl, { ring });
 
-function release(client: Client): void {
-  if (client.current && holders.get(client.current) === client) holders.delete(client.current);
-  client.current = null;
-}
-
-function currentAgent(client: Client): string {
-  if (!client.current) throw new LocalError("no_current_agent", "select an agent first with use_agent");
-  return client.current;
-}
-
 function text(params: Record<string, unknown>, key: string): string {
   const value = params[key];
-  if (typeof value !== "string") throw new LocalError("bad_argument", `${key} must be a string`);
+  if (typeof value !== "string" || value.length === 0) throw new LocalError("bad_argument", `${key} must be a non-empty string`);
   return value;
+}
+
+function describeCaller(caller: string): string {
+  return caller === "cli" ? "the command line on this machine" : "another session";
+}
+
+function takeHold(agentHex: string, caller: string, force: boolean): void {
+  const holder = holders.get(agentHex);
+  if (holder && holder.caller !== caller) {
+    if (!force) throw new LocalError("agent_held", `${describeCaller(holder.caller)} holds ${engine.agentName(agentHex)}. It can be taken over with force.`);
+    for (const listener of [...(listeners.get(agentHex) ?? [])]) {
+      if (listener.caller === caller) continue;
+      writeFrame(listener.socket, { notification: "agent_displaced", data: { agent: engine.agentName(agentHex) } });
+      listeners.get(agentHex)?.delete(listener);
+    }
+  }
+  if (holder?.caller !== caller) holders.set(agentHex, { caller, since: Date.now() });
+}
+
+// Every call that acts as an agent passes through here, with its identity in the call itself.
+function acting(params: Record<string, unknown>): string {
+  const agent = engine.resolveAgent(text(params, "agent"));
+  takeHold(agent, text(params, "caller"), params["force"] === true);
+  return agent;
+}
+
+function stopListening(socket: Socket): void {
+  for (const [agent, set] of listeners) {
+    for (const listener of [...set]) {
+      if (listener.socket !== socket) continue;
+      set.delete(listener);
+      const stillThere = [...set].some((other) => other.caller === listener.caller);
+      // A session's hold lasts as long as it can be reached. The command line's lasts until it lets go.
+      if (listener.releaseOnClose && !stillThere && holders.get(agent)?.caller === listener.caller) holders.delete(agent);
+    }
+  }
 }
 
 let shuttingDown = false;
@@ -66,43 +101,87 @@ function shutdown(): void {
   shuttingDown = true;
   logEvent("daemon.stopping");
   engine.stop();
-  for (const client of clients) client.socket.destroy();
+  for (const socket of sockets) socket.destroy();
   ipc.close(() => {
     store.close();
     process.exit(0);
   });
 }
 
-async function handle(client: Client, method: string, params: Record<string, unknown>): Promise<unknown> {
+// A result that only counts once the caller has it.
+class AfterWrite {
+  readonly result: unknown;
+  readonly commit: () => void;
+  constructor(result: unknown, commit: () => void) {
+    this.result = result;
+    this.commit = commit;
+  }
+}
+
+function waitForEvent(socket: Socket, agent: string, caller: string, seconds: number): Promise<unknown> {
+  return new Promise((resolve) => {
+    const set = listeners.get(agent) ?? new Set<Listener>();
+    listeners.set(agent, set);
+    const finish = (outcome: unknown): void => {
+      clearTimeout(timer);
+      socket.off("close", gone);
+      set.delete(listener);
+      resolve(outcome);
+    };
+    const listener: Listener = { socket, caller, releaseOnClose: false, onBell: (bell) => finish({ event: bell.type, ...bell }) };
+    const gone = (): void => finish({ event: "caller_gone" });
+    const timer = setTimeout(() => finish({ event: "timeout" }), seconds * 1000);
+    socket.once("close", gone);
+    set.add(listener);
+  });
+}
+
+async function handle(socket: Socket, method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case "status":
       return { pid: process.pid, home, ...(engine.status() as object) };
     case "create_agent":
       return engine.createAgent(text(params, "name"));
     case "use_agent": {
-      const agent = engine.resolveAgent(text(params, "agent"));
-      const holder = holders.get(agent);
-      if (holder && holder !== client && params["force"] !== true) {
-        throw new LocalError("agent_held", `another session holds ${engine.agentName(agent)}. It can be taken over with force.`);
-      }
-      release(client);
-      if (holder && holder !== client) {
-        holder.current = null;
-        const frame: IpcNotification = { notification: "agent_displaced", data: { agent: engine.agentName(agent) } };
-        holder.socket.write(`${JSON.stringify(frame)}\n`);
-      }
-      holders.set(agent, client);
-      client.current = agent;
+      const agent = acting(params);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
+    // Takes hold, and keeps this socket as the way to reach the caller with doorbells. Used by a session that can be woken.
+    case "subscribe": {
+      const agent = acting(params);
+      const set = listeners.get(agent) ?? new Set<Listener>();
+      listeners.set(agent, set);
+      set.add({ socket, caller: text(params, "caller"), releaseOnClose: true });
+      return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
+    }
+    case "stop_using_agent": {
+      const agent = engine.resolveAgent(text(params, "agent"));
+      const caller = text(params, "caller");
+      if (holders.get(agent)?.caller === caller) holders.delete(agent);
+      for (const listener of [...(listeners.get(agent) ?? [])]) {
+        if (listener.caller === caller && !listener.onBell) listeners.get(agent)?.delete(listener);
+      }
+      return { released: true };
+    }
     case "initiate_session":
-      return engine.initiate(currentAgent(client), text(params, "target"));
+      return engine.initiate(acting(params), text(params, "target"));
     case "send":
-      return engine.send(currentAgent(client), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true);
-    case "receive":
-      return engine.receive(currentAgent(client), params["session_id"] === undefined ? undefined : text(params, "session_id"));
+      return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true);
+    case "receive": {
+      const { result, commit } = engine.receive(acting(params), params["session_id"] === undefined ? undefined : text(params, "session_id"));
+      return new AfterWrite(result, commit);
+    }
+    case "wait": {
+      const agent = acting(params);
+      const seconds = params["timeout_seconds"] === undefined ? DEFAULT_WAIT_SECONDS : params["timeout_seconds"];
+      if (typeof seconds !== "number" || !(seconds > 0)) throw new LocalError("bad_argument", "timeout_seconds must be a positive number");
+      const unread = engine.unreadCount(agent);
+      if (unread > 0) return { event: "unread", unread };
+      return waitForEvent(socket, agent, text(params, "caller"), seconds);
+    }
     case "close_session":
-      return engine.close(currentAgent(client), text(params, "session_id"));
+      return engine.close(acting(params), text(params, "session_id"));
+    // Reading a record acts as nobody, so it needs no hold.
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "shutdown":
@@ -114,8 +193,13 @@ async function handle(client: Client, method: string, params: Record<string, unk
 }
 
 const ipc = createServer((socket) => {
-  const client: Client = { socket, current: null };
-  clients.add(client);
+  sockets.add(socket);
+  const respond = (response: IpcResponse, afterWrite?: () => void): void => {
+    if (socket.destroyed) return;
+    socket.write(`${JSON.stringify(response)}\n`, (err) => {
+      if (!err && afterWrite) afterWrite();
+    });
+  };
   createInterface({ input: socket }).on("line", (line) => {
     let request: IpcRequest;
     try {
@@ -124,8 +208,11 @@ const ipc = createServer((socket) => {
       socket.destroy();
       return;
     }
-    handle(client, request.method, request.params ?? {}).then(
-      (result) => respond({ id: request.id, ok: true, result }),
+    handle(socket, request.method, request.params ?? {}).then(
+      (result) => {
+        if (result instanceof AfterWrite) respond({ id: request.id, ok: true, result: result.result }, result.commit);
+        else respond({ id: request.id, ok: true, result });
+      },
       (err: unknown) => {
         if (err instanceof LocalError) {
           respond({ id: request.id, ok: false, error: { code: err.code, message: err.message } });
@@ -137,12 +224,9 @@ const ipc = createServer((socket) => {
       },
     );
   });
-  const respond = (response: IpcResponse): void => {
-    if (!socket.destroyed) socket.write(`${JSON.stringify(response)}\n`);
-  };
   socket.on("close", () => {
-    release(client);
-    clients.delete(client);
+    stopListening(socket);
+    sockets.delete(socket);
   });
   socket.on("error", () => undefined);
 });

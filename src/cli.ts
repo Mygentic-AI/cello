@@ -1,25 +1,117 @@
 #!/usr/bin/env node
-// The commands a person runs. An agent's own work goes through the Claude Code tools in mcp.ts.
+// Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
+import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 
-const USAGE = `Usage:
-  cello-v2 login --server <wss-url>     Start the daemon.
-  cello-v2 logout                       Stop the daemon. Conversations carry on after the next login.
-  cello-v2 status                       What's running, and every agent and session.
-  cello-v2 agent create <name>          Create an agent and register it on the server.
-  cello-v2 verify <agent> <session-id>  Check a session's record, using only public keys.`;
+// The command line counts as one caller per machine (ruled 1 November).
+const CALLER = "cli";
+const EXIT_REFUSED = 1;
+const EXIT_USAGE = 2;
+const EXIT_TIMEOUT = 3;
 
-function fail(message: string): never {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
+function flag(name: string): string {
+  return `--${name.replaceAll("_", "-")}`;
 }
 
-async function daemon(): Promise<IpcClient> {
-  return IpcClient.connect(socketPath());
+function usageOf(op: Operation): string {
+  const positional = op.params.filter((p) => p.positional).map((p) => (p.required ? `<${p.name}>` : `[<${p.name}>]`));
+  const flags = op.params.filter((p) => !p.positional).map((p) => {
+    const shown = p.kind === "boolean" ? flag(p.name) : `${flag(p.name)} <${p.allowed?.join("|") ?? p.kind}>`;
+    return p.required ? shown : `[${shown}]`;
+  });
+  const scoped = op.scoped ? ["[--agent <name-or-id>]", "[--force]"] : [];
+  return `  cello-v2 ${[op.command, ...positional, ...flags, ...scoped].join(" ")}\n      ${op.description}`;
+}
+
+const USAGE = `Usage:
+  cello-v2 login --server <wss-url>
+      Start the daemon.
+  cello-v2 logout
+      Stop the daemon. Conversations carry on after the next login.
+${OPERATIONS.map(usageOf).join("\n")}
+
+--agent can be left out once you've chosen one with use-agent. Output is JSON.
+A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}. wait exits ${EXIT_TIMEOUT} on its timeout.`;
+
+function usageError(message: string): never {
+  process.stderr.write(`${message}\n\n${USAGE}\n`);
+  process.exit(EXIT_USAGE);
+}
+
+const currentAgentFile = (): string => join(celloHome(), "current-agent");
+
+function currentAgent(): string | undefined {
+  return existsSync(currentAgentFile()) ? readFileSync(currentAgentFile(), "utf8").trim() || undefined : undefined;
+}
+
+function readValue(param: Param, raw: string): string | number {
+  if (param.kind === "number") {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) usageError(`${flag(param.name)} must be a number, got ${raw}`);
+    return value;
+  }
+  if (param.allowed && !param.allowed.includes(raw)) usageError(`${flag(param.name)} must be one of ${param.allowed.join(", ")}, got ${raw}`);
+  return raw;
+}
+
+// Fails on anything it doesn't recognise, so a mistyped flag can't quietly change what a command does.
+function parse(op: Operation, args: string[]): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  const positional = op.params.filter((p) => p.positional);
+  const given: string[] = [];
+  let flagsEnded = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (flagsEnded || !arg.startsWith("--")) {
+      given.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      flagsEnded = true;
+      continue;
+    }
+    if (op.scoped && arg === "--force") {
+      params["force"] = true;
+      continue;
+    }
+    if (op.scoped && arg === "--agent") {
+      const value = args[++i];
+      if (!value) usageError("--agent needs a value");
+      params["agent"] = value;
+      continue;
+    }
+    const param = op.params.find((p) => !p.positional && flag(p.name) === arg);
+    if (!param) usageError(`${op.command} has no option ${arg}`);
+    if (param.kind === "boolean") {
+      params[param.name] = true;
+      continue;
+    }
+    const value = args[++i];
+    if (value === undefined) usageError(`${arg} needs a value`);
+    params[param.name] = readValue(param, value);
+  }
+  if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`);
+  positional.forEach((param, i) => {
+    const value = given[i];
+    if (value !== undefined) params[param.name] = param.name === "text" && value === "-" ? readFileSync(0, "utf8") : value;
+  });
+  for (const param of op.params) {
+    if (param.required && params[param.name] === undefined) usageError(`${op.command} needs ${param.positional ? `<${param.name}>` : flag(param.name)}`);
+  }
+  if (op.scoped) {
+    params["agent"] ??= currentAgent();
+    if (!params["agent"]) {
+      process.stderr.write(`${JSON.stringify({ error: "no_current_agent", message: "Name the agent with --agent, or choose one with: cello-v2 use-agent --agent <name>" })}\n`);
+      process.exit(EXIT_REFUSED);
+    }
+    params["caller"] = CALLER;
+  }
+  return params;
 }
 
 async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient> {
@@ -28,24 +120,28 @@ async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient
   for (let i = 0; i < 100; i++) {
     if (exited !== undefined) break;
     try {
-      return await daemon();
+      return await IpcClient.connect(socketPath());
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   const tail = readFileSync(logPath(), "utf8").trim().split("\n").slice(-5).join("\n");
-  return fail(`The daemon didn't start. The last lines of ${logPath()}:\n${tail}`);
+  process.stderr.write(`The daemon didn't start. The last lines of ${logPath()}:\n${tail}\n`);
+  return process.exit(EXIT_REFUSED);
 }
 
 async function login(args: string[]): Promise<void> {
-  const flag = args.indexOf("--server");
-  const server = flag >= 0 ? args[flag + 1] : undefined;
-  if (!server) fail(USAGE);
+  const at = args.indexOf("--server");
+  const server = at >= 0 ? args[at + 1] : undefined;
+  if (!server) usageError("login needs --server");
   try {
-    const running = await daemon();
+    const running = await IpcClient.connect(socketPath());
     const status = await running.call("status") as { pid: number; server: string };
     running.close();
-    if (status.server !== server) fail(`A daemon is already running for ${status.server}. Run: cello-v2 logout`);
+    if (status.server !== server) {
+      process.stderr.write(`A daemon is already running for ${status.server}. Run: cello-v2 logout\n`);
+      process.exit(EXIT_REFUSED);
+    }
     process.stdout.write(`Already running, process ${status.pid}.\n`);
     return;
   } catch (err: unknown) {
@@ -71,45 +167,37 @@ async function login(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  switch (command) {
-    case "login":
-      await login(args);
-      return;
-    case "logout": {
-      const client = await daemon();
-      await client.call("shutdown");
-      client.close();
-      process.stdout.write("Daemon stopped.\n");
-      return;
-    }
-    case "status": {
-      const client = await daemon();
-      process.stdout.write(`${JSON.stringify(await client.call("status"), null, 2)}\n`);
-      client.close();
-      return;
-    }
-    case "agent": {
-      if (args[0] !== "create" || !args[1]) fail(USAGE);
-      const client = await daemon();
-      process.stdout.write(`${JSON.stringify(await client.call("create_agent", { name: args[1] }), null, 2)}\n`);
-      client.close();
-      return;
-    }
-    case "verify": {
-      if (!args[0] || !args[1]) fail(USAGE);
-      const client = await daemon();
-      const report = await client.call("verify_session", { agent: args[0], session_id: args[1] }) as { ok: boolean };
-      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-      client.close();
-      if (!report.ok) process.exit(1);
-      return;
-    }
-    default:
-      fail(USAGE);
+  if (!command || command === "--help" || command === "help") {
+    process.stdout.write(`${USAGE}\n`);
+    return;
   }
+  if (command === "login") return login(args);
+  if (command === "logout") {
+    const client = await IpcClient.connect(socketPath());
+    await client.call("shutdown");
+    client.close();
+    process.stdout.write("Daemon stopped.\n");
+    return;
+  }
+  const op = OPERATIONS.find((candidate) => candidate.command === command);
+  if (!op) usageError(`No such command: ${command}`);
+  const params = parse(op, args);
+  const client = await IpcClient.connect(socketPath());
+  const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
+  const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean };
+  client.close();
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${params["agent"] as string}\n`, { mode: 0o600 });
+  if (op.method === "stop_using_agent" && currentAgent() === params["agent"]) rmSync(currentAgentFile());
+  if (op.method === "wait" && result.event === "timeout") process.exitCode = EXIT_TIMEOUT;
+  if (op.method === "verify_session" && !result.ok) process.exitCode = EXIT_REFUSED;
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof DaemonGone || err instanceof DaemonRefused) fail(`${err.code}: ${err.message}`);
-  fail(err instanceof Error ? err.stack ?? err.message : String(err));
+  if (err instanceof DaemonGone || err instanceof DaemonRefused) {
+    process.stderr.write(`${JSON.stringify({ error: err.code, message: err.message })}\n`);
+    process.exit(EXIT_REFUSED);
+  }
+  process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  process.exit(EXIT_REFUSED);
 });

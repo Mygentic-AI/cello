@@ -61,7 +61,7 @@ export class IpcClient {
     });
   }
 
-  call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  call(method: string, params: Record<string, unknown> = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
     const id = this.#nextId++;
     const request: IpcRequest = { id, method, params };
     return new Promise((resolve, reject) => {
@@ -71,8 +71,8 @@ export class IpcClient {
       }
       const timer = setTimeout(() => {
         this.#waiting.delete(id);
-        reject(new DaemonRefused("daemon_no_answer", `the daemon didn't answer ${method} within ${CALL_TIMEOUT_MS / 1000} seconds, so its outcome is unknown`));
-      }, CALL_TIMEOUT_MS);
+        reject(new DaemonRefused("daemon_no_answer", `the daemon didn't answer ${method} within ${timeoutMs / 1000} seconds, so its outcome is unknown`));
+      }, timeoutMs);
       this.#waiting.set(id, {
         resolve(value) { clearTimeout(timer); resolve(value); },
         reject(err) { clearTimeout(timer); reject(err); },

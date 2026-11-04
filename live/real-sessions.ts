@@ -282,8 +282,8 @@ const report: Record<string, unknown> = { started: stamp, server: args.server, m
 async function run(): Promise<void> {
   execFileSync(process.execPath, [new URL("./doctor.ts", import.meta.url).pathname, "--server", args.server as string, "--instance", args.instance as string, "--zone", args.zone as string], { stdio: "inherit" });
   cli("login", "--server", args.server as string);
-  const alphaId = (JSON.parse(cli("agent", "create", "Alpha")) as { agent_id: string }).agent_id;
-  const betaId = (JSON.parse(cli("agent", "create", "Beta")) as { agent_id: string }).agent_id;
+  const alphaId = (JSON.parse(cli("create-agent", "Alpha")) as { agent_id: string }).agent_id;
+  const betaId = (JSON.parse(cli("create-agent", "Beta")) as { agent_id: string }).agent_id;
   await until("both agents online", 60_000, () => status().agents.every((a) => a.online));
   say("daemon up, both agents registered and online");
 
@@ -313,8 +313,8 @@ async function run(): Promise<void> {
       await until("both sides to close", CONVERSATION_LIMIT_MS, () => session("Alpha")?.state === "closed" && session("Beta")?.state === "closed");
       say("both sides closed");
       const sessionId = session("Alpha")?.session_id as string;
-      const a = JSON.parse(cli("verify", "Alpha", sessionId)) as { ok: boolean; position: number; root: string };
-      const b = JSON.parse(cli("verify", "Beta", sessionId)) as { ok: boolean; root: string };
+      const a = JSON.parse(cli("verify", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
+      const b = JSON.parse(cli("verify", sessionId, "--agent", "Beta")) as { ok: boolean; root: string };
       assert.ok(a.ok && b.ok && a.root === b.root, "each record must check out, and the two must agree");
       report["chain"] = { position: a.position, root: a.root, alpha_ok: a.ok, beta_ok: b.ok };
       say(`the chain checks out on both sides, through position ${a.position}, and the roots match`);
@@ -362,8 +362,8 @@ async function run(): Promise<void> {
   say("both sides closed");
 
   const sessionId = session("Alpha")?.session_id as string;
-  const reportA = JSON.parse(cli("verify", "Alpha", sessionId)) as { ok: boolean; position: number; root: string };
-  const reportB = JSON.parse(cli("verify", "Beta", sessionId)) as { ok: boolean; position: number; root: string };
+  const reportA = JSON.parse(cli("verify", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
+  const reportB = JSON.parse(cli("verify", sessionId, "--agent", "Beta")) as { ok: boolean; position: number; root: string };
   assert.ok(reportA.ok && reportB.ok, "each side's own record must check out");
   assert.equal(reportA.root, reportB.root, "the two records must agree");
   report["chain"] = { position: reportA.position, root: reportA.root, alpha_ok: reportA.ok, beta_ok: reportB.ok };

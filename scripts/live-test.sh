@@ -15,4 +15,5 @@ cd "$server_dir"
 trap 'docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 docker compose up -d --build --wait server
 cd "$here"
-CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-force-exit --test-timeout=240000 live/daemon.live.ts live/mcp.live.ts
+# One file at a time, because the daemon test stops the shared server on purpose.
+CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-concurrency=1 --test-force-exit --test-timeout=240000 live/daemon.live.ts live/mcp.live.ts live/cli.live.ts
