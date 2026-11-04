@@ -207,11 +207,11 @@ export function describeSeal(record: SealRecord): Record<string, string> {
     proven_without_trusting_the_server: m > 0
       ? `Positions 1 to ${m}: the counterparty's own signature says its machine stored and decrypted these, in this order. That rests on its key, not on the server. Received means stored and decrypted, not read.`
       : "Nothing: the counterparty has signed no delivery ack for any of this.",
-    rests_on_the_server: m < n
-      ? `Positions ${m + 1} to ${n}, and the time: only the sealer and the server say these were witnessed in this order. The counterparty hasn't confirmed receiving them.`
-      : "The time, and that the record was checked then. Every position is covered by the counterparty's signature.",
-    how_much_this_covers: `${beyond > 0 ? `This is a partial seal. It covers ${n} of the ${cert.tip} positions the session had when sealed, so ${beyond} more exist that it doesn't cover.` : `It covers all ${n} positions the session had when sealed.`} ${cert.closed === 1 ? "The session had closed on both sides." : "The session hadn't closed, so more may have followed."}`,
-    who_signed: "Check that counterparty_id is who you expect: the signature behind the received number is that key's, and an id is all it proves.",
+    rests_on_the_server: `${m < n
+      ? `Positions ${m + 1} to ${n}: only the sealer and the server say these were witnessed in this order. The counterparty hasn't confirmed receiving them. `
+      : "Every position is covered by the counterparty's signature. "}Also the time, how many positions the session had, and whether it had closed: no counterparty signature stands behind those.`,
+    how_much_this_covers: `${beyond > 0 ? `This is a partial seal. The server says the session had ${cert.tip} positions when sealed, and this covers ${n}, so ${beyond} more exist that it doesn't cover.` : `The server says the session had ${n} positions when sealed, and this covers all of them.`} ${cert.closed === 1 ? "The server says the session had closed on both sides." : "The server says the session hadn't closed, so more may have followed."}`,
+    who_signed: "Check that session_id is the conversation you mean, and that counterparty_id is who you expect. The same two parties can have other sessions. The signature behind the received number is that key's, and an id is all it proves.",
     seal_log: "This seal is in its server's own log. Nobody outside witnesses that log yet, so its operator could rewrite it.",
     contents: "This record holds hashes and signatures only. It doesn't show what was said.",
   };

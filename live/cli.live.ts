@@ -305,7 +305,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   assert.deepEqual([partial.witnessed_through, partial.received_through, partial.tip_when_sealed, partial.partial], [2, 2, 4, true]);
   const partialCheck = verify(saved(ok(["export-seal", partial.seal_id, "--agent", "Jan"])), sealKey) as unknown as SealOutput;
   assert.equal(partialCheck.partial, true);
-  assert.match(partialCheck.statement["how_much_this_covers"] as string, /partial seal.*2 of the 4.*2 more exist/);
+  assert.match(partialCheck.statement["how_much_this_covers"] as string, /partial seal.*4 positions.*covers 2.*2 more exist/);
   assert.equal(cello(["seal", session, "--through", "99", "--agent", "Jan"]).json["error"], "seal_beyond_held");
   assert.equal(cello(["seal", session, "--through", "0", "--agent", "Jan"]).json["error"], "bad_argument");
 

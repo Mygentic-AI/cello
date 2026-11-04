@@ -119,7 +119,11 @@ test("the statement separates what's proven from what rests on the server, and s
   const statement = describeSeal(check.record);
   assert.match(statement["proven_without_trusting_the_server"] as string, /Positions 1 to 3/);
   assert.match(statement["rests_on_the_server"] as string, /Positions 4 to 5/);
-  assert.match(statement["how_much_this_covers"] as string, /partial seal.*5 of the 8/);
+  assert.match(statement["how_much_this_covers"] as string, /partial seal.*server says.*8 positions.*covers 5/);
+  // The session's size and whether it closed carry no counterparty signature, so neither may read as proven.
+  assert.match(statement["rests_on_the_server"] as string, /how many positions the session had, and whether it had closed/);
+  assert.match(statement["how_much_this_covers"] as string, /The server says the session hadn't closed/);
+  assert.match(statement["who_signed"] as string, /session_id/);
   assert.match(statement["seal_log"] as string, /could rewrite it/);
   assert.match(statement["meaning"] as string, /says nothing about whether the parties agreed/);
 });
