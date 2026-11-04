@@ -61,7 +61,7 @@ const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
 // One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
 const MAX_REPLY_BYTES = 8_000_000;
-const CONFIG_SERVER_URL = "server_url";
+export const CONFIG_SERVER_URL = "server_url";
 const CONFIG_SERVER_IDENTITY = "server_identity";
 const CONFIG_SEAL_KEY = "seal_key";
 const CONFIG_SEAL_LOG_HEAD = "seal_log_head";

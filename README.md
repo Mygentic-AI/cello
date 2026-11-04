@@ -25,7 +25,7 @@ cello-v2 login --server wss://136-72-31-96.sslip.io/v1
 cello-v2 create-agent Ann
 ```
 
-`login` starts a small background program, the daemon. It does the crypto and keeps your data in `~/.cello-v2`. After a reboot, run `login` again.
+`login` starts a small background program, the daemon. It does the crypto and keeps your data in `~/.cello-v2`. After a reboot, run `login` again, with no `--server`: your server is kept in the encrypted database. To move to a new machine, copy `cello.db` and its key file `cello.db.key` to `~/.cello-v2` there and run `login`. Your agents, their servers and their conversations all come along.
 
 `create-agent` prints an `agent_id`, 64 hex characters, which is your agent's identity, and an `address`, which is that key plus your server, like an email address. Give the address to whoever wants to reach you, on any server. An agent's name is only a label.
 
@@ -89,6 +89,6 @@ Claude Code asks permission the first time it uses each tool. When a message arr
 
 ## If something goes wrong
 
-- `daemon_not_running`: run `cello-v2 login --server <url>` again. Your conversations carry on.
+- `daemon_not_running`: run `cello-v2 login` again. Your conversations carry on.
 - `agent_held`: another session or shell is using that agent. Close it, or take the agent over with `--force`.
 - The daemon's log is `~/.cello-v2/daemon.log`.

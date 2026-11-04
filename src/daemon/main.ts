@@ -4,13 +4,10 @@ import { createServer, type Socket, createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
-import { type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
+import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
 import { logEvent } from "./log.ts";
 import { celloHome, databasePath, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
-
-const serverUrl = process.argv[2];
-if (!serverUrl) throw new Error("usage: daemon <server-url>");
 
 const home = celloHome();
 mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -37,6 +34,12 @@ interface Listener { socket: Socket; caller: string; releaseOnClose: boolean; on
 
 await clearStaleSocket();
 const store = new Store(databasePath(home));
+// The server is named once, and then lives in the database, so moving the database and its key moves everything.
+const serverUrl = process.argv[2] ?? store.getConfig(CONFIG_SERVER_URL);
+if (!serverUrl) {
+  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello-v2 login --server <url>" });
+  process.exit(1);
+}
 const sockets = new Set<Socket>();
 const holders = new Map<string, Holder>();
 const listeners = new Map<string, Set<Listener>>();

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -73,7 +73,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 
 // One owner's machine: its own daemon, in its own folder, with its own caller.
 function side(name: string, home: Server) {
-  const dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
+  let dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
   const run = (args: string[]): Run => {
     const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: dir, CELLO_CALLER: `shell-${name}` } });
     let json: Record<string, unknown> = {};
@@ -91,8 +91,17 @@ function side(name: string, home: Server) {
   };
   const self = {
     name,
-    dir,
     run,
+    // Only the database and its key go to the new folder, and login is told nothing.
+    restoreInNewHome: () => {
+      must(["logout"]);
+      const fresh = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-restored-`));
+      for (const file of ["cello.db", "cello.db.key"]) copyFileSync(join(dir, file), join(fresh, file));
+      assert.deepEqual(readdirSync(fresh).sort(), ["cello.db", "cello.db.key"]);
+      dir = fresh;
+      must(["login"]);
+      if (pidsFile) appendFileSync(pidsFile, `${self.status().pid}\n`);
+    },
     must,
     act: (...args: string[]) => must([...args, "--agent", name]),
     refused: (...args: string[]) => {
@@ -252,6 +261,21 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.deepEqual(textsRead(bob.read()), [lines[3]]);
   say("carried on through Ann's daemon dying with her own server down");
 
+  // Ann moves to a new home with only her database and its key. Her own server, Bob's, and this conversation all come back with no setup.
+  ann.restoreInNewHome();
+  await until("Ann restored on both servers", () => {
+    const now = ann.status();
+    return now.connected && now.agents.every((a) => a.online) && now.visiting.some((v) => v.server === B.url && v.connected && v.agents === 1);
+  });
+  assert.deepEqual(ann.ports(), [18400, 18401], "she reaches both servers");
+  assert.deepEqual([hostedOn(ann), (ann.act("verify-session", session))["ok"]], [B.url, true]);
+  say("a daemon restored in a new home reached both servers with no setup");
+  // With nothing kept yet, there's no server to go to, and it says so.
+  const blank = side("Blank", A);
+  const noServer = blank.run(["login"]);
+  assert.equal(noServer.status, 1, noServer.stdout);
+  assert.match(noServer.stderr, /no server is set for this data yet/);
+
   // Bob's daemon dies too, and what was sent meanwhile is waiting for it.
   bob.kill();
   assert.deepEqual(ann.act("send", session, lines[4] as string, "--over"), { sent: true, position: 5 });
@@ -270,6 +294,8 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.equal(bob.read().messages[0]?.closed_their_side, true);
   const bobClosed = bob.act("close-session", session) as { state: string; seal: { sealed: boolean; seal_id: string; session_closed: boolean; witnessed_through: number } };
   assert.deepEqual([bobClosed.state, bobClosed.seal.sealed, bobClosed.seal.session_closed, bobClosed.seal.witnessed_through], ["closed", true, true, 8]);
+  await gets(ann);
+  assert.equal(ann.read().messages[0]?.closed_their_side, true);
   say("closed and sealed on both sides");
 
   // ---- The record checks out on both sides, with nothing but public keys. ----
@@ -291,8 +317,10 @@ test("an agent on one server talks to an agent on another, and neither server le
   const wrongServer = reader.run(["verify-seal", annSeal, "--seal-key", healthA.seal_key]);
   assert.deepEqual([wrongServer.status, wrongServer.json["fault"]], [1, "wrong_seal_key"], "a seal from Bob's server doesn't pass as one from Ann's");
   // Ann's seal at her close stops at 7, and Bob's close is 8, so a transcript of everything needs a fresh seal. It reopens her visit.
-  const annWhole = ann.act("seal", session) as { sealed: boolean; witnessed_through: number; session_closed: boolean };
-  assert.deepEqual([annWhole.sealed, annWhole.witnessed_through, annWhole.session_closed], [true, 8, true]);
+  // If her finished visit has already ended, this says it's saved, reconnects, and finishes by itself.
+  ann.act("seal", session);
+  const annWhole = await until("Ann's seal through 8", () => (ann.act("seals", "--session-id", session) as { seals: { witnessed_through: number; session_closed: boolean }[] }).seals.find((s) => s.witnessed_through === 8));
+  assert.equal(annWhole.session_closed, true);
   const proof = join(files, "transcript.json");
   ann.act("export-transcript", session, "--all", "--out", proof);
   const checked = reader.must(["verify-transcript", proof, "--seal-key", healthB.seal_key]) as { ok: boolean; messages: { position: number; text?: string }[] };

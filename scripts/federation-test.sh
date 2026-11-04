@@ -12,7 +12,8 @@ if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
 fi
 
 waited=0
-until mkdir "$lock" 2>/dev/null; do
+mkdir "$lock" 2>/dev/null && locked=1 || { locked=; echo "Waiting for another track's heavy run to finish, for up to 15 minutes."; }
+until [ -n "$locked" ] || mkdir "$lock" 2>/dev/null; do
   if [ "$waited" -ge 900 ]; then
     echo "Another track has held $lock for 15 minutes, so this run didn't start." >&2
     exit 1
