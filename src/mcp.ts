@@ -137,6 +137,8 @@ function inputSchema(op: Operation): Record<string, z.ZodType> {
   const shape: Record<string, z.ZodType> = {};
   if (op.scoped) {
     shape["agent"] = z.string().describe("Your agent's name or agent_id. Every call names it.");
+  }
+  if (op.acts) {
     shape["force"] = z.boolean().optional().describe("Take the agent from another caller that holds it. Only when your operator means to move it here.");
   }
   for (const param of op.params) shape[param.name] = schemaOf(param);
