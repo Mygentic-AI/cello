@@ -1500,6 +1500,7 @@ export class Engine {
       agents: () => [...this.#agents.keys()],
       online: (agentHex) => this.#agents.get(agentHex)?.online === true,
       call: (method, params) => this.#link.call(method, params),
+      callLong: (agentHex, method, params) => this.#longCall(this.#requireAgent(agentHex), method, params),
       serverIdentity: () => this.#serverIdentity(),
       ring: (agentHex, bell) => this.#events.ring(agentHex, bell),
       // Channels share the one screening queue, so a channel takes turns with conversations by sender.

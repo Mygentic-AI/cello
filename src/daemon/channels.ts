@@ -36,7 +36,7 @@ import { equalBytes, toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, type Signer, generateIdentitySeeds, signerFromSeeds } from "../protocol/identity.ts";
 import { mlKemGenerateSeed, mlKemKeypairFromSeed } from "../protocol/ml-kem.ts";
 import { ChannelPosting, ChannelVisibility, type ChannelInfoFields, type ChannelPostFields, channelPostBytes } from "../protocol/structures.ts";
-import { type PushFrame, type WireSigned, fromB64, identityCodec, toB64 } from "../protocol/wire.ts";
+import { LONG_CIPHERTEXT_BYTES, type PushFrame, type WireSigned, fromB64, identityCodec, toB64 } from "../protocol/wire.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { ChannelStore, type FollowRow, type PostRow, type Verdict } from "./channel-store.ts";
 import { type Doorbell, LocalError } from "./engine.ts";
@@ -58,6 +58,8 @@ export interface ChannelHost {
   agents(): string[];
   online(agentHex: string): boolean;
   call(method: string, params: unknown): Promise<unknown>;
+  // The second connection, so that moving a channel's text can't hold up anyone's conversation on a slow link.
+  callLong(agentHex: string, method: string, params: unknown): Promise<unknown>;
   serverIdentity(): PublicIdentity;
   ring(agentHex: string, bell: Doorbell): void;
   // Waits for its turn in the one screening queue. Always answers: a screen that keeps failing answers blocked.
@@ -154,9 +156,13 @@ export class Channels {
     return run;
   }
 
-  async #call(method: string, params: unknown): Promise<unknown> {
+  #call(method: string, params: unknown): Promise<unknown> {
+    return this.#translated(() => this.#host.call(method, params));
+  }
+
+  async #translated(work: () => Promise<unknown>): Promise<unknown> {
     try {
-      return await this.#host.call(method, params);
+      return await work();
     } catch (err: unknown) {
       if (err instanceof ServerRefused) throw new LocalError(err.code, err.message);
       if (err instanceof ServerUnreachable) throw new LocalError("server_unreachable", `The server can't be reached: ${err.message}`);
@@ -490,7 +496,8 @@ export class Channels {
     const signer = this.#host.signer(agentHex);
     let answer: { ack: unknown };
     try {
-      answer = await this.#host.call("channel.post", { agent: toB64(signer.id), channel: toB64(channel), ...JSON.parse(wire) as object }) as { ack: unknown };
+      const params = { agent: toB64(signer.id), channel: toB64(channel), ...JSON.parse(wire) as object };
+      answer = await (body.length + title.length > LONG_CIPHERTEXT_BYTES ? this.#host.callLong(agentHex, "channel.post", params) : this.#host.call("channel.post", params)) as { ack: unknown };
     } catch (err: unknown) {
       if (err instanceof ServerUnreachable) {
         return { posted: false, status: "saved", message: `The server can't be reached (${err.message}). This is saved and will go by itself.` };
@@ -683,7 +690,7 @@ export class Channels {
       const current = this.#requireFollow(signer.id, channel);
       let reply: FetchReply;
       try {
-        reply = await this.#call("channel.fetch", { agent: toB64(signer.id), channel: toB64(channel), after: current.high, want }) as FetchReply;
+        reply = await this.#translated(() => this.#host.callLong(agentHex, "channel.fetch", { agent: toB64(signer.id), channel: toB64(channel), after: current.high, want })) as FetchReply;
       } catch (err: unknown) {
         if (err instanceof LocalError && (err.code === "ejected" || err.code === "not_a_member")) {
           const now = err.code === "ejected" ? "ejected" : "left";
