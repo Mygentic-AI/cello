@@ -33,6 +33,9 @@ export const ERROR_CODES = [
   "seal_beyond_tip",
   "seal_root_mismatch",
   "seal_log_inconsistent",
+  "federation_closed",
+  "too_many_pending",
+  "visitor_budget_spent",
   "internal_error",
 ] as const;
 
