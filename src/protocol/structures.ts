@@ -215,6 +215,93 @@ export function assignmentBytes(a: AssignmentFields): Uint8Array {
   ]);
 }
 
+// The sealer's statement that it holds this root at this position, and asks for it to be sealed.
+export interface SealRequestFields {
+  serverId: Uint8Array;
+  sessionId: Uint8Array;
+  sealerId: Uint8Array;
+  throughPosition: number;
+  root: Uint8Array;
+}
+
+export function sealRequestBytes(r: SealRequestFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("server id", r.serverId, HASH_BYTES),
+    exact("session id", r.sessionId, SESSION_ID_BYTES),
+    exact("sealer id", r.sealerId, HASH_BYTES),
+    u64(r.throughPosition),
+    exact("root", r.root, HASH_BYTES),
+  ]);
+}
+
+// Signed by the seal key, and neutral on agreement: it attests that this conversation took place.
+// throughPosition is N, witnessed through. receivedThrough is M, covered by the counterparty's own delivery ack.
+export interface SealCertificateFields {
+  sealKeyId: Uint8Array;
+  serverId: Uint8Array;
+  sessionId: Uint8Array;
+  sealerId: Uint8Array;
+  counterpartyId: Uint8Array;
+  requestHash: Uint8Array;
+  root: Uint8Array;
+  throughPosition: number;
+  tip: number;
+  closed: number;
+  receivedThrough: number;
+  // ZERO_HASH when the counterparty has acknowledged nothing.
+  deliveryAckHash: Uint8Array;
+  time: number;
+}
+
+export function sealCertificateBytes(c: SealCertificateFields): Uint8Array {
+  if (c.closed !== 0 && c.closed !== 1) throw new RangeError(`closed must be 0 or 1, got ${c.closed}`);
+  return encodeFields([
+    VERSION,
+    exact("seal key id", c.sealKeyId, HASH_BYTES),
+    exact("server id", c.serverId, HASH_BYTES),
+    exact("session id", c.sessionId, SESSION_ID_BYTES),
+    exact("sealer id", c.sealerId, HASH_BYTES),
+    exact("counterparty id", c.counterpartyId, HASH_BYTES),
+    exact("request hash", c.requestHash, HASH_BYTES),
+    exact("root", c.root, HASH_BYTES),
+    u64(c.throughPosition),
+    u64(c.tip),
+    u8(c.closed),
+    u64(c.receivedThrough),
+    exact("delivery ack hash", c.deliveryAckHash, HASH_BYTES),
+    u64(c.time),
+  ]);
+}
+
+// The seal log's state after an append. A witness outside the operator would countersign exactly this.
+export interface SealLogHeadFields {
+  sealKeyId: Uint8Array;
+  size: number;
+  root: Uint8Array;
+  time: number;
+}
+
+export function sealLogHeadBytes(h: SealLogHeadFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("seal key id", h.sealKeyId, HASH_BYTES),
+    u64(h.size),
+    exact("root", h.root, HASH_BYTES),
+    u64(h.time),
+  ]);
+}
+
+// The server's identity saying this seal key is its own.
+export interface SealKeyBindingFields {
+  serverId: Uint8Array;
+  sealKeyId: Uint8Array;
+}
+
+export function sealKeyBindingBytes(b: SealKeyBindingFields): Uint8Array {
+  return encodeFields([VERSION, exact("server id", b.serverId, HASH_BYTES), exact("seal key id", b.sealKeyId, HASH_BYTES)]);
+}
+
 export function structureHash(bytes: Uint8Array): Uint8Array {
   return sha256(bytes);
 }

@@ -22,6 +22,8 @@ interface Definition {
   scoped: boolean;
   // Acts as the agent, so it needs the hold, and can be forced. Reading a record or letting go doesn't.
   acts: boolean;
+  // Runs right here in the caller's process, with no daemon, no server and no agent.
+  local?: boolean;
   params: readonly Param[];
 }
 
@@ -164,6 +166,49 @@ const DEFINITIONS: readonly Definition[] = [
     acts: false,
     description: "Check a session's record, using only public keys.",
     params: [SESSION],
+  },
+  {
+    command: "seal",
+    group: "Seals",
+    summary: "Have the server attest a session's record so far. Only you are needed.",
+    scoped: true,
+    acts: true,
+    description: "Have the server attest what you hold of a session, at any time and as often as you like, with the other party online or not. Says \"sealed\" only once the certificate matches your own record and its place in the seal log is proved. If the server can't be reached it's saved, retried, and you get a notice. A seal attests that the conversation took place. It says nothing about whether the parties agreed.",
+    params: [
+      SESSION,
+      { name: "through", kind: "number", description: "Seal only up to this position. The certificate shows that more exists. Leave out for everything you hold." },
+    ],
+  },
+  {
+    command: "seals",
+    group: "Seals",
+    summary: "List the seals an agent holds, and any still waiting to go.",
+    scoped: true,
+    acts: false,
+    description: "List the seals this agent holds, how far each covers and how far the other party confirmed receiving, plus any still waiting to reach the server.",
+    params: [{ ...SESSION, required: false, positional: false, description: "Only this session. Leave out for all of them." }],
+  },
+  {
+    command: "export-seal",
+    group: "Seals",
+    summary: "Print a whole seal, to give to someone who wants to check it.",
+    scoped: true,
+    acts: false,
+    description: "Print a seal's whole record as JSON. Save it to a file, and anyone can check it with verify-seal. It holds hashes, signatures and public keys, and none of what was said.",
+    params: [{ name: "seal_id", kind: "string", required: true, positional: true, description: "The seal's id, 64 hex characters, from seal or seals" }],
+  },
+  {
+    command: "verify-seal",
+    group: "Seals",
+    summary: "Check a seal file using only public keys. Needs no daemon or server.",
+    scoped: false,
+    acts: false,
+    local: true,
+    description: "Check a seal file offline, using only public keys: no server, no daemon and no agent. It says what's proven by the other party's own signature, what rests on the server's word, and whether the seal is partial. A failure names what's wrong.",
+    params: [
+      { name: "file", kind: "string", required: true, positional: true, description: "A seal record saved from export-seal" },
+      { name: "seal_key", kind: "string", required: true, description: "The id of the seal key you trust, 64 hex characters. It's in the seal's output and the server's /healthz. Get it apart from the file: a file's own key proves nothing, since anyone can make one." },
+    ],
   },
 ];
 

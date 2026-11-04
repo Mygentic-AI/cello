@@ -2,7 +2,7 @@
 // It doesn't prove Claude Code acts on a doorbell. Only the live test with real sessions proves that.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -164,4 +164,15 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   const closed = await one.tool("cello_close_session", { session_id: sessionId });
   assert.equal(closed["state"], "closed");
   await two.bell("session_closed");
+
+  // Seals work through the tools as they do from the shell, including the check that needs no daemon.
+  const seal = closed["seal"] as { sealed: boolean; seal_id: string; seal_key: string; session_closed: boolean };
+  assert.deepEqual([seal.sealed, seal.session_closed], [true, true]);
+  assert.equal((await one.tool("cello_seal", { session_id: sessionId }))["seal_id"], seal.seal_id, "a repeat with nothing changed is the same seal");
+  assert.ok(((await one.tool("cello_seals"))["seals"] as unknown[]).length >= 1);
+  const sealFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-seal-")), "seal.json");
+  writeFileSync(sealFile, JSON.stringify(await one.tool("cello_export_seal", { seal_id: seal.seal_id })));
+  const checked = await one.tool("cello_verify_seal", { file: sealFile, seal_key: seal.seal_key });
+  assert.deepEqual([checked["ok"], checked["seal_id"]], [true, seal.seal_id]);
+  assert.equal((await one.tool("cello_verify_seal", { file: sealFile, seal_key: "00".repeat(32) }))["fault"], "wrong_seal_key");
 });

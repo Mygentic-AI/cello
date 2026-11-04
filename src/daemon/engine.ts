@@ -6,8 +6,10 @@ import { ChainVerifier, type ChainFault, type WitnessedEntry, verifyTranscript }
 import { ZERO_HASH, equalBytes, toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, type Signer, generateIdentitySeeds, identityId, signerFromSeeds, verifySignature } from "../protocol/identity.ts";
 import { deriveSessionSecrets, destroySessionEphemeral, generateSessionEphemeral } from "../protocol/key-agreement.ts";
+import { verifyConsistency } from "../protocol/merkle.ts";
 import { mlKemDecapsulate, mlKemEncapsulate } from "../protocol/ml-kem.ts";
 import { deriveSessionSalt, generateSaltContribution, saltedContentHash } from "../protocol/salt.ts";
+import { type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, sealId, sealSummary } from "../protocol/seal.ts";
 import {
   type AssignmentFields,
   EntryKind,
@@ -23,6 +25,7 @@ import {
   entryHash,
   offerBytes,
   registerBytes,
+  sealRequestBytes,
   structureHash,
 } from "../protocol/structures.ts";
 import {
@@ -42,6 +45,7 @@ import {
   signedDeliveryAck,
   signedEntry,
   signedOffer,
+  signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
@@ -55,6 +59,11 @@ const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
 const CONFIG_SERVER_URL = "server_url";
 const CONFIG_SERVER_IDENTITY = "server_identity";
+const CONFIG_SEAL_KEY = "seal_key";
+const CONFIG_SEAL_LOG_HEAD = "seal_log_head";
+const SEAL_EVERYTHING_HELD = 0;
+// Not refusals of the seal itself: the first means this agent's login hasn't finished, the second that the server failed.
+const SEAL_RETRY_CODES: readonly string[] = ["not_authenticated", "internal_error"];
 
 export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
@@ -121,6 +130,10 @@ type AttemptOutcome =
 
 export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
+}
+
+function notSealedYet(reason: string): unknown {
+  return { sealed: false, status: "not_sealed_yet", message: `This isn't sealed yet: ${reason}. The request is saved and retried by itself, and you'll get a notice.` };
 }
 
 export class Engine {
@@ -315,6 +328,7 @@ export class Engine {
     if (local.state === "active" || local.state === "closed") {
       const hasWork = wire.tip > local.verified_position || this.#store.pendingEntries(agent.signer.id, sessionId).length > 0 || local.fault !== null || local.delivered_through < this.#latestFromPeer(agent, local);
       if (hasWork) await this.#settle(agent, local);
+      if (this.#store.sealWants(agent.signer.id, sessionId).length > 0) await this.#retrySeals(agent, sessionId);
     }
   }
 
@@ -777,12 +791,164 @@ export class Engine {
       if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
       if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
       await this.#resendPending(agent, local);
+      // Durable before the close goes, so a crash anywhere after this still ends in a seal.
+      this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
       const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: "", signal: null, est_minutes: null };
       const outcome = await this.#append(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow, EntryKind.close, EntryMode.notice, body);
       const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
+      const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
       const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
-      return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, ...report };
+      return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
     });
+  }
+
+  // ---- Sealing ----
+
+  async seal(agentHex: string, sessionHex: string, through: number | undefined): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    if (through !== undefined && (!Number.isSafeInteger(through) || through < 1)) throw new LocalError("bad_argument", "through must be a position, a whole number from 1 up");
+    return this.#lane(agentHex, sessionHex, async () => {
+      const local = this.#requireSession(agent, sessionHex);
+      if (local.verified_position < 1) throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
+      if (through !== undefined && through > local.verified_position) throw new LocalError("seal_beyond_held", `you hold this session through position ${local.verified_position}, so ${through} can't be sealed`);
+      const wanted = through ?? local.verified_position;
+      this.#store.addSealWant(agent.signer.id, local.session_id, wanted);
+      return this.#attemptSeal(agent, local.session_id, wanted);
+    });
+  }
+
+  // A want is removed only by a stored seal or a final refusal. Anything else leaves it to retry at the next catch-up.
+  async #attemptSeal(agent: AgentContext, sessionId: Uint8Array, wanted: number): Promise<unknown> {
+    const local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+    const through = wanted === SEAL_EVERYTHING_HELD ? local.verified_position : wanted;
+    if (through < 1) {
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
+    }
+    if (!agent.online) return notSealedYet(this.#link.problem ?? "this agent isn't online yet");
+    const root = this.#verifier(agent, local).rootAt(through);
+    if (!root) throw new Error(`no root is held for position ${through}`);
+    const fields = { serverId: this.#serverId(), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
+    const signature = await agent.signer.sign("cello-v2-seal-request", sealRequestBytes(fields));
+    let answer: { record: SealRecordOnWire; logProof: string[] | null };
+    try {
+      answer = await this.#link.call("seal.request", {
+        agent: toB64(agent.signer.id),
+        request: signedSealRequest.encode({ fields, signature }),
+        knownLogSize: this.#knownSealLogHead()?.size ?? 0,
+      }) as typeof answer;
+    } catch (err: unknown) {
+      if (err instanceof ServerUnreachable) return notSealedYet(err.message);
+      if (err instanceof ServerRefused && SEAL_RETRY_CODES.includes(err.code)) return notSealedYet(`${err.code}: ${err.message}`);
+      if (err instanceof ServerRefused) {
+        this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+        throw new LocalError(err.code, err.message);
+      }
+      throw err;
+    }
+    let record: SealRecord;
+    try {
+      record = await this.#checkSealAnswer(agent, local, through, root, answer.record, answer.logProof);
+    } catch (err: unknown) {
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      logEvent("seal.refused", { agent: agent.hex, session: toHex(sessionId), code: err instanceof LocalError ? err.code : "failed" });
+      throw err;
+    }
+    const head = record.log.head.fields;
+    this.#store.transaction(() => {
+      this.#store.addSeal(agent.signer.id, sealId(record.certificate.fields), sessionId, JSON.stringify(answer.record));
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      this.#store.setConfig(CONFIG_SEAL_KEY, toHex(head.sealKeyId));
+      if (head.size > (this.#knownSealLogHead()?.size ?? 0)) this.#store.setConfig(CONFIG_SEAL_LOG_HEAD, JSON.stringify({ size: head.size, root: toB64(head.root) }));
+    });
+    logEvent("seal.stored", { agent: agent.hex, session: toHex(sessionId), through });
+    return { sealed: true, ...sealSummary(record), statement: describeSeal(record) };
+  }
+
+  #knownSealLogHead(): { size: number; root: Uint8Array } | undefined {
+    const stored = this.#store.getConfig(CONFIG_SEAL_LOG_HEAD);
+    if (!stored) return undefined;
+    const parsed = JSON.parse(stored) as { size: number; root: string };
+    return { size: parsed.size, root: fromB64(parsed.root, "stored seal log root") };
+  }
+
+  // The server can send anything, so nothing is stored or reported as sealed until it all checks out against this record.
+  async #checkSealAnswer(agent: AgentContext, local: SessionRow, through: number, root: Uint8Array, raw: SealRecordOnWire, logProof: string[] | null): Promise<SealRecord> {
+    let decoded: SealRecord;
+    try {
+      decoded = decodeSealRecord(raw);
+    } catch (err: unknown) {
+      throw new LocalError("malformed_record", `the server's seal record can't be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!equalBytes(identityId(decoded.server), this.#serverId())) throw new LocalError("seal_wrong_server", "this seal names a server other than the one this daemon pinned");
+    const sealKeyId = identityId(decoded.sealKey);
+    const pinned = this.#store.getConfig(CONFIG_SEAL_KEY);
+    if (pinned && pinned !== toHex(sealKeyId)) throw new LocalError("seal_key_changed", `this server's seal key has changed since your first seal: it was ${pinned}, and it's now ${toHex(sealKeyId)}`);
+    const check = await checkSealRecord(raw, sealKeyId);
+    if (!check.ok) throw new LocalError(check.fault, check.message);
+    const cert = check.record.certificate.fields;
+    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", `the server sealed a different history from the one you hold at position ${through}`);
+    const subject = equalBytes(cert.sessionId, local.session_id) && equalBytes(cert.sealerId, agent.signer.id) && equalBytes(cert.counterpartyId, local.counterparty_id) && cert.throughPosition === through;
+    if (!subject) throw new LocalError("seal_wrong_subject", "the server's certificate isn't for this seal: its session, parties or position differ");
+    if (cert.tip < local.verified_position || (local.state === "closed" && cert.closed !== 1)) {
+      throw new LocalError("seal_misreports_session", `the certificate says ${cert.tip} positions and closed=${cert.closed}, and you hold ${local.verified_position} in a session that is ${local.state}`);
+    }
+    this.#checkSealLogHistory(check.record, logProof);
+    return check.record;
+  }
+
+  // Catches a log rewritten since this daemon last saw it. It can't catch two readers being shown different logs: only an outside witness can.
+  #checkSealLogHistory(record: SealRecord, logProof: string[] | null): void {
+    const known = this.#knownSealLogHead();
+    if (!known) return;
+    const head = record.log.head.fields;
+    const rewritten = new LocalError("seal_log_rewritten", `this server's seal log no longer contains what it showed you when it had ${known.size} seals. Nothing was stored.`);
+    if (!logProof) throw rewritten;
+    const path = logProof.map((hash) => fromB64(hash, "logProof"));
+    const consistent = known.size <= head.size
+      ? verifyConsistency(known.size, head.size, known.root, head.root, path)
+      : verifyConsistency(head.size, known.size, head.root, known.root, path);
+    if (!consistent) throw rewritten;
+  }
+
+  async #sealAfterClose(agent: AgentContext, sessionId: Uint8Array): Promise<unknown> {
+    try {
+      return await this.#attemptSeal(agent, sessionId, SEAL_EVERYTHING_HELD);
+    } catch (err: unknown) {
+      if (!(err instanceof LocalError)) throw err;
+      return { sealed: false, status: "refused", error: err.code, message: err.message };
+    }
+  }
+
+  async #retrySeals(agent: AgentContext, sessionId: Uint8Array): Promise<void> {
+    for (const want of this.#store.sealWants(agent.signer.id, sessionId)) {
+      const label = want.through === SEAL_EVERYTHING_HELD ? "The seal after your close" : `Your seal through position ${want.through}`;
+      try {
+        const result = await this.#attemptSeal(agent, sessionId, want.through) as { sealed: boolean; seal_id?: string };
+        // One still waiting mustn't hold up a different one that could finish.
+        if (!result.sealed) continue;
+        this.#notify(agent, sessionId, `${label} is done. Its id is ${result.seal_id as string}.`);
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError)) throw err;
+        this.#notify(agent, sessionId, `${label} wasn't made: ${err.code}, ${err.message}.`);
+      }
+    }
+  }
+
+  seals(agentHex: string, sessionHex: string | undefined): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const sessionId = sessionHex === undefined ? undefined : this.#requireSession(agent, sessionHex).session_id;
+    return {
+      seals: this.#store.seals(agent.signer.id, sessionId).map((row) => sealSummary(decodeSealRecord(JSON.parse(row.record)))),
+      waiting: this.#store.sealWants(agent.signer.id, sessionId).map((want) => ({ session_id: toHex(want.session_id), through: want.through === SEAL_EVERYTHING_HELD ? "everything held" : want.through })),
+    };
+  }
+
+  exportSeal(agentHex: string, sealHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const row = this.#store.seal(agent.signer.id, parseHex(sealHex, 32, "seal id"));
+    if (!row) throw new LocalError("unknown_seal", "this agent holds no seal with that id");
+    return JSON.parse(row.record);
   }
 
   // ---- What agents and people ask for ----
