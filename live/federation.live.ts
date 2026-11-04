@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +33,37 @@ function say(line: string): void {
   process.stdout.write(`[${new Date().toISOString().slice(11, 19)}] ${line}\n`);
 }
 
+const built = new Set<string>();
+const heavyLock = join(homedir(), "cello-v2-live-runs", ".heavy-lock");
+
+// Builds running at once have overloaded this machine, so a build holds the lock, and the test itself doesn't. The script frees it if this run is killed mid-build.
+function holdingBuildLock<T>(work: () => T): T {
+  const deadline = Date.now() + 15 * 60_000;
+  for (;;) {
+    try {
+      mkdirSync(heavyLock);
+      break;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (Date.now() > deadline) throw new Error(`another track has held ${heavyLock} for 15 minutes, so this server wasn't built`);
+      spawnSync("sleep", ["5"]);
+    }
+  }
+  if (pidsFile) writeFileSync(`${pidsFile}.locked`, "");
+  try {
+    return work();
+  } finally {
+    rmdirSync(heavyLock);
+    if (pidsFile) rmSync(`${pidsFile}.locked`, { force: true });
+  }
+}
+
+// Only the first start of each server builds. A restart with new settings reuses its image.
 function up(server: Server, env: Record<string, string> = {}): { server: string; seal_key: string; federation: string } {
   saveLogs(server);
-  const output = execFileSync(join(serverDir, "scripts/server.sh"), ["up", "--name", server.name, "--port", String(server.port)], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  const start = (extra: string[]): string => execFileSync(join(serverDir, "scripts/server.sh"), ["up", "--name", server.name, "--port", String(server.port), ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  const output = built.has(server.name) ? start(["--no-build"]) : holdingBuildLock(() => start([]));
+  built.add(server.name);
   return JSON.parse(output.trim().split("\n").at(-1) as string) as { server: string; seal_key: string; federation: string };
 }
 
@@ -363,6 +391,8 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.deepEqual([annBack.state, annBack.seal.sealed], ["closed", true]);
   assert.equal(reader.must(["verify-seal", saved("back.json", ann.act("export-seal", annBack.seal.seal_id)), "--seal-key", healthA.seal_key])["ok"], true);
   assert.deepEqual([bob.act("verify-session", backSession)["ok"], ann.act("verify-session", backSession)["ok"]], [true, true]);
+  await gets(bob);
+  assert.equal(bob.read().messages[0]?.closed_their_side, true);
   say("Bob called back, hosted on Ann's server, and it sealed");
 
   // ---- Long messages take a second connection, which on a visit has to go to the hosting server, both ways. ----

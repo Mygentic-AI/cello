@@ -17,6 +17,11 @@ cleanup() {
       *daemon/main*) kill -9 "$pid" 2>/dev/null ;;
     esac
   done < "$pids"
+  # Killed mid-build: this run still holds the heavy-run lock, and nothing else would free it.
+  if [ -f "$pids.locked" ]; then
+    rmdir "$HOME/cello-v2-live-runs/.heavy-lock" 2>/dev/null
+    rm -f "$pids.locked"
+  fi
   rm -f "$pids"
   for name in cello-v2-fed-a cello-v2-fed-b; do
     "$server_dir/scripts/server.sh" down --name "$name" --delete-data >/dev/null 2>&1
