@@ -448,6 +448,8 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   const atHome = ann.act("initiate-session", danaAgent.id)["session_id"] as string;
   await talk(ann, bob, across, "ann on her server, talking on bob's");
   await talk(bob, ann, across, LONG_TEXT);
+  await talk(ann, bob, across, LONG_TEXT);
+  await talk(bob, ann, across, "long messages cross between servers too");
   await talk(ann, dana, atHome, "and ann on her own server");
   assert.equal(statusOn(B, annAgent.id), "");
 
