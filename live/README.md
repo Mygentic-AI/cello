@@ -15,6 +15,8 @@ Run them whenever you like. They need nobody's OK.
 
 **The channels test.** `scripts/live-channels.sh` starts a real server on project `cello-v2-channels` and port 18600, and three daemons in their own folders. A bare socket plays the attacker, and the hostile cases work on the database as its owner and with the server's real signing key. It reads the database directly to check that a private channel holds no plaintext. `CHANNELS_LIVE_PATTERN` runs only tests whose names match. It sets its timings with `channel-config`, never the environment, because settings live in the database.
 
+**The federation test.** `CELLO_SERVER_DIR=<server checkout> scripts/federation-test.sh`. Two real servers from nothing, started with the server's own `scripts/server.sh` as Compose projects `cello-v2-fed-a` and `cello-v2-fed-b` on ports 18400 and 18401, with real daemons as separate processes. An agent on one holds a conversation with an agent on the other, through daemon kills and with its own server down, then closes and seals, and it calls back the other way. It runs the same log check as the real-session test. It also checks both databases, and that the called daemon has no connection to any server but its own. It removes its containers, volumes and daemons however it ends. Evidence goes to `~/cello-v2-live-runs/federation-<time>/`.
+
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 
 ```

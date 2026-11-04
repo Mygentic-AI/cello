@@ -47,6 +47,9 @@ export const ERROR_CODES = [
   "ejected",
   "bad_roster",
   "rate_limited",
+  "federation_closed",
+  "too_many_pending",
+  "visitor_budget_spent",
   "internal_error",
 ] as const;
 

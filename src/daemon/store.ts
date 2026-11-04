@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   acked_screened    INTEGER NOT NULL DEFAULT 0,
   peer_screened_through INTEGER NOT NULL DEFAULT 0,
   peer_eta_told     INTEGER NOT NULL DEFAULT 0,
+  server_url        TEXT, -- The server hosting this conversation, when it isn't this daemon's own.
   PRIMARY KEY (agent_id, session_id)
 );
 
@@ -150,6 +151,7 @@ export interface SessionRow {
   acked_screened: number;
   peer_screened_through: number;
   peer_eta_told: number;
+  server_url: string | null;
 }
 
 export interface EntryRow {
@@ -214,6 +216,8 @@ export class Store {
     this.#addColumn("sessions", "peer_screened_through", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "peer_eta_told", "INTEGER NOT NULL DEFAULT 0");
     this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
+    // A database made before federation. Additive, so its conversations carry on, on their own server.
+    this.#addColumn("sessions", "server_url", "TEXT");
   }
 
   #addColumn(table: string, column: string, definition: string): void {

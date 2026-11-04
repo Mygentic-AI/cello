@@ -21,6 +21,7 @@ export const ED25519_SIGNATURE_BYTES = 64;
 export const CONTEXTS = [
   "cello-v2-register",
   "cello-v2-agent-auth",
+  "cello-v2-visit",
   "cello-v2-server-auth",
   "cello-v2-session-offer",
   "cello-v2-session-accept",
