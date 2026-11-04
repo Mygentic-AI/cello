@@ -6,7 +6,7 @@
 // Watch it with: tmux attach -r -t cello-live
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -30,6 +30,7 @@ const MCP = new URL("../src/mcp.ts", import.meta.url).pathname;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const CONVERSATION_LIMIT_MS = 15 * 60 * 1000;
 const KILL_AT_POSITION = 5;
+const CHANNEL_TAG = /<channel source=\\?"[^"\\]*cello-v2/;
 
 // A short path, because a Unix socket path can't be long.
 const base = mkdtempSync("/tmp/cv2-");
@@ -73,13 +74,19 @@ function prepareFolder(name: string): string {
 // Each session is told only what to send next. A doorbell has to be what moves it on.
 const COMMON = "If a send is refused with session_not_current, call cello_receive and send the same line again. If a tool says daemon_not_running, end your turn; a doorbell says when the daemon is back, and then call cello_receive and send your next line unless a notice says it landed. Compose nothing of your own, and never poll.";
 const alphaPrompt = (betaId: string): string =>
-  `Scripted test. Call cello_use_agent with agent Alpha, then cello_initiate_session with target ${betaId}, then send line 1 and end your turn. After that, each time a doorbell says a message is waiting, call cello_receive and then send your next line, unless the message's signal is standby, and end your turn. Lines: 1. "alpha one" signal over. 2. "alpha two" signal over. 3. "alpha three" signal over. 4. "alpha done" signal wrap. When a doorbell says the other side closed, call cello_receive, then cello_close_session, and say finished. ${COMMON}`;
+  `Scripted test. Call cello_use_agent with agent Alpha, then cello_initiate_session with target ${betaId}, then send line 1 and end your turn. After that, each time a doorbell says a message is waiting, call cello_receive. If the newest message you got has signal standby, just end your turn. If its signal is over, send your next line and end your turn. Lines: 1. "alpha one" signal over. 2. "alpha two" signal over. 3. "alpha three" signal over. 4. "alpha done" signal wrap. When a doorbell says the other side closed, call cello_receive, then cello_close_session, and say finished. ${COMMON}`;
 const betaPrompt = "Scripted test. Call cello_use_agent with agent Beta and end your turn. Each time a doorbell says a message is waiting, call cello_receive, then act on what it said, and end your turn. If it said alpha one: send \"beta one\" signal standby est_minutes 1, then send \"beta two\" signal over. If it said alpha two: send \"beta three\" signal over. If it said alpha three: send \"beta four\" signal over. If it said alpha done: call cello_close_session. " + COMMON;
+
+let tmuxIsOurs = false;
 
 async function openSession(n: number, folder: string): Promise<void> {
   const command = join(folder, "start.sh");
-  if (n === 0) tmux("new-session", "-d", "-s", TMUX, "-x", "200", "-y", "50", command);
-  else tmux("split-window", "-h", "-t", `${TMUX}:0`, command);
+  if (n === 0) {
+    // new-session refuses an existing name, so a session this run didn't start is never touched.
+    tmux("new-session", "-d", "-s", TMUX, "-x", "200", "-y", "50", command);
+    tmuxIsOurs = true;
+  }
+  if (n === 1) tmux("split-window", "-h", "-t", `${TMUX}:0`, command);
 }
 
 // Claude Code asks before it loads a development channel, and before it trusts a new folder. Those can't be flags.
@@ -117,25 +124,50 @@ function remoteSql(query: string): string {
   return execFileSync("gcloud", ["compute", "ssh", args.instance as string, "--zone", args.zone as string, "--tunnel-through-iap", "--quiet", "--command", command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
-// How many model turns the run cost, from Claude Code's own transcripts of these two folders.
-function modelUsage(folder: string): { turns: number; models: string[]; input: number; output: number } {
+// Claude Code's own transcript of one session. It answers two questions a final state can't:
+// did doorbells reach the session, and did it read only after one? A session that polled would reach the same end.
+function sessionFacts(folder: string): { turns: number; models: string[]; input: number; output: number; doorbells: number; reads: number; readsWithoutDoorbell: number } {
   const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
   const dir = join(homedir(), ".claude", "projects", slug);
   const seen = new Set<string>();
+  const seenCalls = new Set<string>();
   const models = new Set<string>();
   let input = 0;
   let output = 0;
+  let doorbells = 0;
+  let reads = 0;
+  let readsWithoutDoorbell = 0;
+  let doorbellSinceLastRead = false;
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
     for (const line of readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean)) {
-      const row = JSON.parse(line) as { type?: string; message?: { id?: string; model?: string; usage?: { input_tokens?: number; output_tokens?: number } } };
-      if (row.type !== "assistant" || !row.message?.id || seen.has(row.message.id)) continue;
-      seen.add(row.message.id);
-      if (row.message.model) models.add(row.message.model);
-      input += row.message.usage?.input_tokens ?? 0;
-      output += row.message.usage?.output_tokens ?? 0;
+      const row = JSON.parse(line) as {
+        type?: string;
+        operation?: string;
+        content?: unknown;
+        message?: { id?: string; model?: string; content?: unknown; usage?: { input_tokens?: number; output_tokens?: number } };
+      };
+      if (row.type === "queue-operation" && row.operation === "enqueue" && typeof row.content === "string" && CHANNEL_TAG.test(row.content)) {
+        doorbells += 1;
+        doorbellSinceLastRead = true;
+      }
+      if (row.type === "user" && CHANNEL_TAG.test(JSON.stringify(row.message?.content ?? ""))) doorbellSinceLastRead = true;
+      if (row.type !== "assistant" || !row.message?.id) continue;
+      if (!seen.has(row.message.id)) {
+        seen.add(row.message.id);
+        if (row.message.model) models.add(row.message.model);
+        input += row.message.usage?.input_tokens ?? 0;
+        output += row.message.usage?.output_tokens ?? 0;
+      }
+      for (const block of Array.isArray(row.message.content) ? row.message.content as { type?: string; id?: string; name?: string }[] : []) {
+        if (block.type !== "tool_use" || !block.id || seenCalls.has(block.id) || !block.name?.endsWith("cello_receive")) continue;
+        seenCalls.add(block.id);
+        reads += 1;
+        if (!doorbellSinceLastRead) readsWithoutDoorbell += 1;
+        doorbellSinceLastRead = false;
+      }
     }
   }
-  return { turns: seen.size, models: [...models], input, output };
+  return { turns: seen.size, models: [...models], input, output, doorbells, reads, readsWithoutDoorbell };
 }
 
 const report: Record<string, unknown> = { started: stamp, server: args.server, model: args.model };
@@ -169,11 +201,12 @@ async function run(): Promise<void> {
   await until(`position ${KILL_AT_POSITION}`, CONVERSATION_LIMIT_MS, () => (session("Alpha")?.position ?? 0) >= KILL_AT_POSITION);
 
   const pid = status().pid;
-  say(`position ${session("Alpha")?.position} reached: killing the daemon, process ${pid}`);
+  const killedAt = session("Alpha")?.position as number;
+  say(`position ${killedAt} reached: killing the daemon, process ${pid}`);
   process.kill(pid, "SIGKILL");
   await sleep(3000);
   cli("login", "--server", args.server as string);
-  report["killed_at_position"] = KILL_AT_POSITION;
+  report["killed_at_position"] = killedAt;
   report["killed_pid"] = pid;
   say(`daemon restarted, process ${status().pid}`);
 
@@ -204,7 +237,14 @@ async function run(): Promise<void> {
   say(`on the server: ${onServer} entries kept, ${held} with encrypted text`);
 
   saveScreens();
-  report["usage"] = { alpha: modelUsage(alphaFolder), beta: modelUsage(betaFolder) };
+  const facts = { alpha: sessionFacts(alphaFolder), beta: sessionFacts(betaFolder) };
+  report["sessions"] = facts;
+  for (const [name, fact] of Object.entries(facts)) {
+    assert.ok(fact.doorbells > 0, `${name} must have received doorbells`);
+    assert.ok(fact.reads > 0, `${name} must have read messages`);
+    assert.equal(fact.readsWithoutDoorbell, 0, `${name} read without a doorbell, so it may have polled rather than being woken`);
+  }
+  say(`woken by doorbells: Alpha ${facts.alpha.doorbells}, Beta ${facts.beta.doorbells}, with no read before a doorbell`);
 
   cli("logout");
   const store = new Store(join(home, "cello.db"));
@@ -225,7 +265,7 @@ async function run(): Promise<void> {
   assert.equal(new Set(texts).size, texts.length, `no line may land twice: ${texts.join(", ")}`);
   for (const line of ["alpha one", "alpha done", "beta one", "beta four"]) assert.ok(texts.includes(line), `${line} must have landed`);
   assert.ok(lines.filter((line) => line.kind === "close").length === 2, "both sides must have closed");
-  assert.ok(reportA.position > KILL_AT_POSITION, "the conversation must have carried on after the kill");
+  assert.ok(reportA.position > killedAt, "the conversation must have carried on after the kill");
   report["passed"] = true;
   say("PASSED");
 }
@@ -245,8 +285,8 @@ try {
 } finally {
   writeFileSync(join(evidence, "report.json"), JSON.stringify(report, null, 2));
   say(`evidence: ${evidence}`);
-  // Stop only what this run started. The tmux session is left for watching if it failed.
-  if (report["passed"] !== false) {
+  // Stop only what this run started. The tmux session is left for looking at if it failed.
+  if (tmuxIsOurs && report["passed"] !== false) {
     try {
       tmux("kill-session", "-t", TMUX);
     } catch {
@@ -258,4 +298,6 @@ try {
   } catch {
     // Already stopped.
   }
+  // The throwaway agents' keys go too, unless a failure needs looking at.
+  if (report["passed"] === true) rmSync(base, { recursive: true, force: true });
 }
