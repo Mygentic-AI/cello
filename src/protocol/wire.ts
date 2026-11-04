@@ -35,7 +35,14 @@ export const ERROR_CODES = [
   "seal_log_inconsistent",
   "unknown_channel",
   "channel_conflict",
-  "channels_unavailable",
+  "not_a_member",
+  "not_allowed_to_post",
+  "generation_stale",
+  "post_conflict",
+  "replayed_post",
+  "over_quota",
+  "ejected",
+  "bad_roster",
   "rate_limited",
   "internal_error",
 ] as const;
@@ -202,7 +209,7 @@ export interface SessionOnWire {
 
 export type SessionState = "offered" | "accepted" | "active" | "closed";
 
-export type PushKind = "session" | "entry" | "channel_ring";
+export type PushKind = "session" | "entry" | "channel";
 
 export interface RequestFrame { v: number; id: number; method: string; params: unknown }
 export type ResponseFrame =

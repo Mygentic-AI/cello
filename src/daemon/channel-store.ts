@@ -1,5 +1,5 @@
-// A channel's durable state on this machine, in the daemon's SQLCipher database. Positions live here and nowhere else:
-// no store or server can move one. Plaintext of posts is here too, which is why it's never on a store.
+// A channel's durable state on this machine, in the daemon's SQLCipher database. A reader's position lives here and
+// nowhere else, and this is the only place a private post's plaintext exists once it's been read off the wire.
 import type { Store } from "./store.ts";
 
 const SCHEMA = `
@@ -10,54 +10,33 @@ CREATE TABLE IF NOT EXISTS channel_owned (
   ed_seed       BLOB NOT NULL,
   pq_seed       BLOB NOT NULL,
   x25519_secret BLOB NOT NULL,
-  mlkem_seed    BLOB NOT NULL,
-  next_info_rev INTEGER NOT NULL DEFAULT 2
+  mlkem_seed    BLOB NOT NULL
 );
 
--- Newest revision per generation, so a wiped store can be refilled from here.
-CREATE TABLE IF NOT EXISTS channel_bundles (
-  channel_id BLOB NOT NULL,
-  generation INTEGER NOT NULL,
-  revision   INTEGER NOT NULL,
-  file       TEXT NOT NULL,
-  PRIMARY KEY (channel_id, generation)
-);
-
-CREATE TABLE IF NOT EXISTS channel_members (
-  channel_id    BLOB NOT NULL,
-  member_id     BLOB NOT NULL,
-  state         TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'refused', 'ejected', 'left')),
-  x25519_public BLOB NOT NULL,
-  mlkem_public  BLOB NOT NULL,
-  note          TEXT NOT NULL,
-  requested_at  INTEGER NOT NULL,
-  pass          TEXT,
-  pass_expires  INTEGER,
-  PRIMARY KEY (channel_id, member_id)
-);
-
--- A named poster on a public channel needs no membership, so passes are kept apart from members.
-CREATE TABLE IF NOT EXISTS channel_posters (
-  channel_id   BLOB NOT NULL,
-  poster_id    BLOB NOT NULL,
-  pass         TEXT NOT NULL,
-  pass_expires INTEGER NOT NULL,
-  PRIMARY KEY (channel_id, poster_id)
-);
-
+-- position is the highest number with nothing unresolved at or below it. Only a post held, a signed first-held position,
+-- or a post declared lost can move it. high is the highest number fetched, which can be above a gap.
 CREATE TABLE IF NOT EXISTS channel_follows (
-  agent_id      BLOB NOT NULL REFERENCES agents(agent_id),
-  channel_id    BLOB NOT NULL,
-  record        TEXT NOT NULL,
-  state         TEXT NOT NULL CHECK (state IN ('reading', 'waiting', 'refused', 'ejected', 'left')),
-  x25519_secret BLOB,
-  mlkem_seed    BLOB,
-  x25519_public BLOB,
-  mlkem_public  BLOB,
-  info          TEXT,
-  info_revision INTEGER NOT NULL DEFAULT 0,
-  pass          TEXT,
-  next_poll     INTEGER NOT NULL DEFAULT 0,
+  agent_id        BLOB NOT NULL REFERENCES agents(agent_id),
+  channel_id      BLOB NOT NULL,
+  record          TEXT NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('active', 'pending', 'refused', 'ejected', 'left')),
+  x25519_secret   BLOB,
+  mlkem_seed      BLOB,
+  x25519_public   BLOB,
+  mlkem_public    BLOB,
+  info            TEXT NOT NULL,
+  info_revision   INTEGER NOT NULL,
+  delivery        TEXT NOT NULL DEFAULT 'follow' CHECK (delivery IN ('follow', 'pull')),
+  screen_bodies   TEXT NOT NULL DEFAULT 'read' CHECK (screen_bodies IN ('read', 'arrival')),
+  position        INTEGER NOT NULL DEFAULT 0,
+  high            INTEGER NOT NULL DEFAULT 0,
+  first_held      INTEGER NOT NULL DEFAULT 1,
+  tip             INTEGER NOT NULL DEFAULT 0,
+  aged_out        INTEGER NOT NULL DEFAULT 0,
+  readers         INTEGER,
+  roster          TEXT,
+  roster_revision INTEGER NOT NULL DEFAULT 0,
+  roster_hash     BLOB,
   PRIMARY KEY (agent_id, channel_id)
 );
 
@@ -66,49 +45,44 @@ CREATE TABLE IF NOT EXISTS channel_keys (
   channel_id BLOB NOT NULL,
   generation INTEGER NOT NULL,
   group_key  BLOB NOT NULL,
-  retired    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (agent_id, channel_id, generation)
 );
 
--- position is the highest number with nothing unresolved at or below it. Only a held post, a signed floor,
--- a head older than the hard cap, or a post declared lost can move it.
-CREATE TABLE IF NOT EXISTS channel_lanes (
+-- Who the signed rosters listed under each generation, so a post is checked against the generation it was written in.
+CREATE TABLE IF NOT EXISTS channel_roster_members (
   agent_id   BLOB NOT NULL,
   channel_id BLOB NOT NULL,
   generation INTEGER NOT NULL,
-  lane_id    BLOB NOT NULL,
-  position   INTEGER NOT NULL DEFAULT 0,
-  floor      INTEGER NOT NULL DEFAULT 1,
-  last_seq   INTEGER NOT NULL DEFAULT 0,
-  signed_at  INTEGER NOT NULL DEFAULT 0,
-  aged_out   INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id)
+  member_id  BLOB NOT NULL,
+  PRIMARY KEY (agent_id, channel_id, generation, member_id)
 );
 
 CREATE TABLE IF NOT EXISTS channel_posts (
-  agent_id     BLOB NOT NULL,
-  channel_id   BLOB NOT NULL,
-  generation   INTEGER NOT NULL,
-  lane_id      BLOB NOT NULL,
-  seq          INTEGER NOT NULL,
-  post_hash    BLOB NOT NULL,
-  published_at INTEGER NOT NULL,
-  title        BLOB,
-  body         BLOB,
-  state        TEXT NOT NULL CHECK (state IN ('unread', 'read', 'blocked', 'unopenable')),
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id, seq)
+  agent_id      BLOB NOT NULL,
+  channel_id    BLOB NOT NULL,
+  position      INTEGER NOT NULL,
+  author_id     BLOB,
+  author_name   TEXT,
+  author_seq    INTEGER,
+  generation    INTEGER,
+  published_at  INTEGER,
+  title         BLOB,
+  body          BLOB,
+  state         TEXT NOT NULL CHECK (state IN ('unread', 'read', 'blocked', 'unopenable', 'refused')),
+  title_verdict TEXT NOT NULL DEFAULT 'pending' CHECK (title_verdict IN ('pending', 'clean', 'blocked')),
+  body_verdict  TEXT NOT NULL DEFAULT 'pending' CHECK (body_verdict IN ('pending', 'clean', 'blocked')),
+  PRIMARY KEY (agent_id, channel_id, position)
 );
-CREATE INDEX IF NOT EXISTS channel_posts_unread ON channel_posts(agent_id, channel_id, state, published_at);
+CREATE INDEX IF NOT EXISTS channel_posts_state ON channel_posts(agent_id, channel_id, state, position);
+CREATE INDEX IF NOT EXISTS channel_posts_author ON channel_posts(agent_id, channel_id, author_id, author_seq);
 
 CREATE TABLE IF NOT EXISTS channel_gaps (
   agent_id   BLOB NOT NULL,
   channel_id BLOB NOT NULL,
-  generation INTEGER NOT NULL,
-  lane_id    BLOB NOT NULL,
-  seq        INTEGER NOT NULL,
+  position   INTEGER NOT NULL,
+  first_seen INTEGER NOT NULL,
   state      TEXT NOT NULL CHECK (state IN ('missing', 'lost')),
-  rung       INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id, seq)
+  PRIMARY KEY (agent_id, channel_id, position)
 );
 
 CREATE TABLE IF NOT EXISTS channel_notices (
@@ -118,68 +92,71 @@ CREATE TABLE IF NOT EXISTS channel_notices (
   text       TEXT NOT NULL
 );
 
--- The publisher's own copy, which outlives any store. This is what a refill sends.
+-- The publisher's own copy. It holds the plaintext, because a new key generation has to seal a waiting post again.
 CREATE TABLE IF NOT EXISTS channel_log (
-  agent_id     BLOB NOT NULL,
-  channel_id   BLOB NOT NULL,
-  generation   INTEGER NOT NULL,
-  lane_id      BLOB NOT NULL,
-  seq          INTEGER NOT NULL,
-  published_at INTEGER NOT NULL,
-  file         TEXT NOT NULL,
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id, seq)
-);
-
-CREATE TABLE IF NOT EXISTS channel_log_acks (
   agent_id   BLOB NOT NULL,
   channel_id BLOB NOT NULL,
-  generation INTEGER NOT NULL,
-  lane_id    BLOB NOT NULL,
-  seq        INTEGER NOT NULL,
-  store      TEXT NOT NULL,
-  ack        TEXT NOT NULL,
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id, seq, store)
+  author_seq INTEGER NOT NULL,
+  title      BLOB NOT NULL,
+  body       BLOB NOT NULL,
+  wire       TEXT NOT NULL,
+  position   INTEGER,
+  ack        TEXT,
+  PRIMARY KEY (agent_id, channel_id, author_seq)
 );
 
-CREATE TABLE IF NOT EXISTS channel_own_heads (
+-- A report of a lost post that's already been passed on, so a restart doesn't tell it twice.
+CREATE TABLE IF NOT EXISTS channel_lost_told (
   agent_id   BLOB NOT NULL,
   channel_id BLOB NOT NULL,
-  generation INTEGER NOT NULL,
-  lane_id    BLOB NOT NULL,
-  floor      INTEGER NOT NULL,
-  last_seq   INTEGER NOT NULL,
-  signed_at  INTEGER NOT NULL,
-  cap        BLOB NOT NULL,
-  file       TEXT NOT NULL,
-  PRIMARY KEY (agent_id, channel_id, generation, lane_id)
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, channel_id, position)
 );
 `;
 
-export interface OwnedRow { channel_id: Uint8Array; agent_id: Uint8Array; ed_seed: Uint8Array; pq_seed: Uint8Array; x25519_secret: Uint8Array; mlkem_seed: Uint8Array; next_info_rev: number }
-export interface MemberRow { channel_id: Uint8Array; member_id: Uint8Array; state: "pending" | "approved" | "refused" | "ejected" | "left"; x25519_public: Uint8Array; mlkem_public: Uint8Array; note: string; requested_at: number; pass: string | null; pass_expires: number | null }
-export interface PosterRow { channel_id: Uint8Array; poster_id: Uint8Array; pass: string; pass_expires: number }
+export interface OwnedRow { channel_id: Uint8Array; agent_id: Uint8Array; ed_seed: Uint8Array; pq_seed: Uint8Array; x25519_secret: Uint8Array; mlkem_seed: Uint8Array }
+export type FollowState = "active" | "pending" | "refused" | "ejected" | "left";
 export interface FollowRow {
   agent_id: Uint8Array;
   channel_id: Uint8Array;
   record: string;
-  state: "reading" | "waiting" | "refused" | "ejected" | "left";
+  state: FollowState;
   x25519_secret: Uint8Array | null;
   mlkem_seed: Uint8Array | null;
   x25519_public: Uint8Array | null;
   mlkem_public: Uint8Array | null;
-  info: string | null;
+  info: string;
   info_revision: number;
-  pass: string | null;
-  next_poll: number;
+  delivery: "follow" | "pull";
+  screen_bodies: "read" | "arrival";
+  position: number;
+  high: number;
+  first_held: number;
+  tip: number;
+  aged_out: number;
+  readers: number | null;
+  roster: string | null;
+  roster_revision: number;
+  roster_hash: Uint8Array | null;
 }
-export interface KeyRow { generation: number; group_key: Uint8Array; retired: number }
-export interface LaneRow { generation: number; lane_id: Uint8Array; position: number; floor: number; last_seq: number; signed_at: number; aged_out: number }
-export interface PostRow { generation: number; lane_id: Uint8Array; seq: number; post_hash: Uint8Array; published_at: number; title: Uint8Array | null; body: Uint8Array | null; state: "unread" | "read" | "blocked" | "unopenable" }
-export interface GapRow { seq: number; state: "missing" | "lost"; rung: number }
-export interface LogRow { generation: number; lane_id: Uint8Array; seq: number; published_at: number; file: string }
-export interface OwnHeadRow { generation: number; lane_id: Uint8Array; floor: number; last_seq: number; signed_at: number; cap: Uint8Array; file: string }
+export type Verdict = "pending" | "clean" | "blocked";
+export interface PostRow {
+  position: number;
+  author_id: Uint8Array | null;
+  author_name: string | null;
+  author_seq: number | null;
+  generation: number | null;
+  published_at: number | null;
+  title: Uint8Array | null;
+  body: Uint8Array | null;
+  state: "unread" | "read" | "blocked" | "unopenable" | "refused";
+  title_verdict: Verdict;
+  body_verdict: Verdict;
+}
+export interface GapRow { position: number; first_seen: number; state: "missing" | "lost" }
+export interface LogRow { author_seq: number; title: Uint8Array; body: Uint8Array; wire: string; position: number | null }
 
-interface LaneKey { agent: Uint8Array; channel: Uint8Array; generation: number; lane: Uint8Array }
+type FollowProgress = Partial<Pick<FollowRow, "position" | "high" | "first_held" | "tip" | "readers" | "state" | "info" | "info_revision" | "delivery" | "screen_bodies" | "roster" | "roster_revision" | "roster_hash">>;
 
 export class ChannelStore {
   readonly #db: ReturnType<Store["raw"]>;
@@ -193,7 +170,7 @@ export class ChannelStore {
     return this.#db.transaction(work);
   }
 
-  insertOwned(row: Omit<OwnedRow, "next_info_rev">): void {
+  insertOwned(row: OwnedRow): void {
     this.#db.run("INSERT INTO channel_owned (channel_id, agent_id, ed_seed, pq_seed, x25519_secret, mlkem_seed) VALUES (?, ?, ?, ?, ?, ?)", [row.channel_id, row.agent_id, row.ed_seed, row.pq_seed, row.x25519_secret, row.mlkem_seed]);
   }
 
@@ -201,74 +178,14 @@ export class ChannelStore {
     return this.#db.get("SELECT * FROM channel_owned WHERE channel_id = ?", [channel]) as OwnedRow | undefined;
   }
 
-  allOwned(): OwnedRow[] {
-    return this.#db.all("SELECT * FROM channel_owned", []) as OwnedRow[];
-  }
-
-  takeInfoRevision(channel: Uint8Array): number {
-    const row = this.#db.get("UPDATE channel_owned SET next_info_rev = next_info_rev + 1 WHERE channel_id = ? RETURNING next_info_rev - 1 AS revision", [channel]) as { revision: number };
-    return row.revision;
-  }
-
-  deleteChannelLocally(agent: Uint8Array, channel: Uint8Array): void {
-    this.#db.run("DELETE FROM channel_keys WHERE agent_id = ? AND channel_id = ?", [agent, channel]);
-    this.#db.run("DELETE FROM channel_follows WHERE agent_id = ? AND channel_id = ?", [agent, channel]);
-    this.#db.run("DELETE FROM channel_bundles WHERE channel_id = ?", [channel]);
-    this.#db.run("DELETE FROM channel_owned WHERE channel_id = ?", [channel]);
-  }
-
-  bundle(channel: Uint8Array, generation: number): { revision: number; file: string } | undefined {
-    return this.#db.get("SELECT revision, file FROM channel_bundles WHERE channel_id = ? AND generation = ?", [channel, generation]) as { revision: number; file: string } | undefined;
-  }
-
-  bundles(channel: Uint8Array): { generation: number; revision: number; file: string }[] {
-    return this.#db.all("SELECT generation, revision, file FROM channel_bundles WHERE channel_id = ? ORDER BY generation", [channel]) as { generation: number; revision: number; file: string }[];
-  }
-
-  putBundle(channel: Uint8Array, generation: number, revision: number, file: string): void {
-    this.#db.run(
-      "INSERT INTO channel_bundles (channel_id, generation, revision, file) VALUES (?, ?, ?, ?) ON CONFLICT (channel_id, generation) DO UPDATE SET revision = excluded.revision, file = excluded.file",
-      [channel, generation, revision, file],
-    );
-  }
-
-  member(channel: Uint8Array, member: Uint8Array): MemberRow | undefined {
-    return this.#db.get("SELECT * FROM channel_members WHERE channel_id = ? AND member_id = ?", [channel, member]) as MemberRow | undefined;
-  }
-
-  members(channel: Uint8Array, state: MemberRow["state"]): MemberRow[] {
-    return this.#db.all("SELECT * FROM channel_members WHERE channel_id = ? AND state = ? ORDER BY requested_at", [channel, state]) as MemberRow[];
-  }
-
-  putMember(row: Omit<MemberRow, "pass" | "pass_expires">): void {
-    this.#db.run(
-      `INSERT INTO channel_members (channel_id, member_id, state, x25519_public, mlkem_public, note, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (channel_id, member_id) DO UPDATE SET state = excluded.state, x25519_public = excluded.x25519_public, mlkem_public = excluded.mlkem_public, note = excluded.note, requested_at = excluded.requested_at`,
-      [row.channel_id, row.member_id, row.state, row.x25519_public, row.mlkem_public, row.note, row.requested_at],
-    );
-  }
-
-  setMemberState(channel: Uint8Array, member: Uint8Array, state: MemberRow["state"]): void {
-    this.#db.run("UPDATE channel_members SET state = ? WHERE channel_id = ? AND member_id = ?", [state, channel, member]);
-  }
-
-  poster(channel: Uint8Array, poster: Uint8Array): PosterRow | undefined {
-    return this.#db.get("SELECT * FROM channel_posters WHERE channel_id = ? AND poster_id = ?", [channel, poster]) as PosterRow | undefined;
-  }
-
-  posters(channel: Uint8Array): PosterRow[] {
-    return this.#db.all("SELECT * FROM channel_posters WHERE channel_id = ?", [channel]) as PosterRow[];
-  }
-
-  putPoster(channel: Uint8Array, poster: Uint8Array, pass: string, expires: number): void {
-    this.#db.run(
-      "INSERT INTO channel_posters (channel_id, poster_id, pass, pass_expires) VALUES (?, ?, ?, ?) ON CONFLICT (channel_id, poster_id) DO UPDATE SET pass = excluded.pass, pass_expires = excluded.pass_expires",
-      [channel, poster, pass, expires],
-    );
-  }
-
-  deletePoster(channel: Uint8Array, poster: Uint8Array): void {
-    this.#db.run("DELETE FROM channel_posters WHERE channel_id = ? AND poster_id = ?", [channel, poster]);
+  // A create the server refused, so that nothing stays half-made here either.
+  forgetCreated(agent: Uint8Array, channel: Uint8Array): void {
+    this.#db.transaction(() => {
+      this.#db.run("DELETE FROM channel_roster_members WHERE agent_id = ? AND channel_id = ?", [agent, channel]);
+      this.#db.run("DELETE FROM channel_keys WHERE agent_id = ? AND channel_id = ?", [agent, channel]);
+      this.#db.run("DELETE FROM channel_follows WHERE agent_id = ? AND channel_id = ?", [agent, channel]);
+      this.#db.run("DELETE FROM channel_owned WHERE channel_id = ?", [channel]);
+    });
   }
 
   follow(agent: Uint8Array, channel: Uint8Array): FollowRow | undefined {
@@ -279,125 +196,124 @@ export class ChannelStore {
     return this.#db.all("SELECT * FROM channel_follows WHERE agent_id = ?", [agent]) as FollowRow[];
   }
 
-  allFollows(): FollowRow[] {
-    return this.#db.all("SELECT * FROM channel_follows", []) as FollowRow[];
-  }
-
-  putFollow(row: Pick<FollowRow, "agent_id" | "channel_id" | "record" | "state" | "x25519_secret" | "mlkem_seed" | "x25519_public" | "mlkem_public">): void {
+  putFollow(row: Pick<FollowRow, "agent_id" | "channel_id" | "record" | "state" | "x25519_secret" | "mlkem_seed" | "x25519_public" | "mlkem_public" | "info" | "info_revision">): void {
     this.#db.run(
-      `INSERT INTO channel_follows (agent_id, channel_id, record, state, x25519_secret, mlkem_seed, x25519_public, mlkem_public) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO channel_follows (agent_id, channel_id, record, state, x25519_secret, mlkem_seed, x25519_public, mlkem_public, info, info_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (agent_id, channel_id) DO UPDATE SET state = excluded.state, x25519_secret = excluded.x25519_secret, mlkem_seed = excluded.mlkem_seed, x25519_public = excluded.x25519_public, mlkem_public = excluded.mlkem_public`,
-      [row.agent_id, row.channel_id, row.record, row.state, row.x25519_secret, row.mlkem_seed, row.x25519_public, row.mlkem_public],
+      [row.agent_id, row.channel_id, row.record, row.state, row.x25519_secret, row.mlkem_seed, row.x25519_public, row.mlkem_public, row.info, row.info_revision],
     );
   }
 
-  setFollowState(agent: Uint8Array, channel: Uint8Array, state: FollowRow["state"]): void {
-    this.#db.run("UPDATE channel_follows SET state = ? WHERE agent_id = ? AND channel_id = ?", [state, agent, channel]);
+  updateFollow(agent: Uint8Array, channel: Uint8Array, changes: FollowProgress): void {
+    const columns = Object.keys(changes);
+    if (columns.length === 0) return;
+    this.#db.run(
+      `UPDATE channel_follows SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE agent_id = ? AND channel_id = ?`,
+      [...columns.map((column) => changes[column as keyof FollowProgress]), agent, channel],
+    );
   }
 
-  setFollowInfo(agent: Uint8Array, channel: Uint8Array, info: string, revision: number): void {
-    this.#db.run("UPDATE channel_follows SET info = ?, info_revision = ? WHERE agent_id = ? AND channel_id = ?", [info, revision, agent, channel]);
-  }
-
-  setFollowPass(agent: Uint8Array, channel: Uint8Array, pass: string): void {
-    this.#db.run("UPDATE channel_follows SET pass = ? WHERE agent_id = ? AND channel_id = ?", [pass, agent, channel]);
-  }
-
-  setNextPoll(agent: Uint8Array, channel: Uint8Array, at: number): void {
-    this.#db.run("UPDATE channel_follows SET next_poll = ? WHERE agent_id = ? AND channel_id = ?", [at, agent, channel]);
+  addAgedOut(agent: Uint8Array, channel: Uint8Array, count: number): void {
+    this.#db.run("UPDATE channel_follows SET aged_out = aged_out + ? WHERE agent_id = ? AND channel_id = ?", [count, agent, channel]);
   }
 
   putKey(agent: Uint8Array, channel: Uint8Array, generation: number, key: Uint8Array): void {
     this.#db.run("INSERT INTO channel_keys (agent_id, channel_id, generation, group_key) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", [agent, channel, generation, key]);
   }
 
-  keys(agent: Uint8Array, channel: Uint8Array): KeyRow[] {
-    return this.#db.all("SELECT generation, group_key, retired FROM channel_keys WHERE agent_id = ? AND channel_id = ? ORDER BY generation", [agent, channel]) as KeyRow[];
+  key(agent: Uint8Array, channel: Uint8Array, generation: number): Uint8Array | undefined {
+    const row = this.#db.get("SELECT group_key FROM channel_keys WHERE agent_id = ? AND channel_id = ? AND generation = ?", [agent, channel, generation]) as { group_key: Uint8Array } | undefined;
+    return row?.group_key;
   }
 
-  retireKey(agent: Uint8Array, channel: Uint8Array, generation: number): void {
-    this.#db.run("UPDATE channel_keys SET retired = 1 WHERE agent_id = ? AND channel_id = ? AND generation = ?", [agent, channel, generation]);
+  highestKey(agent: Uint8Array, channel: Uint8Array): number {
+    const row = this.#db.get("SELECT max(generation) AS g FROM channel_keys WHERE agent_id = ? AND channel_id = ?", [agent, channel]) as { g: number | null };
+    return row.g ?? 0;
   }
 
-  lanes(agent: Uint8Array, channel: Uint8Array, generation?: number): LaneRow[] {
-    return (generation === undefined
-      ? this.#db.all("SELECT generation, lane_id, position, floor, last_seq, signed_at, aged_out FROM channel_lanes WHERE agent_id = ? AND channel_id = ? ORDER BY generation", [agent, channel])
-      : this.#db.all("SELECT generation, lane_id, position, floor, last_seq, signed_at, aged_out FROM channel_lanes WHERE agent_id = ? AND channel_id = ? AND generation = ?", [agent, channel, generation])) as LaneRow[];
+  addRosterMember(agent: Uint8Array, channel: Uint8Array, generation: number, member: Uint8Array): void {
+    this.#db.run("INSERT INTO channel_roster_members (agent_id, channel_id, generation, member_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", [agent, channel, generation, member]);
   }
 
-  // Newest signed head wins, per the same rule a store uses, and a position never goes back.
-  putLaneHead(k: LaneKey, floor: number, lastSeq: number, signedAt: number): void {
-    this.#db.run(
-      `INSERT INTO channel_lanes (agent_id, channel_id, generation, lane_id, floor, last_seq, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (agent_id, channel_id, generation, lane_id) DO UPDATE SET floor = excluded.floor, last_seq = excluded.last_seq, signed_at = excluded.signed_at`,
-      [k.agent, k.channel, k.generation, k.lane, floor, lastSeq, signedAt],
-    );
+  wasOnRoster(agent: Uint8Array, channel: Uint8Array, generation: number, member: Uint8Array): boolean {
+    return this.#db.get("SELECT 1 AS found FROM channel_roster_members WHERE agent_id = ? AND channel_id = ? AND generation = ? AND member_id = ?", [agent, channel, generation, member]) !== undefined;
   }
 
-  setLaneProgress(k: LaneKey, position: number, addAgedOut: number): void {
-    this.#db.run(
-      "UPDATE channel_lanes SET position = max(position, ?), aged_out = aged_out + ? WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ?",
-      [position, addAgedOut, k.agent, k.channel, k.generation, k.lane],
-    );
+  hasPost(agent: Uint8Array, channel: Uint8Array, position: number): boolean {
+    return this.#db.get("SELECT 1 AS found FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]) !== undefined;
   }
 
-  hasPost(k: LaneKey, seq: number): boolean {
-    return this.#db.get("SELECT 1 AS found FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq = ?", [k.agent, k.channel, k.generation, k.lane, seq]) !== undefined;
-  }
-
-  // The time of the next post held above a missing one. It decides when a missing post may be called lost.
-  nextHeldAfter(k: LaneKey, seq: number): number | undefined {
+  // What a replay would have to get past: this author's number, compared with the ones already held before this position.
+  authorSeqTaken(agent: Uint8Array, channel: Uint8Array, author: Uint8Array, seq: number, position: number): boolean {
     const row = this.#db.get(
-      "SELECT published_at FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq > ? ORDER BY seq LIMIT 1",
-      [k.agent, k.channel, k.generation, k.lane, seq],
-    ) as { published_at: number } | undefined;
-    return row?.published_at;
+      "SELECT 1 AS found FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND author_id = ? AND ((author_seq >= ? AND position < ?) OR author_seq = ?) LIMIT 1",
+      [agent, channel, author, seq, position, seq],
+    );
+    return row !== undefined;
   }
 
-  insertPost(k: LaneKey, seq: number, hash: Uint8Array, publishedAt: number, title: Uint8Array | null, body: Uint8Array | null, state: PostRow["state"]): void {
+  highestGenerationBefore(agent: Uint8Array, channel: Uint8Array, position: number): number {
+    const row = this.#db.get("SELECT max(generation) AS g FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND position < ?", [agent, channel, position]) as { g: number | null };
+    return row.g ?? 0;
+  }
+
+  insertPost(agent: Uint8Array, channel: Uint8Array, post: Omit<PostRow, never>): void {
     this.#db.run(
-      `INSERT INTO channel_posts (agent_id, channel_id, generation, lane_id, seq, post_hash, published_at, title, body, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-      [k.agent, k.channel, k.generation, k.lane, seq, hash, publishedAt, title, body, state],
+      `INSERT INTO channel_posts (agent_id, channel_id, position, author_id, author_name, author_seq, generation, published_at, title, body, state, title_verdict, body_verdict)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+      [agent, channel, post.position, post.author_id, post.author_name, post.author_seq, post.generation, post.published_at, post.title, post.body, post.state, post.title_verdict, post.body_verdict],
     );
+  }
+
+  post(agent: Uint8Array, channel: Uint8Array, position: number): PostRow | undefined {
+    return this.#db.get("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]) as PostRow | undefined;
   }
 
   unread(agent: Uint8Array, channel: Uint8Array, limit: number): PostRow[] {
-    return this.#db.all(
-      "SELECT generation, lane_id, seq, post_hash, published_at, title, body, state FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state IN ('unread', 'unopenable') ORDER BY published_at, lane_id, seq LIMIT ?",
-      [agent, channel, limit],
-    ) as PostRow[];
+    return this.#db.all("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state IN ('unread', 'unopenable') ORDER BY position LIMIT ?", [agent, channel, limit]) as PostRow[];
+  }
+
+  history(agent: Uint8Array, channel: Uint8Array, after: number, limit: number): PostRow[] {
+    return this.#db.all("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND position > ? AND state IN ('unread', 'read', 'blocked') ORDER BY position LIMIT ?", [agent, channel, after, limit]) as PostRow[];
+  }
+
+  pendingVerdicts(agent: Uint8Array, channel: Uint8Array, limit: number): PostRow[] {
+    return this.#db.all("SELECT * FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state = 'unread' AND title_verdict = 'pending' ORDER BY position LIMIT ?", [agent, channel, limit]) as PostRow[];
   }
 
   unreadCount(agent: Uint8Array, channel: Uint8Array): number {
     return (this.#db.get("SELECT count(*) AS c FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND state = 'unread'", [agent, channel]) as { c: number }).c;
   }
 
-  // Once told, an unopenable post needs no second mention. Reading it counts as delivered, so it can't stall anything.
-  markPosts(agent: Uint8Array, channel: Uint8Array, rows: readonly { generation: number; lane_id: Uint8Array; seq: number; state: "read" | "blocked" }[]): void {
+  setVerdicts(agent: Uint8Array, channel: Uint8Array, position: number, title: Verdict, body: Verdict): void {
+    this.#db.run("UPDATE channel_posts SET title_verdict = ?, body_verdict = ? WHERE agent_id = ? AND channel_id = ? AND position = ?", [title, body, agent, channel, position]);
+  }
+
+  // A blocked post's text has no further use on this machine, and it counts as delivered.
+  blockPost(agent: Uint8Array, channel: Uint8Array, position: number, title: Verdict, body: Verdict): void {
+    this.#db.run("UPDATE channel_posts SET state = 'blocked', title = NULL, body = NULL, title_verdict = ?, body_verdict = ? WHERE agent_id = ? AND channel_id = ? AND position = ?", [title, body, agent, channel, position]);
+  }
+
+  markRead(agent: Uint8Array, channel: Uint8Array, positions: readonly number[]): void {
     this.#db.transaction(() => {
-      for (const row of rows) {
-        this.#db.run("UPDATE channel_posts SET state = ? WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq = ?", [row.state, agent, channel, row.generation, row.lane_id, row.seq]);
-      }
+      for (const position of positions) this.#db.run("UPDATE channel_posts SET state = 'read' WHERE agent_id = ? AND channel_id = ? AND position = ? AND state IN ('unread', 'unopenable')", [agent, channel, position]);
     });
   }
 
-  gaps(k: LaneKey): GapRow[] {
-    return this.#db.all("SELECT seq, state, rung FROM channel_gaps WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? ORDER BY seq", [k.agent, k.channel, k.generation, k.lane]) as GapRow[];
+  gaps(agent: Uint8Array, channel: Uint8Array): GapRow[] {
+    return this.#db.all("SELECT position, first_seen, state FROM channel_gaps WHERE agent_id = ? AND channel_id = ? ORDER BY position", [agent, channel]) as GapRow[];
   }
 
-  putGap(k: LaneKey, seq: number, state: GapRow["state"]): void {
-    this.#db.run(
-      "INSERT INTO channel_gaps (agent_id, channel_id, generation, lane_id, seq, state) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (agent_id, channel_id, generation, lane_id, seq) DO UPDATE SET state = excluded.state",
-      [k.agent, k.channel, k.generation, k.lane, seq, state],
-    );
+  putGap(agent: Uint8Array, channel: Uint8Array, position: number, firstSeen: number): void {
+    this.#db.run("INSERT INTO channel_gaps (agent_id, channel_id, position, first_seen, state) VALUES (?, ?, ?, ?, 'missing') ON CONFLICT DO NOTHING", [agent, channel, position, firstSeen]);
   }
 
-  deleteGap(k: LaneKey, seq: number): void {
-    this.#db.run("DELETE FROM channel_gaps WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq = ?", [k.agent, k.channel, k.generation, k.lane, seq]);
+  markGapLost(agent: Uint8Array, channel: Uint8Array, position: number): void {
+    this.#db.run("UPDATE channel_gaps SET state = 'lost' WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]);
   }
 
-  markGapRung(k: LaneKey, seq: number): void {
-    this.#db.run("UPDATE channel_gaps SET rung = 1 WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq = ?", [k.agent, k.channel, k.generation, k.lane, seq]);
+  deleteGap(agent: Uint8Array, channel: Uint8Array, position: number): void {
+    this.#db.run("DELETE FROM channel_gaps WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]);
   }
 
   addNotice(agent: Uint8Array, channel: Uint8Array, text: string): void {
@@ -412,45 +328,38 @@ export class ChannelStore {
     for (const id of ids) this.#db.run("DELETE FROM channel_notices WHERE id = ?", [id]);
   }
 
-  nextLogSeq(agent: Uint8Array, channel: Uint8Array, generation: number, lane: Uint8Array): number {
-    const row = this.#db.get("SELECT max(seq) AS m FROM channel_log WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ?", [agent, channel, generation, lane]) as { m: number | null };
+  nextAuthorSeq(agent: Uint8Array, channel: Uint8Array): number {
+    const row = this.#db.get("SELECT max(author_seq) AS m FROM channel_log WHERE agent_id = ? AND channel_id = ?", [agent, channel]) as { m: number | null };
     return (row.m ?? 0) + 1;
   }
 
-  appendLog(k: LaneKey, seq: number, publishedAt: number, file: string): void {
-    this.#db.run("INSERT INTO channel_log (agent_id, channel_id, generation, lane_id, seq, published_at, file) VALUES (?, ?, ?, ?, ?, ?, ?)", [k.agent, k.channel, k.generation, k.lane, seq, publishedAt, file]);
+  addLog(agent: Uint8Array, channel: Uint8Array, seq: number, title: Uint8Array, body: Uint8Array, wire: string): void {
+    this.#db.run("INSERT INTO channel_log (agent_id, channel_id, author_seq, title, body, wire) VALUES (?, ?, ?, ?, ?, ?)", [agent, channel, seq, title, body, wire]);
   }
 
-  deleteLog(k: LaneKey, seq: number): void {
-    this.#db.run("DELETE FROM channel_log WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq = ?", [k.agent, k.channel, k.generation, k.lane, seq]);
+  setLogWire(agent: Uint8Array, channel: Uint8Array, seq: number, wire: string): void {
+    this.#db.run("UPDATE channel_log SET wire = ? WHERE agent_id = ? AND channel_id = ? AND author_seq = ?", [wire, agent, channel, seq]);
   }
 
-  log(k: LaneKey, fromSeq: number): LogRow[] {
-    return this.#db.all("SELECT generation, lane_id, seq, published_at, file FROM channel_log WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND seq >= ? ORDER BY seq", [k.agent, k.channel, k.generation, k.lane, fromSeq]) as LogRow[];
+  landLog(agent: Uint8Array, channel: Uint8Array, seq: number, position: number, ack: string): void {
+    this.#db.run("UPDATE channel_log SET position = ?, ack = ? WHERE agent_id = ? AND channel_id = ? AND author_seq = ?", [position, ack, agent, channel, seq]);
   }
 
-  firstLogAfter(k: LaneKey, publishedAfter: number): number | undefined {
-    const row = this.#db.get("SELECT min(seq) AS m FROM channel_log WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ? AND published_at >= ?", [k.agent, k.channel, k.generation, k.lane, publishedAfter]) as { m: number | null };
-    return row.m ?? undefined;
+  // Refused for good, so its number can be used again and no reader sees a jump.
+  deleteLog(agent: Uint8Array, channel: Uint8Array, seq: number): void {
+    this.#db.run("DELETE FROM channel_log WHERE agent_id = ? AND channel_id = ? AND author_seq = ?", [agent, channel, seq]);
   }
 
-  putAck(k: LaneKey, seq: number, store: string, ack: string): void {
-    this.#db.run("INSERT INTO channel_log_acks (agent_id, channel_id, generation, lane_id, seq, store, ack) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", [k.agent, k.channel, k.generation, k.lane, seq, store, ack]);
+  waitingLog(agent: Uint8Array, channel: Uint8Array): LogRow[] {
+    return this.#db.all("SELECT author_seq, title, body, wire, position FROM channel_log WHERE agent_id = ? AND channel_id = ? AND position IS NULL ORDER BY author_seq", [agent, channel]) as LogRow[];
   }
 
-  ownHead(k: LaneKey): OwnHeadRow | undefined {
-    return this.#db.get("SELECT generation, lane_id, floor, last_seq, signed_at, cap, file FROM channel_own_heads WHERE agent_id = ? AND channel_id = ? AND generation = ? AND lane_id = ?", [k.agent, k.channel, k.generation, k.lane]) as OwnHeadRow | undefined;
+  logOwnsPosition(agent: Uint8Array, channel: Uint8Array, position: number): boolean {
+    return this.#db.get("SELECT 1 AS found FROM channel_log WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]) !== undefined;
   }
 
-  ownHeads(agent: Uint8Array, channel: Uint8Array): OwnHeadRow[] {
-    return this.#db.all("SELECT generation, lane_id, floor, last_seq, signed_at, cap, file FROM channel_own_heads WHERE agent_id = ? AND channel_id = ? ORDER BY generation", [agent, channel]) as OwnHeadRow[];
-  }
-
-  putOwnHead(k: LaneKey, floor: number, lastSeq: number, signedAt: number, cap: Uint8Array, file: string): void {
-    this.#db.run(
-      `INSERT INTO channel_own_heads (agent_id, channel_id, generation, lane_id, floor, last_seq, signed_at, cap, file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (agent_id, channel_id, generation, lane_id) DO UPDATE SET floor = excluded.floor, last_seq = excluded.last_seq, signed_at = excluded.signed_at, file = excluded.file`,
-      [k.agent, k.channel, k.generation, k.lane, floor, lastSeq, signedAt, cap, file],
-    );
+  markLostTold(agent: Uint8Array, channel: Uint8Array, position: number): boolean {
+    const row = this.#db.get("INSERT INTO channel_lost_told (agent_id, channel_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING position", [agent, channel, position]);
+    return row !== undefined;
   }
 }

@@ -49,6 +49,7 @@ import {
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
+import type { ChannelHost } from "./channels.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
@@ -84,10 +85,11 @@ export class LocalError extends Error {
 }
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "channel_post" | "channel_notice" | "channel_request";
   agent: string;
   session_id?: string;
   from_id?: string;
+  channel_id?: string;
 }
 
 interface AgentContext {
@@ -151,6 +153,7 @@ type AttemptOutcome =
 
 export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
+  channelPush(frame: PushFrame): void;
 }
 
 function notSealedYet(reason: string): unknown {
@@ -313,6 +316,10 @@ export class Engine {
     try {
       const agent = this.#agents.get(frame.agent);
       if (!agent) return;
+      if (frame.push === "channel") {
+        this.#events.channelPush(frame);
+        return;
+      }
       if (frame.push === "session") {
         const wire = frame.data as SessionOnWire;
         const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
@@ -1106,6 +1113,18 @@ export class Engine {
     if (this.#server) await this.#bringOnline(agent, this.#server);
     const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
     return { name, agent_id: agent.hex, registered: agent.registered, online: agent.online, ...note };
+  }
+
+  // What channels.ts needs from here. It shares an agent's keys and the server link, and nothing about any conversation.
+  channelHost(): ChannelHost {
+    return {
+      signer: (agentHex) => this.#requireAgent(agentHex).signer,
+      agents: () => [...this.#agents.keys()],
+      online: (agentHex) => this.#agents.get(agentHex)?.online === true,
+      call: (method, params) => this.#link.call(method, params),
+      serverIdentity: () => this.#serverIdentity(),
+      ring: (agentHex, bell) => this.#events.ring(agentHex, bell),
+    };
   }
 
   resolveAgent(nameOrId: string): string {

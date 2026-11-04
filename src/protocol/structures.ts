@@ -306,47 +306,39 @@ export function structureHash(bytes: Uint8Array): Uint8Array {
   return sha256(bytes);
 }
 
-// Channels. Each poster has their own numbered lane, and a number means nothing in any other lane, generation or channel.
 export const ChannelVisibility = { public: 1, private: 2 } as const;
 export type ChannelVisibility = (typeof ChannelVisibility)[keyof typeof ChannelVisibility];
 
 export const ChannelPosting = { admin: 1, posters: 2, members: 3 } as const;
 export type ChannelPosting = (typeof ChannelPosting)[keyof typeof ChannelPosting];
 
-export const ChannelVerdict = { approved: 1, refused: 2, ejected: 3 } as const;
-export type ChannelVerdict = (typeof ChannelVerdict)[keyof typeof ChannelVerdict];
-
-// The pointer the server holds. Signed by the channel key and by its admin, and it never changes.
+// Signed by the channel key and by its admin, and it never changes.
 export interface ChannelRecordFields {
   channelId: Uint8Array;
   adminId: Uint8Array;
   visibility: number;
-  // JSON of the store list. The reader needs the exact bytes, so it's kept as bytes.
-  stores: Uint8Array;
 }
 
 export function channelRecordBytes(r: ChannelRecordFields): Uint8Array {
-  return encodeFields([VERSION, exact("channel id", r.channelId, HASH_BYTES), exact("admin id", r.adminId, HASH_BYTES), u8(r.visibility), r.stores]);
+  return encodeFields([VERSION, exact("channel id", r.channelId, HASH_BYTES), exact("admin id", r.adminId, HASH_BYTES), u8(r.visibility)]);
 }
 
+// The channel's settings, signed by the channel key. Readers refuse a poster this doesn't allow.
 export interface ChannelInfoFields {
   channelId: Uint8Array;
   revision: number;
   posting: number;
   retentionMs: number;
-  hardCapMs: number;
   generation: number;
-  // When this generation began. Nothing new may go under an older key from then on.
-  generationAt: number;
   x25519Public: Uint8Array;
   mlKemPublic: Uint8Array;
-  // Revoked posters' ids, one after another.
-  revoked: Uint8Array;
+  // Named posters' ids, one after another.
+  posters: Uint8Array;
   name: Uint8Array;
 }
 
 export function channelInfoBytes(i: ChannelInfoFields): Uint8Array {
-  if (i.revoked.length % HASH_BYTES !== 0) throw new RangeError("the revoked list must be whole ids");
+  if (i.posters.length % HASH_BYTES !== 0) throw new RangeError("the poster list must be whole ids");
   if (i.name.length === 0 || i.name.length > MAX_NAME_BYTES) throw new RangeError(`a channel name must be 1 to ${MAX_NAME_BYTES} bytes`);
   return encodeFields([
     VERSION,
@@ -354,23 +346,21 @@ export function channelInfoBytes(i: ChannelInfoFields): Uint8Array {
     u64(i.revision),
     u8(i.posting),
     u64(i.retentionMs),
-    u64(i.hardCapMs),
     u64(i.generation),
-    u64(i.generationAt),
     exact("X25519 public key", i.x25519Public, X25519_PUBLIC_KEY_BYTES),
     exact("ML-KEM public key", i.mlKemPublic, ML_KEM_PUBLIC_KEY_BYTES),
-    i.revoked,
+    i.posters,
     i.name,
   ]);
 }
 
-// The signature covers where the post belongs, so it can't be re-posted under another number, lane, generation or channel.
+// The poster's signature covers its channel, key generation and own counter, so the server can't re-post an old "Approved" as new.
+// The channel's number isn't here: the server assigns it, and says so in the ack.
 export interface ChannelPostFields {
   channelId: Uint8Array;
-  cap: Uint8Array;
   generation: number;
-  laneId: Uint8Array;
-  seq: number;
+  authorId: Uint8Array;
+  authorSeq: number;
   publishedAt: number;
   titleHash: Uint8Array;
   bodyHash: Uint8Array;
@@ -380,60 +370,38 @@ export function channelPostBytes(p: ChannelPostFields): Uint8Array {
   return encodeFields([
     VERSION,
     exact("channel id", p.channelId, HASH_BYTES),
-    exact("path capability", p.cap, HASH_BYTES),
     u64(p.generation),
-    exact("lane id", p.laneId, HASH_BYTES),
-    u64(p.seq),
+    exact("author id", p.authorId, HASH_BYTES),
+    u64(p.authorSeq),
     u64(p.publishedAt),
     exact("title hash", p.titleHash, HASH_BYTES),
     exact("body hash", p.bodyHash, HASH_BYTES),
   ]);
 }
 
-// Only this signature moves a reader's position. A store reports no floor of its own.
-export interface ChannelHeadFields {
+export interface ChannelPostAckFields {
+  serverId: Uint8Array;
   channelId: Uint8Array;
-  cap: Uint8Array;
-  generation: number;
-  laneId: Uint8Array;
-  floor: number;
-  lastSeq: number;
-  signedAt: number;
+  position: number;
+  postHash: Uint8Array;
+  time: number;
 }
 
-export function channelHeadBytes(h: ChannelHeadFields): Uint8Array {
-  return encodeFields([
-    VERSION,
-    exact("channel id", h.channelId, HASH_BYTES),
-    exact("path capability", h.cap, HASH_BYTES),
-    u64(h.generation),
-    exact("lane id", h.laneId, HASH_BYTES),
-    u64(h.floor),
-    u64(h.lastSeq),
-    u64(h.signedAt),
-  ]);
+export function channelPostAckBytes(a: ChannelPostAckFields): Uint8Array {
+  return encodeFields([VERSION, exact("server id", a.serverId, HASH_BYTES), exact("channel id", a.channelId, HASH_BYTES), u64(a.position), exact("post hash", a.postHash, HASH_BYTES), u64(a.time)]);
 }
 
-export interface ChannelPassFields {
+// The first position the server holds, under its signature. A number below it aged out. An absent number above it is a gap.
+export interface ChannelStateFields {
+  serverId: Uint8Array;
   channelId: Uint8Array;
-  posterId: Uint8Array;
-  expiresAt: number;
+  firstHeld: number;
+  tip: number;
+  time: number;
 }
 
-export function channelPassBytes(p: ChannelPassFields): Uint8Array {
-  return encodeFields([VERSION, exact("channel id", p.channelId, HASH_BYTES), exact("poster id", p.posterId, HASH_BYTES), u64(p.expiresAt)]);
-}
-
-// A generation's group key, sealed once per member. A later revision of one generation adds members.
-export interface ChannelBundleFields {
-  channelId: Uint8Array;
-  generation: number;
-  revision: number;
-  entriesHash: Uint8Array;
-}
-
-export function channelBundleBytes(b: ChannelBundleFields): Uint8Array {
-  return encodeFields([VERSION, exact("channel id", b.channelId, HASH_BYTES), u64(b.generation), u64(b.revision), exact("entries hash", b.entriesHash, HASH_BYTES)]);
+export function channelStateBytes(s: ChannelStateFields): Uint8Array {
+  return encodeFields([VERSION, exact("server id", s.serverId, HASH_BYTES), exact("channel id", s.channelId, HASH_BYTES), u64(s.firstHeld), u64(s.tip), u64(s.time)]);
 }
 
 // Signed by a joiner's own identity, so nobody can swap in a key of theirs and be handed the group key.
@@ -456,49 +424,44 @@ export function channelMemberKeyBytes(m: ChannelMemberKeyFields): Uint8Array {
   ]);
 }
 
-export interface ChannelAnswerFields {
+// The admin's signed, hash-chained list of members and the member key each one signed for.
+// The server holds it and can't change it, which is what stops the server adding itself to a private channel.
+export interface ChannelRosterFields {
   channelId: Uint8Array;
-  slot: Uint8Array;
-  verdict: number;
-  answeredAt: number;
+  revision: number;
+  generation: number;
+  prevHash: Uint8Array;
+  membersHash: Uint8Array;
 }
 
-export function channelAnswerBytes(a: ChannelAnswerFields): Uint8Array {
-  return encodeFields([VERSION, exact("channel id", a.channelId, HASH_BYTES), exact("slot", a.slot, HASH_BYTES), u8(a.verdict), u64(a.answeredAt)]);
-}
-
-// The server's word that a registered agent asked to join. It names a slot, so the store learns nothing about who.
-export interface ChannelTicketFields {
-  serverId: Uint8Array;
-  channelId: Uint8Array;
-  slot: Uint8Array;
-  expiresAt: number;
-}
-
-export function channelTicketBytes(t: ChannelTicketFields): Uint8Array {
-  return encodeFields([VERSION, exact("server id", t.serverId, HASH_BYTES), exact("channel id", t.channelId, HASH_BYTES), exact("slot", t.slot, HASH_BYTES), u64(t.expiresAt)]);
-}
-
-// A store's word that it took this post by this time.
-export interface ChannelStoreAckFields {
-  storeId: Uint8Array;
-  channelId: Uint8Array;
-  cap: Uint8Array;
-  laneId: Uint8Array;
-  seq: number;
-  postHash: Uint8Array;
-  time: number;
-}
-
-export function channelStoreAckBytes(a: ChannelStoreAckFields): Uint8Array {
+export function channelRosterBytes(r: ChannelRosterFields): Uint8Array {
   return encodeFields([
     VERSION,
-    exact("store id", a.storeId, HASH_BYTES),
-    exact("channel id", a.channelId, HASH_BYTES),
-    exact("path capability", a.cap, HASH_BYTES),
-    exact("lane id", a.laneId, HASH_BYTES),
-    u64(a.seq),
-    exact("post hash", a.postHash, HASH_BYTES),
-    u64(a.time),
+    exact("channel id", r.channelId, HASH_BYTES),
+    u64(r.revision),
+    u64(r.generation),
+    exact("previous roster hash", r.prevHash, HASH_BYTES),
+    exact("members hash", r.membersHash, HASH_BYTES),
+  ]);
+}
+
+// One generation's group key, sealed to one member. Signed, because anyone can seal to a public key:
+// without this, a hostile server could hand a member a key of its own and read everything they post.
+export interface ChannelKeyEntryFields {
+  channelId: Uint8Array;
+  generation: number;
+  memberId: Uint8Array;
+  rosterHash: Uint8Array;
+  sealedHash: Uint8Array;
+}
+
+export function channelKeyEntryBytes(e: ChannelKeyEntryFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("channel id", e.channelId, HASH_BYTES),
+    u64(e.generation),
+    exact("member id", e.memberId, HASH_BYTES),
+    exact("roster hash", e.rosterHash, HASH_BYTES),
+    exact("sealed hash", e.sealedHash, HASH_BYTES),
   ]);
 }
