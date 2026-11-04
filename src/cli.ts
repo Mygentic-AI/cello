@@ -58,9 +58,15 @@ async function login(args: string[]): Promise<void> {
   closeSync(logFile);
   const client = await waitForDaemon(child);
   child.unref();
-  const status = await client.call("status") as { pid: number };
+  // A far-away server takes a moment. Say what's true rather than implying it's ready.
+  let status = await client.call("status") as { pid: number; connected: boolean; problem: string | null };
+  for (let i = 0; i < 50 && !status.connected; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    status = await client.call("status") as typeof status;
+  }
   client.close();
-  process.stdout.write(`Daemon started, process ${status.pid}, for ${server}.\n`);
+  const state = status.connected ? "connected" : `not connected yet (${status.problem ?? "still trying"}). It keeps trying by itself`;
+  process.stdout.write(`Daemon started, process ${status.pid}, for ${server}: ${state}.\n`);
 }
 
 async function main(): Promise<void> {
