@@ -11,6 +11,8 @@ import { logEvent } from "./log.ts";
 
 const CALL_TIMEOUT_MS = 20_000;
 const SERVER_SILENCE_MS = 45_000;
+// Under the server's 15-second heartbeat.
+const KEEP_ALIVE_MS = 10_000;
 const MAX_BACKOFF_MS = 30_000;
 
 export class ServerRefused extends Error {
@@ -56,6 +58,7 @@ export class ServerLink {
   #backoff = 1000;
   #problem: string | null = null;
   #silence: NodeJS.Timeout | undefined;
+  #keepAlive: NodeJS.Timeout | undefined;
   #tcp: Socket | undefined;
   #bytesHeard = 0;
   readonly #waiting = new Map<number, { resolve(value: unknown): void; reject(err: Error): void; timer: NodeJS.Timeout }>();
@@ -91,7 +94,12 @@ export class ServerLink {
     this.#socket = socket;
     this.#tcp = undefined;
     socket.on("upgrade", (response) => { this.#tcp = response.socket; });
-    socket.on("open", () => { void this.#greet(); });
+    socket.on("open", () => {
+      // The server's heartbeat needs to hear something from us, and its ping can sit behind queued long replies.
+      // This way a daemon that's busy reading those isn't taken for a dead one.
+      this.#keepAlive = setInterval(() => socket.ping(), KEEP_ALIVE_MS);
+      void this.#greet();
+    });
     socket.on("message", (raw: Buffer) => this.#receive(raw));
     socket.on("ping", () => this.#heardServer());
     socket.on("close", () => this.#closed());
@@ -144,6 +152,7 @@ export class ServerLink {
 
   #closed(): void {
     clearTimeout(this.#silence);
+    clearInterval(this.#keepAlive);
     const wasReady = this.#ready;
     this.#ready = false;
     for (const [id, waiter] of this.#waiting) {
