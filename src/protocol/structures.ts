@@ -81,8 +81,7 @@ export function ackBytes(a: AckFields): Uint8Array {
 }
 
 // Means: this reader's machine stored and decrypted everything through this position. Says nothing about agreement.
-// screenedThrough is how far its screening has got, and screeningEtaSeconds a rough time for the rest, 0 when nothing is held up.
-// Those two only tell a sender about a backlog. Neither says the reader has seen anything, or what it thought.
+// screenedThrough is how far its screening has got. It says nothing about whether the reader has seen anything, or what it thought.
 export interface DeliveryAckFields {
   sessionId: Uint8Array;
   readerId: Uint8Array;
@@ -90,7 +89,6 @@ export interface DeliveryAckFields {
   entryHash: Uint8Array;
   root: Uint8Array;
   screenedThrough: number;
-  screeningEtaSeconds: number;
 }
 
 export function deliveryAckBytes(d: DeliveryAckFields): Uint8Array {
@@ -103,7 +101,6 @@ export function deliveryAckBytes(d: DeliveryAckFields): Uint8Array {
     exact("entry hash", d.entryHash, HASH_BYTES),
     exact("root", d.root, HASH_BYTES),
     u64(d.screenedThrough),
-    u64(d.screeningEtaSeconds),
   ]);
 }
 
