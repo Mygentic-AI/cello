@@ -1,0 +1,23 @@
+{
+  "name": "cello-v2",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.7" },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "lint": "eslint .",
+    "typecheck": "tsc",
+    "check": "pnpm run test && pnpm run lint && pnpm run typecheck"
+  },
+  "dependencies": {
+    "@noble/curves": "latest",
+    "@noble/hashes": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "eslint": "latest",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "latest"
+  }
+}
