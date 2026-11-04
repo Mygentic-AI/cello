@@ -277,6 +277,11 @@ export class Store {
     this.#prep("DELETE FROM status_outbox WHERE agent_id = ? AND server_url = ? AND statement = ?").run([row.agent_id, row.server_url, row.statement]);
   }
 
+  // The row stays, with its keys and its history: a name is freed, and nothing is lost.
+  markRemoved(agentId: Uint8Array): void {
+    this.#prep("UPDATE agents SET removed = 1 WHERE agent_id = ?").run([agentId]);
+  }
+
   isStopped(agentId: Uint8Array, sessionId: Uint8Array): boolean {
     return this.#prep("SELECT 1 FROM stopped_sessions WHERE agent_id = ? AND session_id = ?").get([agentId, sessionId]) !== undefined;
   }

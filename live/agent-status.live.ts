@@ -270,6 +270,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(cara.refused("initiate-session", danaAgent.id), "agent_suspended");
   assert.equal(cara.refused("close-session", session), "agent_suspended");
   assert.equal(cara.refused("wait"), "agent_suspended");
+  assert.equal(cara.refused("channel-create", "after-the-flip", "--type", "public"), "agent_suspended");
   const longSend = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", "Cara"], { encoding: "utf8", input: LONG_TEXT, env: { ...process.env, CELLO_V2_HOME: homeOf(cara), CELLO_CALLER: "shell-Cara" } });
   assert.match(longSend.stderr, /agent_suspended/, "a long message stops too");
   say(`the next send and receive both stopped, by name, ${report["ms_from_operator_command_to_refused_send_and_receive"] as number} ms after the command`);
@@ -338,6 +339,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   await refusedWith(raw.long.call("session.list", list), "agent_suspended", "the second connection");
   await refusedWith(raw.authLong(), "agent_suspended", "a new proof on the second connection");
   await refusedWith(raw.offer(danaAgent.id), "agent_suspended", "calling");
+  await refusedWith(raw.link.call("channel.create", list), "agent_suspended", "a channel action");
   assert.equal((await raw.auth()).standing.status, "suspended", "it can prove itself on its first connection, to seal");
   // A thief with the keys can't lift it, or come back with an old statement.
   await refusedWith(raw.link.call("agent.status", { statement: await statement(raw.signer, StatusIssuer.agent, raw.signer.id, AgentStatus.active, StatusReason.none) }), "status_not_allowed", "an agent lifting itself");
