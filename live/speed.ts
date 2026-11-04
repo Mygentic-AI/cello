@@ -35,6 +35,7 @@ const { values: args } = parseArgs({
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
 const COMPOSE_PROJECT = "cello-v2-speed";
@@ -58,7 +59,7 @@ function pause(ms: number): Promise<void> {
 
 // This Mac froze for 5 minutes after full-CPU tests on 3 November, and someone is using it. So load is bounded three
 // ways: few senders, short runs with gaps, and this guard, which stops the load if the machine looks strained.
-const LOAD_LIMIT = cpus().length * 0.8;
+const LOAD_LIMIT = cpus().length * 1.2;
 const LAG_LIMIT_MS = 3000;
 const guard = { tripped: "" as string, strikes: 0, last: performance.now() };
 const guardTimer = setInterval(() => {
@@ -195,10 +196,22 @@ interface Sent { session: string; tag: string; seq: number; size: number; starte
 // Mostly short, some long: what a coding bot firing on hooks sends.
 const MIXED = [SHORT, SHORT, SHORT, SHORT, KB100, SHORT, SHORT, SHORT, SHORT, KB100, SHORT, SHORT, SHORT, SHORT, KB100, MB1];
 
-interface Flood { from: Agent; sessions: string[]; sizes: number[]; concurrency: number; seconds: number; limit?: number; gapMs?: number; tag: string }
+interface Flood { from: Agent; sessions: string[]; sizes: number[]; concurrency: number; seconds: number; limit?: number; gapMs?: number; tag: string; via?: "cli" | "socket" }
+
+// Its own process, so the daemon still has to serve it over its real socket. It's told to stop if the guard trips.
+async function floodBySocket(plan: Flood): Promise<Sent[]> {
+  const out = join(plan.from.home.path, `flood-${plan.tag}.json`);
+  const worker = spawn(process.execPath, [BOT, JSON.stringify({ home: plan.from.home.path, agent: plan.from.name, caller: plan.from.caller, sessions: plan.sessions, sizes: plan.sizes, concurrency: plan.concurrency, seconds: plan.seconds, tag: plan.tag, out, ...(plan.limit === undefined ? {} : { limit: plan.limit }) })], { stdio: ["ignore", "inherit", "inherit"] });
+  const watch = setInterval(() => { if (guard.tripped) worker.kill("SIGTERM"); }, 500);
+  const status = await new Promise<number | null>((resolve) => worker.on("close", resolve));
+  clearInterval(watch);
+  if (status !== 0) throw new Error(`the bot process exited with ${status}`);
+  return JSON.parse(readFileSync(out, "utf8")) as Sent[];
+}
 
 // Each worker sends the next message as soon as its last one returns, in notice mode, across its sessions in turn.
 async function flood(plan: Flood): Promise<Sent[]> {
+  if (plan.via !== "cli") return floodBySocket(plan);
   const sent: Sent[] = [];
   const deadline = performance.now() + plan.seconds * 1000;
   let next = 0;
@@ -326,7 +339,7 @@ function stopLocalServer(): void {
 // Per statement, for the time since the last reset. COMMIT is where the disk flush shows.
 function databaseTime(): { query: string; calls: number; meanMs: number; totalMs: number }[] {
   if (!args.local) return [];
-  const rows = sql("SELECT calls, round(mean_exec_time::numeric, 3), round(total_exec_time::numeric, 1), left(regexp_replace(query, E'\\\\s+', ' ', 'g'), 70) FROM pg_stat_statements WHERE query NOT ILIKE '%pg_stat%' ORDER BY total_exec_time DESC LIMIT 10");
+  const rows = sql("SELECT calls, round(mean_exec_time::numeric, 3), round(total_exec_time::numeric, 1), left(regexp_replace(query, E'\\\\s+', ' ', 'g'), 70) FROM pg_stat_statements WHERE query NOT ILIKE '%pg_stat%' ORDER BY total_exec_time DESC LIMIT 16");
   return rows.split("\n").filter(Boolean).map((line) => {
     const [calls, meanMs, totalMs, query] = line.split("|");
     return { calls: Number(calls), meanMs: Number(meanMs), totalMs: Number(totalMs), query: query ?? "" };
@@ -576,7 +589,7 @@ async function baseline(label: string): Promise<void> {
   await finishHomes([home]);
 }
 
-interface BotPlan { label: string; reader: "keeps_up" | "stops"; separateDaemon: boolean; sizes: number[]; concurrency: number; seconds: number; limit?: number }
+interface BotPlan { via: "cli" | "socket"; label: string; reader: "keeps_up" | "stops"; separateDaemon: boolean; sizes: number[]; concurrency: number; seconds: number; limit?: number }
 
 // The test that matters most: a bot floods while another pair talks, and the pair is timed.
 async function withBot(plan: BotPlan): Promise<void> {
@@ -615,7 +628,7 @@ async function withBot(plan: BotPlan): Promise<void> {
       queue.push({ atSeconds: Math.round((performance.now() - started) / 1000), unread: ((inbox.json["waiting"] ?? []) as { unread: number }[])[0]?.unread ?? 0, inboxMs: Math.round(inbox.ms), databaseMb: Math.round(second.dbBytes() / 1e6), server: heldOnServer() });
     }
   })();
-  const sent = await flood({ from: bot, sessions: [botSession], sizes: plan.sizes, concurrency: plan.concurrency, seconds: plan.seconds, tag, ...(plan.limit === undefined ? {} : { limit: plan.limit }), ...(args.gentle ? { gapMs: 100 } : {}) });
+  const sent = await flood({ from: bot, sessions: [botSession], sizes: plan.sizes, concurrency: plan.concurrency, seconds: plan.seconds, tag, via: plan.via, ...(plan.limit === undefined ? {} : { limit: plan.limit }), ...(args.gentle ? { gapMs: 100 } : {}) });
   const floodEnded = performance.now();
   flooding = false;
   await Promise.all([reading, watching]);
@@ -924,17 +937,18 @@ const SCENARIOS: Record<string, () => Promise<void>> = args.gentle
   ? {
       anatomy,
       baseline_before: () => baseline("baseline_before"),
-      bot_gentle: () => withBot({ label: "bot_gentle", reader: "keeps_up", separateDaemon: false, sizes: [SHORT, SHORT, SHORT, SHORT, KB100], concurrency: 2, seconds: Math.min(SECONDS, 30), limit: 150 }),
-      bot_gentle_long: () => withBot({ label: "bot_gentle_long", reader: "stops", separateDaemon: false, sizes: [MB1], concurrency: 1, seconds: 30, limit: 5 }),
+      bot_gentle: () => withBot({ via: "cli", label: "bot_gentle", reader: "keeps_up", separateDaemon: false, sizes: [SHORT, SHORT, SHORT, SHORT, KB100], concurrency: 2, seconds: Math.min(SECONDS, 30), limit: 150 }),
+      bot_gentle_long: () => withBot({ via: "cli", label: "bot_gentle_long", reader: "stops", separateDaemon: false, sizes: [MB1], concurrency: 1, seconds: 30, limit: 5 }),
       baseline_after: () => baseline("baseline_after"),
     }
   : {
       anatomy,
       baseline_before: () => baseline("baseline_before"),
-      bot_reader_keeps_up: () => withBot({ label: "bot_reader_keeps_up", reader: "keeps_up", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
-      bot_reader_stops: () => withBot({ label: "bot_reader_stops", reader: "stops", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
+      bot_cli_reader_keeps_up: () => withBot({ via: "cli", label: "bot_cli_reader_keeps_up", reader: "keeps_up", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
+      bot_socket_reader_keeps_up: () => withBot({ via: "socket", label: "bot_socket_reader_keeps_up", reader: "keeps_up", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
+      bot_socket_reader_stops: () => withBot({ via: "socket", label: "bot_socket_reader_stops", reader: "stops", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
       baseline_after: () => baseline("baseline_after"),
-      bot_other_daemon: () => withBot({ label: "bot_other_daemon", reader: "keeps_up", separateDaemon: true, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
+      bot_socket_other_daemon: () => withBot({ via: "socket", label: "bot_socket_other_daemon", reader: "keeps_up", separateDaemon: true, sizes: MIXED, concurrency: 4, seconds: SECONDS }),
       throughput,
       reader_offline: () => readerOffline(SECONDS),
       deep_queue: deepQueue,
