@@ -381,9 +381,11 @@ async function worker(caller: string): Promise<void> {
       })();
       return;
     }
+    const trace = (what: string): void => { process.stderr.write(`${new Date().toISOString()} ${String(command["id"])} ${String(command["cmd"])} ${what}\n`); };
+    trace("start");
     handle(command).then(
-      (result) => say({ id: command["id"], ok: true, result }),
-      (err: unknown) => say({ id: command["id"], ok: false, error: err instanceof Error ? err.message : String(err) }),
+      (result) => { trace("done"); say({ id: command["id"], ok: true, result }); },
+      (err: unknown) => { trace(`failed: ${err instanceof Error ? err.message : String(err)}`); say({ id: command["id"], ok: false, error: err instanceof Error ? err.message : String(err) }); },
     );
   });
   // The orders stopped, so this run is over: nothing of it should keep running on this machine.
@@ -659,7 +661,7 @@ async function orchestrate(): Promise<void> {
   const { values: args } = parseArgs({ options: {
     server: { type: "string" }, instance: { type: "string" }, zone: { type: "string" }, project: { type: "string", default: "cello-infra" },
     short: { type: "string", default: "100" }, kb100: { type: "string", default: "40" }, mb1: { type: "string", default: "20" },
-    starts: { type: "string", default: "15" }, kills: { type: "string", default: "3" }, "no-sync": { type: "boolean", default: false },
+    starts: { type: "string", default: "15" }, kills: { type: "string", default: "3" }, "no-sync": { type: "boolean", default: false }, "kills-only": { type: "boolean", default: false },
   } });
   if (!args.server || !args.instance || !args.zone) throw new Error("--server, --instance and --zone are required");
   const here = new URL("..", import.meta.url).pathname;
@@ -712,7 +714,7 @@ async function orchestrate(): Promise<void> {
     results["measured_alone"] = { mac: benches[0], vm: benches[1] };
     save();
 
-    await phase("session starts", async () => {
+    if (!args["kills-only"]) await phase("session starts", async () => {
       results["session_start"] = {
         "mac calls vm": await sessionStarts(mac, vm, `st${tagBase}m`, Number(args.starts), raw),
         "vm calls mac": await sessionStarts(vm, mac, `st${tagBase}v`, Number(args.starts), raw),
@@ -724,7 +726,7 @@ async function orchestrate(): Promise<void> {
     results["mac_and_vm"] = conversations;
     const control_: Json = {};
     results["vm_and_vm_control"] = control_;
-    for (const size of SIZES) {
+    for (const size of args["kills-only"] ? [] : SIZES) {
       await phase(`mac and vm, ${size.label}`, async () => {
         const { result, problems } = await converse(mac, vm, `${size.bytes}m${tagBase}`, size.bytes, rounds[size.label] as number, raw);
         conversations[size.label] = result;
