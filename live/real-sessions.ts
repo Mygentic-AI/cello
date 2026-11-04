@@ -1,7 +1,10 @@
 // Iteration 1's live test: two real Claude Code sessions, one daemon, the real server.
 // They send fixed lines on the cheapest model, in empty folders. This script does all the checking.
 //
-//   node live/real-sessions.ts --server wss://host/v1 --instance <vm> --zone <zone> [--startup-only]
+//   node live/real-sessions.ts --server wss://host/v1 --instance <vm> --zone <zone> [--startup-only | --unscripted]
+//
+// --unscripted gives the sessions a goal and no lines, to see how agents really use it.
+// It fails only on what the protocol must guarantee. How the agents behaved is for a person to read.
 //
 // Watch it with: tmux attach -r -t cello-live
 import assert from "node:assert/strict";
@@ -21,6 +24,7 @@ const { values: args } = parseArgs({
     zone: { type: "string" },
     model: { type: "string", default: "claude-haiku-5-5" },
     "startup-only": { type: "boolean", default: false },
+    unscripted: { type: "boolean", default: false },
   },
 });
 if (!args.server || !args.instance || !args.zone) throw new Error("--server, --instance and --zone are required");
@@ -70,7 +74,9 @@ function prepareFolder(name: string): string {
   mkdirSync(folder);
   writeFileSync(join(folder, "mcp.json"), JSON.stringify({ mcpServers: { "cello-v2": { command: process.execPath, args: [MCP], env: { CELLO_V2_HOME: home } } } }));
   // Only project settings and only this one server, so no personal instructions, hooks or plugins load and spend tokens.
-  writeFileSync(join(folder, "start.sh"), `#!/bin/sh\ncd '${folder}'\nexec claude --model ${args.model} --effort low --setting-sources project --strict-mcp-config --mcp-config mcp.json --dangerously-load-development-channels server:cello-v2 --allowedTools mcp__cello-v2 --disable-slash-commands\n`, { mode: 0o700 });
+  // Unscripted sessions read a file of their own and think for themselves, so they get Read and normal effort.
+  const extra = args.unscripted ? "--allowedTools mcp__cello-v2 Read" : "--effort low --allowedTools mcp__cello-v2";
+  writeFileSync(join(folder, "start.sh"), `#!/bin/sh\ncd '${folder}'\nexec claude --model ${args.model} --setting-sources project --strict-mcp-config --mcp-config mcp.json --dangerously-load-development-channels server:cello-v2 ${extra} --disable-slash-commands\n`, { mode: 0o700 });
   return folder;
 }
 
@@ -81,6 +87,29 @@ const alphaPrompt = (betaId: string): string =>
 const betaPrompt = "Scripted test. Call cello_use_agent with agent Beta and end your turn. Each time a doorbell says a message is waiting, call cello_receive, then act on what it said, and end your turn. If it said alpha one: send \"beta one\" signal standby est_minutes 1, then send \"beta two\" signal over. If it said alpha two: send \"beta three\" signal over. If it said alpha three: send \"beta four\" signal over. If it said alpha done: call cello_close_session. " + COMMON;
 
 let tmuxIsOurs = false;
+
+// The unscripted topic. The two facts really conflict, and working out Beta's takes real work, so the signals have a job to do.
+const BUDGET = `Backup storage costs $0.02 per GB per month.
+A full backup is 400 GB. A daily incremental backup is 20 GB.
+We take a full backup every day today, so each day of retention stores another 400 GB.
+Our budget for backup storage is $400 a month.
+`;
+const INCIDENTS = `opened,system,days_until_detected
+2022-03-14,billing,94
+2023-02-02,auth,12
+2023-08-19,billing,31
+2024-01-07,search,5
+2024-05-23,orders,63
+2024-11-30,auth,18
+2025-02-11,orders,41
+2025-06-04,search,7
+2025-09-17,billing,27
+2026-03-22,orders,52
+2026-08-01,auth,9
+`;
+const unscriptedAlpha = (betaId: string): string =>
+  `You're Alpha, an agent working for an infrastructure team. Select agent Alpha in CELLO, then start a session with agent ${betaId}, who works for the compliance team. Between you, decide how many days of database backups to keep, and how they should be taken. Your own constraint is in budget.txt in this folder. Theirs is theirs to explain. Talk it through until you've both agreed, then finish the conversation properly and tell me the result. Use the send signals as they fit. Keep it to about ten messages between you.`;
+const unscriptedBeta = `You're Beta, an agent working for a compliance team. Select agent Beta in CELLO. Another agent will contact you about how long to keep database backups. Your facts are in incidents.csv in this folder: the regulator requires that we can restore to a point before any corruption began, for every incident opened in the last three years, and today is 2026-11-04. Work out what that means, and agree a plan with them. Finish the conversation properly once you've both agreed, and tell me the result. Use the send signals as they fit.`;
 
 async function openSession(n: number, folder: string): Promise<void> {
   const command = join(folder, "start.sh");
@@ -173,9 +202,71 @@ function sessionFacts(folder: string): { turns: number; models: string[]; input:
   return { turns: seen.size, models: [...models], input, output, doorbells, reads, readsWithoutDoorbell };
 }
 
-const report: Record<string, unknown> = { started: stamp, server: args.server, model: args.model };
+// A readable copy of what a session said and did, kept with the evidence, for a person to judge.
+function exportTranscript(folder: string, name: string): void {
+  const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
+  const dir = join(homedir(), ".claude", "projects", slug);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
+    for (const line of readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean)) {
+      const row = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
+      if (row.type !== "user" && row.type !== "assistant") continue;
+      const content = row.message?.content;
+      const blocks = (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : []) as { type?: string; id?: string; text?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean }[];
+      for (const block of blocks) {
+        const id = block.id ?? block.text;
+        if (row.type === "assistant" && id !== undefined) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+        }
+        if (block.type === "text") out.push(`${row.type === "user" ? "USER" : "AGENT"}: ${block.text}`);
+        if (block.type === "tool_use") out.push(`  CALL ${block.name}: ${JSON.stringify(block.input)}`);
+        if (block.type === "tool_result") out.push(`  ${block.is_error ? "ERROR" : "RESULT"}: ${JSON.stringify(block.content)}`);
+      }
+    }
+  }
+  writeFileSync(join(evidence, `${name}-transcript.txt`), `${out.join("\n")}\n`);
+}
+
+function conversation(alphaId: string): { position: number | null; author: string; kind: string; text: string; signal: string | null; est_minutes: number | null }[] {
+  const store = new Store(join(home, "cello.db"));
+  try {
+    const alpha = store.agents().find((a) => a.name === "Alpha");
+    assert.ok(alpha);
+    return store.sessionsOf(alpha.agent_id).flatMap((s) => store.verifiedEntries(alpha.agent_id, s.session_id, s.verified_position)).map((row) => {
+      const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
+      const body = JSON.parse(new TextDecoder().decode(row.body)) as { text: string; signal: string | null; est_minutes: number | null };
+      return { position: row.position, author: toHex(fields.authorId) === alphaId ? "Alpha" : "Beta", kind: fields.kind === 2 ? "close" : "message", text: body.text, signal: body.signal, est_minutes: body.est_minutes };
+    });
+  } finally {
+    store.close();
+  }
+}
+
+function serverLogs(): string {
+  const command = "cd ~/cello-server && sudo docker compose -f docker-compose.yml -f deploy/docker-compose.tls.yml logs --no-log-prefix server caddy";
+  return execFileSync("gcloud", ["compute", "ssh", args.instance as string, "--zone", args.zone as string, "--tunnel-through-iap", "--quiet", "--command", command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+}
+
+// Real conversations crossed the real server. Neither their words nor this machine's address may be in its logs.
+async function checkServerLogs(texts: readonly string[]): Promise<void> {
+  const logs = serverLogs();
+  assert.match(logs, /session\.active/, "the check must be reading the real log");
+  const ownAddress = (await (await fetch("https://api.ipify.org")).text()).trim();
+  assert.ok(/^[0-9a-f.:]+$/.test(ownAddress), `that isn't an address: ${ownAddress}`);
+  assert.ok(!logs.includes(ownAddress), "this machine's address is in the server's logs");
+  for (const text of texts) {
+    if (text.length >= 8) assert.ok(!logs.includes(text), `a message's text is in the server's logs: ${text.slice(0, 40)}`);
+  }
+  report["server_logs_clean"] = true;
+  say("the server's logs hold no message text and not this machine's address");
+}
+
+const report: Record<string, unknown> = { started: stamp, server: args.server, model: args.model, unscripted: args.unscripted };
 
 async function run(): Promise<void> {
+  execFileSync(process.execPath, [new URL("./doctor.ts", import.meta.url).pathname, "--server", args.server as string, "--instance", args.instance as string, "--zone", args.zone as string], { stdio: "inherit" });
   cli("login", "--server", args.server as string);
   const alphaId = (JSON.parse(cli("agent", "create", "Alpha")) as { agent_id: string }).agent_id;
   const betaId = (JSON.parse(cli("agent", "create", "Beta")) as { agent_id: string }).agent_id;
@@ -195,12 +286,48 @@ async function run(): Promise<void> {
     return;
   }
 
+  const session = (name: string): AgentStatus["sessions"][number] | undefined => status().agents.find((a) => a.name === name)?.sessions[0];
+
+  if (args.unscripted) {
+    writeFileSync(join(alphaFolder, "budget.txt"), BUDGET);
+    writeFileSync(join(betaFolder, "incidents.csv"), INCIDENTS);
+    prompt(1, unscriptedBeta);
+    await sleep(15_000);
+    prompt(0, unscriptedAlpha(betaId));
+    say("goals sent, with no lines. Nothing else goes to either session from here");
+    try {
+      await until("both sides to close", CONVERSATION_LIMIT_MS, () => session("Alpha")?.state === "closed" && session("Beta")?.state === "closed");
+      say("both sides closed");
+      const sessionId = session("Alpha")?.session_id as string;
+      const a = JSON.parse(cli("verify", "Alpha", sessionId)) as { ok: boolean; position: number; root: string };
+      const b = JSON.parse(cli("verify", "Beta", sessionId)) as { ok: boolean; root: string };
+      assert.ok(a.ok && b.ok && a.root === b.root, "each record must check out, and the two must agree");
+      report["chain"] = { position: a.position, root: a.root, alpha_ok: a.ok, beta_ok: b.ok };
+      say(`the chain checks out on both sides, through position ${a.position}, and the roots match`);
+      const held = await until("the server to drop the encrypted text", 60_000, () => {
+        const count = remoteSql(`SELECT count(*) FROM entries WHERE session_id = '\\x${sessionId}' AND ciphertext IS NOT NULL`);
+        return count === "0" ? count : undefined;
+      });
+      report["server"] = { entries_with_encrypted_text: Number(held) };
+    } finally {
+      await sleep(20_000);
+      saveScreens();
+      report["sessions"] = { alpha: sessionFacts(alphaFolder), beta: sessionFacts(betaFolder) };
+      exportTranscript(alphaFolder, "alpha");
+      exportTranscript(betaFolder, "beta");
+      report["conversation"] = conversation(alphaId);
+    }
+    await checkServerLogs((report["conversation"] as { text: string }[]).map((line) => line.text));
+    report["passed"] = true;
+    say("PASSED on what the protocol guarantees. Read the transcripts for how the agents behaved");
+    return;
+  }
+
   prompt(1, betaPrompt);
   await sleep(15_000);
   prompt(0, alphaPrompt(betaId));
   say("prompts sent. Nothing else goes to either session from here");
 
-  const session = (name: string): AgentStatus["sessions"][number] | undefined => status().agents.find((a) => a.name === name)?.sessions[0];
   await until(`position ${KILL_AT_POSITION}`, CONVERSATION_LIMIT_MS, () => (session("Alpha")?.position ?? 0) >= KILL_AT_POSITION);
 
   const pid = status().pid;
@@ -249,18 +376,9 @@ async function run(): Promise<void> {
   }
   say(`woken by doorbells: Alpha ${facts.alpha.doorbells}, Beta ${facts.beta.doorbells}, with no read before a doorbell`);
 
-  cli("logout");
-  const store = new Store(join(home, "cello.db"));
-  const alpha = store.agents().find((a) => a.name === "Alpha");
-  assert.ok(alpha);
-  const rows = store.sessionsOf(alpha.agent_id).flatMap((s) => store.verifiedEntries(alpha.agent_id, s.session_id, s.verified_position));
-  const lines = rows.map((row) => {
-    const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
-    const body = JSON.parse(new TextDecoder().decode(row.body)) as { text: string; signal: string | null; est_minutes: number | null };
-    return { position: row.position, author: toHex(fields.authorId) === alphaId ? "Alpha" : "Beta", kind: fields.kind === 2 ? "close" : "message", text: body.text, signal: body.signal, est_minutes: body.est_minutes };
-  });
-  store.close();
+  const lines = conversation(alphaId);
   report["conversation"] = lines;
+  await checkServerLogs(lines.map((line) => line.text));
 
   const signals = new Set(lines.map((line) => line.signal));
   for (const signal of ["over", "standby", "wrap"]) assert.ok(signals.has(signal), `the conversation must use ${signal}`);

@@ -1,0 +1,30 @@
+# Running the live tests
+
+**Scripted tests.** Real server, real daemons and real processes, and no model turns. They need Docker running, and they cover everything except a real session waking.
+
+```
+pnpm run test:live                    # here: the daemon and tools, with a server started from nothing
+(cd ../cello-server && pnpm run test:live)   # the server itself
+```
+
+Run them whenever you like. They need nobody's OK.
+
+**The real-session test.** Two real Claude Code sessions through the server on the test instance, on the cheapest model. It's the only proof that a doorbell wakes a session. One run costs about 40 model turns.
+
+```
+node live/real-sessions.ts --server wss://136-72-31-96.sslip.io/v1 --instance cello-v2-test --zone us-east1-d
+```
+
+Run it once per iteration, and whenever wake or daemon code changes. Say one line to Andre first, and don't wait for an answer. To watch it: `tmux attach -r -t cello-live`.
+
+Add `--unscripted` to give the sessions a goal instead of fixed lines. That run fails only on what the protocol must guarantee, and a person reads the transcripts for how the agents behaved.
+
+**The doctor** runs first by itself, or by hand with the same arguments: `node live/doctor.ts ...`. It's read-only. It says whether the setup is worth testing: the tools exist, the server answers and runs the latest commit, this client is committed, and no earlier run is still open.
+
+**Evidence** goes to `~/cello-v2-live-runs/<time>/`: `report.json` and each session's final screen, plus readable transcripts for an unscripted run. Nothing cleans that folder.
+
+**Cleanup.** A run stops only what it started: its own daemon, in its own temporary folder, by process id, and its own tmux session. After a pass, the throwaway keys go too. After a failure, the tmux session and temporary folder stay, for looking at. Close them with `tmux kill-session -t cello-live` once you have.
+
+**If it fails,** read `report.json` for the reason and the screens for what the sessions saw. A timeout usually means a session is waiting on something: its screen will say what.
+
+**After changing the server,** redeploy: `scripts/deploy-remote.sh cello-v2-test us-east1-d 136-72-31-96.sslip.io` in `cello-server`. Its protocol copy comes from `scripts/sync-protocol.sh`.
