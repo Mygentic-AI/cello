@@ -1,0 +1,16 @@
+{
+  "name": "cello-v2-screener-bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Measures whether the screening model can run in parallel. Not product code. Reads the installed model and runtime from ~/.cello, and the windowing from cello-client, without changing either.",
+  "engines": {
+    "node": ">=24.7"
+  },
+  "scripts": {
+    "smoke": "node run.ts --job smoke --workers 1 --threads 1",
+    "drive": "node drive.ts",
+    "summarize": "node summarize.ts",
+    "typecheck": "../../node_modules/.bin/tsc -p ."
+  }
+}
