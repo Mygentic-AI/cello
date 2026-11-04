@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS entries (
   UNIQUE (agent_id, session_id, position),
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
-CREATE INDEX IF NOT EXISTS entries_session ON entries(agent_id, session_id, state);
+DROP INDEX IF EXISTS entries_session;
+CREATE INDEX IF NOT EXISTS entries_by_state ON entries(agent_id, session_id, state, position);
 
 CREATE TABLE IF NOT EXISTS notices (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
