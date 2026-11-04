@@ -6,7 +6,7 @@
 // Watch it with: tmux attach -r -t cello-live
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -33,7 +33,8 @@ const KILL_AT_POSITION = 5;
 const CHANNEL_TAG = /<channel source=\\?"[^"\\]*cello-v2/;
 
 // A short path, because a Unix socket path can't be long.
-const base = mkdtempSync("/tmp/cv2-");
+// Resolved, because macOS's /tmp is a link and Claude Code files its transcripts under the real path.
+const base = realpathSync(mkdtempSync("/tmp/cv2-"));
 const home = join(base, "home");
 const env = { ...process.env, CELLO_V2_HOME: home };
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
