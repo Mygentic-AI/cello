@@ -1,0 +1,176 @@
+// cello-v2 bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands. A person runs it at a terminal.
+// It's safe to run again, and it has to be after an upgrade, because Hermes keeps a copy of the plugin.
+import { spawn } from "node:child_process";
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { celloHome, logPath } from "./daemon/paths.ts";
+
+// Both doors to an agent use this name. A hold is per agent, so a whole machine can share it.
+export const BRIDGE_CALLER = "hermes";
+export const SESSION_SCOPES = ["agent", "peer"] as const;
+const CHANNEL_NOTIFICATIONS = ["on", "off"] as const;
+const SAFE_SESSION_ID = /^[A-Za-z0-9+/=_.:@-]{1,120}$/;
+
+// All a public agent's model can reach. It talks to strangers, so it can't change settings or make agents.
+export const PUBLIC_TOOLS = ["cello_receive", "cello_send", "cello_sessions", "cello_inbox", "cello_close_session", "cello_contacts", "cello_channel_read", "cello_channels", "cello_status"];
+const SKILLS = ["cello-bridge-setup", "cello-policy"];
+// What v1's install wrote, which this one no longer reads.
+const RETIRED_ENV = ["CELLO_DELIVERY_MODE", "CELLO_DIR"];
+
+export interface ExecResult { code: number; stdout: string; stderr: string }
+export type Exec = (command: string, args: string[], hermesHome: string) => Promise<ExecResult>;
+
+export interface BridgeOptions {
+  agent: string;
+  hermesHome?: string;
+  sessionScope?: string;
+  channelNotifications?: string;
+  landingSession?: string;
+  // A public agent: limited tools, one conversation per caller, and the screening model required.
+  public: boolean;
+  allowInitiate: boolean;
+  modelReady: () => Promise<boolean>;
+  exec?: Exec;
+}
+
+const runHermes: Exec = (command, args, hermesHome) => new Promise((resolve, reject) => {
+  const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HERMES_HOME: hermesHome } });
+  // hermes mcp add asks to overwrite on a re-run, then asks about its tools. A closed stdin reads as "Cancelled." with exit 0.
+  child.stdin.end("Y\nY\nY\n");
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+  child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+  child.on("error", reject);
+  child.on("close", (code) => { resolve({ code: code ?? 1, stdout, stderr }); });
+});
+
+// This file is one folder below hermes/ whether it's running from src or dist.
+const assetDir = (): string => fileURLToPath(new URL("../hermes/", import.meta.url));
+const mcpEntry = (): string => fileURLToPath(new URL(`./mcp${extname(fileURLToPath(import.meta.url))}`, import.meta.url));
+const daemonEntry = (): string => fileURLToPath(new URL(`./daemon/main${extname(fileURLToPath(import.meta.url))}`, import.meta.url));
+
+function withEnv(existing: string, set: Record<string, string>, drop: string[]): string {
+  const keyOf = (line: string): string => line.split("=", 1)[0] as string;
+  const lines = existing.split("\n").filter((line) => !drop.includes(keyOf(line)));
+  while (lines.at(-1) === "") lines.pop();
+  for (const [key, value] of Object.entries(set)) {
+    const at = lines.findIndex((line) => keyOf(line) === key);
+    if (at >= 0) lines[at] = `${key}=${value}`;
+    else lines.push(`${key}=${value}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export async function installBridge(options: BridgeOptions): Promise<{ ok: boolean; output: string }> {
+  const refuse = (output: string): { ok: boolean; output: string } => ({ ok: false, output });
+  const agent = options.agent.trim();
+  if (!/^[^\s=]+$/.test(agent)) return refuse(`'${agent}' can't be an agent's name here.`);
+  const scope = options.sessionScope ?? (options.public ? "peer" : "agent");
+  if (!(SESSION_SCOPES as readonly string[]).includes(scope)) return refuse(`--session-scope must be one of ${SESSION_SCOPES.join(", ")}, not '${scope}'.`);
+  if (options.public && scope !== "peer") return refuse("A public agent needs --session-scope peer, or callers would share one conversation.");
+  const channels = options.channelNotifications ?? "on";
+  if (!(CHANNEL_NOTIFICATIONS as readonly string[]).includes(channels)) return refuse(`--channel-notifications must be one of ${CHANNEL_NOTIFICATIONS.join(", ")}, not '${channels}'.`);
+  if (options.allowInitiate && !options.public) return refuse("--allow-initiate only means something with --public.");
+  const landing = options.landingSession?.trim();
+  if (landing && !SAFE_SESSION_ID.test(landing)) return refuse(`--landing-session '${landing}' isn't a session id.`);
+
+  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
+  if (!existsSync(hermesHome)) return refuse(`There's no Hermes home at ${hermesHome}. Install Hermes first, or pass --hermes-home.`);
+  // Strangers' text goes straight to this agent's model, so a public agent doesn't start on the rules alone.
+  if (options.public && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello-v2 screener install");
+
+  const envPath = join(hermesHome, ".env");
+  const hermesEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  const settings: Record<string, string> = {
+    CELLO_AGENT_NAME: agent,
+    CELLO_CALLER: BRIDGE_CALLER,
+    CELLO_SESSION_SCOPE: scope,
+    CELLO_CHANNEL_NOTIFICATIONS: channels,
+    ...(process.env["CELLO_V2_HOME"] ? { CELLO_V2_HOME: celloHome() } : {}),
+    ...(landing ? { CELLO_LANDING_SESSION: landing } : {}),
+  };
+  const wanted = withEnv(hermesEnv, settings, [...RETIRED_ENV, ...(landing ? [] : ["CELLO_LANDING_SESSION"])]);
+  const envNeedsWriting = wanted !== hermesEnv;
+  if (envNeedsWriting) {
+    // Checked before anything is written. A hardened host keeps this file read-only, and half an install looks like a failed one.
+    try {
+      accessSync(existsSync(envPath) ? envPath : hermesHome, constants.W_OK);
+    } catch {
+      return refuse(`Nothing was changed. ${envPath} is read-only, and it needs these lines:\n${Object.entries(settings).map(([k, v]) => `  ${k}=${v}`).join("\n")}\nUnlock it, run this again, then lock it.`);
+    }
+  }
+
+  const out: string[] = [];
+  const pluginDir = join(hermesHome, "plugins", "cello");
+  mkdirSync(pluginDir, { recursive: true });
+  for (const file of ["plugin.yaml", "__init__.py"]) copyFileSync(join(assetDir(), "plugin", file), join(pluginDir, file));
+  out.push(`Plugin: ${pluginDir}`);
+  for (const skill of SKILLS) {
+    const dir = join(hermesHome, "skills", skill);
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(join(assetDir(), "skills", skill, "SKILL.md"), join(dir, "SKILL.md"));
+    out.push(`Skill: ${dir}`);
+  }
+  if (envNeedsWriting) writeFileSync(envPath, wanted, { mode: 0o600 });
+  out.push(`Agent: ${agent}, scope ${scope}, caller ${BRIDGE_CALLER}${landing ? `, landing session ${landing}` : ""}`);
+  const landingFile = join(hermesHome, "cello", "landing-session.json");
+  if (landing) {
+    mkdirSync(join(hermesHome, "cello"), { recursive: true });
+    writeFileSync(landingFile, `${JSON.stringify({ session_id: landing })}\n`);
+  } else {
+    rmSync(landingFile, { force: true });
+  }
+
+  // By full path, so a gateway started by a service manager with a short PATH still finds it.
+  const tools = options.public ? [...PUBLIC_TOOLS, ...(options.allowInitiate ? ["cello_initiate_session"] : [])] : undefined;
+  // The limit is enforced by the tool process itself. 'hermes config set' can only write a string, which Hermes would read as one tool's name.
+  const mcpEnv = [`CELLO_CALLER=${BRIDGE_CALLER}`, ...(process.env["CELLO_V2_HOME"] ? [`CELLO_V2_HOME=${celloHome()}`] : []), ...(tools ? [`CELLO_TOOLS=${tools.join(",")}`] : [])];
+  const mcpAdd = ["mcp", "add", "cello", "--env", ...mcpEnv, "--command", process.execPath, "--args", mcpEntry()];
+  const steps = [["plugins", "enable", "cello"], mcpAdd];
+  const byHand = steps.map((step) => `  hermes ${step.join(" ")}`).join("\n");
+  const hermes = (args: string[]): Promise<ExecResult> => (options.exec ?? runHermes)("hermes", args, hermesHome);
+  for (const step of steps) {
+    let result: ExecResult;
+    try {
+      result = await hermes(step);
+    } catch (err: unknown) {
+      return refuse(`${out.join("\n")}\n\nThe files are in place, but the 'hermes' command couldn't run (${err instanceof Error ? err.message : String(err)}). Run these by hand, then restart the gateway:\n${byHand}`);
+    }
+    if (result.code !== 0) return refuse(`${out.join("\n")}\n\n'hermes ${step.join(" ")}' failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}\nFix that and run this again.`);
+    out.push(`Ran: hermes ${step.slice(0, 3).join(" ")}`);
+  }
+  // hermes mcp add can say "Cancelled." and still exit 0.
+  const listed = await hermes(["mcp", "list"]);
+  if (!listed.stdout.includes("cello")) return refuse(`${out.join("\n")}\n\n'hermes mcp add' reported success, but 'hermes mcp list' has no cello server. Run this by hand and answer Y:\n  hermes ${mcpAdd.join(" ")}`);
+  out.push("Checked: cello is in hermes mcp list");
+  if (tools) out.push(`Tools the model can reach: ${tools.join(", ")}`);
+  out.push("", "Now restart the gateway, so Hermes loads the plugin: hermes gateway restart", "The daemon must stay up by itself on a server: cello-v2 bridge daemon-unit");
+  return { ok: true, output: out.join("\n") };
+}
+
+// A systemd user unit that runs the daemon in the foreground. Not 'cello-v2 login', which starts it and exits, so a plain unit would call that a failure.
+export function daemonUnit(): string {
+  return `# ~/.config/systemd/user/cello-v2-daemon.service
+# Then: systemctl --user daemon-reload && systemctl --user enable --now cello-v2-daemon
+# And once, so it starts at boot with nobody logged in: loginctl enable-linger $USER
+# Run 'cello-v2 login --server <url>' once first, then 'cello-v2 logout', because the server's address lives in the database.
+[Unit]
+Description=CELLO daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${process.execPath} ${daemonEntry()}
+Environment=CELLO_V2_HOME=${celloHome()}
+Restart=always
+RestartSec=2
+StandardOutput=append:${logPath()}
+StandardError=append:${logPath()}
+
+[Install]
+WantedBy=default.target
+`;
+}

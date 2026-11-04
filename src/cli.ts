@@ -11,6 +11,7 @@ import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { daemonUnit, installBridge } from "./hermes-bridge.ts";
 import { installModel } from "./screener/model-installer.ts";
 import { SCREENER_RUNTIME_MODULE, describeScreenerState, runtimeAvailable, screenerModelDir, screenerRuntimeDir, screenerState } from "./screener/screener-state.ts";
 
@@ -59,7 +60,7 @@ function commandHelp(op: Operation): string {
 }
 
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`]]]);
+  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"bridge".padEnd(20)} Connect a Hermes install to an agent on this machine.`]]]);
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
     lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
@@ -284,6 +285,54 @@ async function confirmPerson(refusal: string): Promise<void> {
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
 
+const BRIDGE_USAGE = `Usage: cello-v2 bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public] [--allow-initiate]
+       cello-v2 bridge daemon-unit
+
+hermes connects a Hermes install to one agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin. A flag you leave out goes back to its default.
+--public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list.
+daemon-unit prints a systemd unit that keeps the daemon up on a server.
+`;
+
+// For a person at a terminal, like the other commands that change what an agent can do. A shell naming itself as a caller is an agent's, by the rule in the help.
+async function bridgeCommand(args: string[]): Promise<void> {
+  const [target, ...rest] = args;
+  if (target === undefined || target === "--help" || target === "-h") {
+    process.stdout.write(BRIDGE_USAGE);
+    return;
+  }
+  if (target === "daemon-unit") {
+    process.stdout.write(daemonUnit());
+    return;
+  }
+  if (target !== "hermes") usageError(`no such bridge: ${target}. Only hermes exists.`);
+  if (process.env["CELLO_CALLER"]) fail(`${JSON.stringify({ error: "person_required", message: "Installing a bridge takes a person. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own." })}\n`, EXIT_REFUSED);
+  const values: Record<string, string> = {};
+  const flags = new Set<string>();
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i] as string;
+    if (arg === "--public" || arg === "--allow-initiate") flags.add(arg);
+    else if (["--agent", "--hermes-home", "--session-scope", "--channel-notifications", "--landing-session"].includes(arg)) {
+      const value = rest[++i];
+      if (value === undefined) usageError(`${arg} needs a value`);
+      values[arg] = value;
+    } else usageError(`unknown option ${arg}. ${BRIDGE_USAGE}`);
+  }
+  const agent = values["--agent"];
+  if (!agent) usageError(`bridge hermes needs --agent. ${BRIDGE_USAGE}`);
+  const result = await installBridge({
+    agent,
+    hermesHome: values["--hermes-home"],
+    sessionScope: values["--session-scope"],
+    channelNotifications: values["--channel-notifications"],
+    landingSession: values["--landing-session"],
+    public: flags.has("--public"),
+    allowInitiate: flags.has("--allow-initiate"),
+    modelReady: async () => (await screenerState({ dir: screenerModelDir(), runtimePresent: await runtimeAvailable() })).state === "ready",
+  });
+  if (!result.ok) fail(`${result.output}\n`, EXIT_REFUSED);
+  process.stdout.write(`${result.output}\n`);
+}
+
 async function screenerCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const yes = rest.includes("--yes");
@@ -369,6 +418,7 @@ async function main(): Promise<void> {
     return login(args);
   }
   if (command === "screener") return screenerCommand(args);
+  if (command === "bridge") return bridgeCommand(args);
   if (command === "logout") {
     if (wantsHelp) {
       process.stdout.write("Usage: cello-v2 logout\n\nStop the daemon. Conversations carry on after the next login.\n");
