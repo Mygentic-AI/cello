@@ -218,6 +218,8 @@ export class Store {
     this.#addColumn("sessions", "server_url", "TEXT");
     this.#addColumn("entries", "withheld", "INTEGER NOT NULL DEFAULT 0");
     this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
+    // A database made before federation. Additive, so its conversations carry on, on their own server.
+    this.#addColumn("sessions", "server_url", "TEXT");
   }
 
   #addColumn(table: string, column: string, definition: string): void {

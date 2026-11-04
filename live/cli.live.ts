@@ -761,8 +761,8 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   okIn(oraHome, ["login", "--server", url]);
   await until("Ora's catch-up", () => (ora("sessions") as { sessions: { position: number }[] }).sessions[0]?.position === 4);
   await until("Ned's delivery ack through 2", () => sql(`SELECT count(*) FROM delivery_acks WHERE session_id = '${hexSession}' AND reader_id = '\\x${nedAgent["agent_id"] as string}' AND through_position = 2`) === "1");
+  await until("Ora's two to be screened", () => unreadBy(ora) === 2);
   const unreadBefore = unreadBy(ora);
-  assert.equal(unreadBefore, 2);
   assert.equal(ora("seal", session)["sealed"], true);
   ora("stop-using-agent");
   assert.equal(cello(["use-agent", "--agent", "Ora"], undefined, "another-shell", oraHome).status, 0);

@@ -403,7 +403,8 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.deepEqual(textsRead(bob.read()), [longFromAnn], "a message over 8 KB crossed to the hosting server and arrived whole");
   assert.equal(bob.act("send", longSession, longFromBob, "--over")["sent"], true);
   await gets(ann);
-  assert.deepEqual(textsRead(ann.read()), [longFromBob], "and the visitor fetched one from there");
+  const visitorRead = ann.read() as unknown as { messages: { text: string; screening: { verdict: string } }[] };
+  assert.deepEqual(visitorRead.messages.map((m) => [m.text, m.screening.verdict]), [[longFromBob, "allow"]], "and the visitor fetched one from there, and screened it");
   assert.ok(ann.connectionsTo(18401) >= 2, `the visitor's long messages have their own connection to the hosting server: ${ann.connectionsTo(18401)}`);
   const longClosed = ann.act("close-session", longSession) as { seal: { sealed: boolean } };
   assert.equal(longClosed.seal.sealed, true);
