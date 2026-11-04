@@ -58,7 +58,7 @@ const DEFINITIONS: readonly Definition[] = [
   {
     command: "screening",
     group: "Setup",
-    summary: "For a person: set how much is screened from one sender. Weakening asks at the terminal.",
+    summary: "For a person: set how much is screened from one sender.",
     scoped: true,
     acts: false,
     personOnly: true,
@@ -77,7 +77,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "settings",
     group: "Setup",
-    summary: "For a person: see or change this daemon's settings, kept in its database.",
+    summary: "For a person: see or change this daemon's settings.",
     scoped: false,
     acts: false,
     personOnly: true,
