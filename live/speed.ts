@@ -8,6 +8,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createConnection, createServer, type Socket } from "node:net";
 import { cpus, homedir, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -321,7 +322,7 @@ function startLocalServer(): string {
   const profile = args["cpu-prof"]
     ? `    environment:\n      NODE_OPTIONS: "--cpu-prof --cpu-prof-dir=/prof"\n    volumes:\n      - ${serverProfileDir}:/prof\n`
     : "";
-  writeFileSync(overridePath, `services:\n  postgres:\n    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track_utility=on"]\n${profile ? `  server:\n${profile}` : ""}`);
+  writeFileSync(overridePath, `services:\n  postgres:\n    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track_utility=on", "-c", "track_wal_io_timing=on"]\n${profile ? `  server:\n${profile}` : ""}`);
   execFileSync("chmod", ["777", serverProfileDir]);
   say("starting a local server from nothing");
   compose("up", "-d", "--build", "--wait", "server");
@@ -346,14 +347,17 @@ function stopLocalServer(): void {
 function databaseTime(): { query: string; calls: number; meanMs: number; totalMs: number }[] {
   if (!args.local) return [];
   const rows = sql("SELECT calls, round(mean_exec_time::numeric, 3), round(total_exec_time::numeric, 1), left(regexp_replace(query, E'\\\\s+', ' ', 'g'), 70) FROM pg_stat_statements WHERE query NOT ILIKE '%pg_stat%' ORDER BY total_exec_time DESC LIMIT 16");
-  return rows.split("\n").filter(Boolean).map((line) => {
+  // A COMMIT shows as no time there, because the flush to disk it waits for is counted here instead.
+  const [flushes, flushMs] = sql("SELECT wal_sync, round(wal_sync_time::numeric, 1) FROM pg_stat_wal").split("|");
+  const flush = { calls: Number(flushes), meanMs: Number((Number(flushMs) / Math.max(1, Number(flushes))).toFixed(3)), totalMs: Number(flushMs), query: "(flushing the database log to disk)" };
+  return [flush, ...rows.split("\n").filter(Boolean).map((line) => {
     const [calls, meanMs, totalMs, query] = line.split("|");
     return { calls: Number(calls), meanMs: Number(meanMs), totalMs: Number(totalMs), query: query ?? "" };
-  });
+  })];
 }
 
 function resetDatabaseTime(): void {
-  if (args.local) sql("SELECT pg_stat_statements_reset()");
+  if (args.local) sql("SELECT pg_stat_statements_reset(), pg_stat_reset_shared('wal')");
 }
 
 function heldOnServer(): { rows: number; bytes: number; tableBytes: number } | undefined {
@@ -508,7 +512,9 @@ async function checkSession(name: string, a: Agent, b: Agent, session: string, s
   }
   if (readSeqs) {
     const dupes = readSeqs.length - new Set(readSeqs).size;
-    add("the reader was handed each message once", dupes === 0 && new Set(readSeqs).size === landed.length, `read ${readSeqs.length}, ${dupes} twice, ${landed.length} sent`);
+    // A send that timed out can still land, so what counts is what's on the record.
+    const onRecord = sent.filter((s) => byText.has(textHash(makeText(s.tag, s.seq, s.size)))).length;
+    add("the reader was handed each message once", dupes === 0 && new Set(readSeqs).size === onRecord, `read ${readSeqs.length}, ${dupes} twice, ${onRecord} on the record`);
   }
   return checks;
 }
@@ -550,6 +556,11 @@ async function ciphertextStillOffered(home: Home, url: string, agentName: string
 // ---- Scenarios ----
 
 const GAP_MS = 20_000;
+// About what the cloud run measured from this Mac: 100 KB took 3.4 s more than a short message, and 1 MB took 11 to 21 s.
+const SLOW_UP_BYTES_PER_SECOND = 80_000;
+const SLOW_DOWN_BYTES_PER_SECOND = 300_000;
+const linkEvents: unknown[] = [];
+let currentScenario = "";
 const results: Record<string, unknown> = {};
 const allChecks: Check[] = [];
 let url = "";
@@ -566,6 +577,11 @@ async function freshHome(): Promise<Home> {
 async function finishHomes(list: Home[]): Promise<void> {
   for (const home of list) await home.logout();
   for (const home of list) {
+    // How often the daemon lost its server, which a green record check wouldn't show.
+    const log = readFileSync(join(home.path, "daemon.log"), "utf8");
+    const count = (event: string): number => log.split(`"event":"${event}"`).length - 1;
+    linkEvents.push({ scenario: currentScenario, connected: count("server.connected"), silent: count("server.silent"), socketErrors: count("server.socket_error"), unreachableDuring: count("server.unreachable_during"), backgroundFailed: count("background.failed") });
+    results["link_events"] = linkEvents;
     rmSync(home.path, { recursive: true, force: true });
     homes.splice(homes.indexOf(home), 1);
   }
@@ -775,6 +791,63 @@ async function readerOffline(seconds: number): Promise<void> {
   await finishHomes([home, second]);
 }
 
+// A far-away link, made here so that it can carry 1 MB messages without touching a shared server. Each connection gets its own limit and delay.
+async function throughSlowLink<T>(work: () => Promise<T>): Promise<T> {
+  const target = new URL(url);
+  const throttle = (from: Socket, to: Socket, bytesPerSecond: number): void => {
+    from.on("data", (chunk: Buffer) => {
+      from.pause();
+      setTimeout(() => {
+        if (!to.destroyed) to.write(chunk);
+        from.resume();
+      }, (1000 * chunk.length) / bytesPerSecond);
+    });
+    from.on("close", () => setTimeout(() => to.destroy(), 2000));
+    from.on("error", () => to.destroy());
+  };
+  const proxy = createServer((client) => {
+    const upstream = createConnection({ host: target.hostname, port: Number(target.port) });
+    throttle(client, upstream, SLOW_UP_BYTES_PER_SECOND);
+    throttle(upstream, client, SLOW_DOWN_BYTES_PER_SECOND);
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const previous = url;
+  url = `ws://127.0.0.1:${(proxy.address() as AddressInfo).port}${target.pathname}`;
+  try {
+    return await work();
+  } finally {
+    url = previous;
+    proxy.close();
+  }
+}
+
+// Several long messages queued on one daemon's one socket, with a pair sharing that socket.
+async function slowLinkBatch(): Promise<void> {
+  const home = await freshHome();
+  const a = await makeAgent(home, "Ana");
+  const b = await makeAgent(home, "Ben");
+  const bot = await makeAgent(home, "Bot");
+  const talk = await startSession(a, b);
+  const readers: Agent[] = [];
+  const sessions: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const reader = await makeAgent(home, `Rae${i}`);
+    readers.push(reader);
+    sessions.push(await startSession(bot, reader));
+  }
+  let conversing = true;
+  const talking = converse({ a, b, session: talk, thinkMs: 200, tag: "talk-slow-batch", stop: () => !conversing || Boolean(guard.tripped) });
+  const started = performance.now();
+  const sent = await flood({ from: bot, sessions, sizes: [MB1], concurrency: 4, seconds: 30, tag: "slow-batch" });
+  const floodEnded = performance.now();
+  conversing = false;
+  const { turns, texts } = await talking;
+  results["slow_link_batch"] = { bot: floodSummary(sent, (floodEnded - started) / 1000), conversationWhileFlooding: conversationSummary(turns) };
+  for (const [i, session] of sessions.entries()) allChecks.push(...await checkSession(`slow_link_batch ${i}`, bot, readers[i] as Agent, session, sent.filter((s) => s.session === session)));
+  allChecks.push(...await checkSession("slow_link_batch pair", a, b, talk, [], texts));
+  await finishHomes([home]);
+}
+
 // The reader falls so far behind that its queue is larger than one reply can hold, in bursts with gaps to spare the machine.
 async function deepQueue(): Promise<void> {
   const home = await freshHome();
@@ -963,6 +1036,11 @@ const SCENARIOS: Record<string, () => Promise<void>> = args.gentle
       throughput,
       reader_offline: () => readerOffline(SECONDS),
       deep_queue: deepQueue,
+      slow_baseline: () => throughSlowLink(() => baseline("slow_baseline")),
+      slow_bot_short: () => throughSlowLink(() => withBot({ via: "socket", label: "slow_bot_short", reader: "keeps_up", separateDaemon: false, sizes: [SHORT], concurrency: 4, seconds: SECONDS })),
+      slow_bot_mixed: () => throughSlowLink(() => withBot({ via: "socket", label: "slow_bot_mixed", reader: "keeps_up", separateDaemon: false, sizes: MIXED, concurrency: 4, seconds: SECONDS })),
+      slow_bot_other_daemon: () => throughSlowLink(() => withBot({ via: "socket", label: "slow_bot_other_daemon", reader: "keeps_up", separateDaemon: true, sizes: MIXED, concurrency: 4, seconds: SECONDS })),
+      slow_link_batch: () => throughSlowLink(slowLinkBatch),
     };
 
 async function cleanUp(): Promise<void> {
@@ -992,6 +1070,7 @@ try {
     if (!scenario) throw new Error(`no scenario ${name}`);
     if (guard.tripped) break;
     say(`scenario: ${name}`);
+    currentScenario = name;
     const started = performance.now();
     try {
       await scenario();

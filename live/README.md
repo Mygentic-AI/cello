@@ -11,6 +11,15 @@ pnpm run test:live                    # here: the daemon and tools, with a serve
 
 Run them whenever you like. They need nobody's OK.
 
+**The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
+
+```
+node live/speed.ts --local [--scenarios a,b] [--seconds 30] [--cpu-prof]   # a server from nothing, on port 18190
+node live/speed.ts --server wss://host/v1 --gentle                         # a shared server: few messages, few of them long
+```
+
+Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree. Don't aim it without `--gentle` at a server others use.
+
 **The real-session test.** Two real Claude Code sessions through the server on the test instance, on the cheapest model. It's the only proof that a doorbell wakes a session. One run costs about 40 model turns.
 
 ```
