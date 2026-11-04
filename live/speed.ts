@@ -339,6 +339,7 @@ function stopLocalServer(): void {
   // Stopped on its own first, so a CPU profile gets written before the volumes go.
   try {
     compose("stop", "-t", "20", "server");
+    writeFileSync(join(runDir, "server.log"), compose("logs", "--no-color", "server"));
   } catch (err: unknown) {
     say(`stopping the server: ${err instanceof Error ? err.message : String(err)}`);
   }
