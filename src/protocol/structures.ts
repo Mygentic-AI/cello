@@ -81,15 +81,18 @@ export function ackBytes(a: AckFields): Uint8Array {
 }
 
 // Means: this reader's machine stored and decrypted everything through this position. Says nothing about agreement.
+// screenedThrough is how far its screening has got. It says nothing about whether the reader has seen anything, or what it thought.
 export interface DeliveryAckFields {
   sessionId: Uint8Array;
   readerId: Uint8Array;
   throughPosition: number;
   entryHash: Uint8Array;
   root: Uint8Array;
+  screenedThrough: number;
 }
 
 export function deliveryAckBytes(d: DeliveryAckFields): Uint8Array {
+  if (d.screenedThrough > d.throughPosition) throw new RangeError(`a delivery ack can't say it screened through ${d.screenedThrough} when it only covers ${d.throughPosition}`);
   return encodeFields([
     VERSION,
     exact("session id", d.sessionId, SESSION_ID_BYTES),
@@ -97,6 +100,7 @@ export function deliveryAckBytes(d: DeliveryAckFields): Uint8Array {
     u64(d.throughPosition),
     exact("entry hash", d.entryHash, HASH_BYTES),
     exact("root", d.root, HASH_BYTES),
+    u64(d.screenedThrough),
   ]);
 }
 
@@ -362,5 +366,165 @@ export function statusWitnessBytes(w: StatusWitnessFields): Uint8Array {
     exact("previous hash", w.prevHash, HASH_BYTES),
     exact("statement hash", w.statementHash, HASH_BYTES),
     u64(w.time),
+  ]);
+}
+
+export const ChannelVisibility = { public: 1, private: 2 } as const;
+export type ChannelVisibility = (typeof ChannelVisibility)[keyof typeof ChannelVisibility];
+
+export const ChannelPosting = { admin: 1, posters: 2, members: 3 } as const;
+export type ChannelPosting = (typeof ChannelPosting)[keyof typeof ChannelPosting];
+
+// Signed by the channel key and by its admin, and it never changes.
+export interface ChannelRecordFields {
+  channelId: Uint8Array;
+  adminId: Uint8Array;
+  visibility: number;
+}
+
+export function channelRecordBytes(r: ChannelRecordFields): Uint8Array {
+  return encodeFields([VERSION, exact("channel id", r.channelId, HASH_BYTES), exact("admin id", r.adminId, HASH_BYTES), u8(r.visibility)]);
+}
+
+// The channel's settings, signed by the channel key. Readers refuse a poster this doesn't allow.
+export interface ChannelInfoFields {
+  channelId: Uint8Array;
+  revision: number;
+  posting: number;
+  retentionMs: number;
+  generation: number;
+  x25519Public: Uint8Array;
+  mlKemPublic: Uint8Array;
+  // Named posters' ids, one after another.
+  posters: Uint8Array;
+  name: Uint8Array;
+}
+
+export function channelInfoBytes(i: ChannelInfoFields): Uint8Array {
+  if (i.posters.length % HASH_BYTES !== 0) throw new RangeError("the poster list must be whole ids");
+  if (i.name.length === 0 || i.name.length > MAX_NAME_BYTES) throw new RangeError(`a channel name must be 1 to ${MAX_NAME_BYTES} bytes`);
+  return encodeFields([
+    VERSION,
+    exact("channel id", i.channelId, HASH_BYTES),
+    u64(i.revision),
+    u8(i.posting),
+    u64(i.retentionMs),
+    u64(i.generation),
+    exact("X25519 public key", i.x25519Public, X25519_PUBLIC_KEY_BYTES),
+    exact("ML-KEM public key", i.mlKemPublic, ML_KEM_PUBLIC_KEY_BYTES),
+    i.posters,
+    i.name,
+  ]);
+}
+
+// The poster's signature covers its channel, key generation and own counter, so the server can't re-post an old "Approved" as new.
+// The channel's number isn't here: the server assigns it, and says so in the ack.
+export interface ChannelPostFields {
+  channelId: Uint8Array;
+  generation: number;
+  authorId: Uint8Array;
+  authorSeq: number;
+  publishedAt: number;
+  titleHash: Uint8Array;
+  bodyHash: Uint8Array;
+}
+
+export function channelPostBytes(p: ChannelPostFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("channel id", p.channelId, HASH_BYTES),
+    u64(p.generation),
+    exact("author id", p.authorId, HASH_BYTES),
+    u64(p.authorSeq),
+    u64(p.publishedAt),
+    exact("title hash", p.titleHash, HASH_BYTES),
+    exact("body hash", p.bodyHash, HASH_BYTES),
+  ]);
+}
+
+export interface ChannelPostAckFields {
+  serverId: Uint8Array;
+  channelId: Uint8Array;
+  position: number;
+  postHash: Uint8Array;
+  time: number;
+}
+
+export function channelPostAckBytes(a: ChannelPostAckFields): Uint8Array {
+  return encodeFields([VERSION, exact("server id", a.serverId, HASH_BYTES), exact("channel id", a.channelId, HASH_BYTES), u64(a.position), exact("post hash", a.postHash, HASH_BYTES), u64(a.time)]);
+}
+
+// The first position the server holds, under its signature. A number below it aged out. An absent number above it is a gap.
+export interface ChannelStateFields {
+  serverId: Uint8Array;
+  channelId: Uint8Array;
+  firstHeld: number;
+  tip: number;
+  time: number;
+}
+
+export function channelStateBytes(s: ChannelStateFields): Uint8Array {
+  return encodeFields([VERSION, exact("server id", s.serverId, HASH_BYTES), exact("channel id", s.channelId, HASH_BYTES), u64(s.firstHeld), u64(s.tip), u64(s.time)]);
+}
+
+// Signed by a joiner's own identity, so nobody can swap in a key of theirs and be handed the group key.
+export interface ChannelMemberKeyFields {
+  channelId: Uint8Array;
+  agentId: Uint8Array;
+  x25519Public: Uint8Array;
+  mlKemPublic: Uint8Array;
+  requestedAt: number;
+}
+
+export function channelMemberKeyBytes(m: ChannelMemberKeyFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("channel id", m.channelId, HASH_BYTES),
+    exact("agent id", m.agentId, HASH_BYTES),
+    exact("X25519 public key", m.x25519Public, X25519_PUBLIC_KEY_BYTES),
+    exact("ML-KEM public key", m.mlKemPublic, ML_KEM_PUBLIC_KEY_BYTES),
+    u64(m.requestedAt),
+  ]);
+}
+
+// The admin's signed, hash-chained list of members and the member key each one signed for.
+// The server holds it and can't change it, which is what stops the server adding itself to a private channel.
+export interface ChannelRosterFields {
+  channelId: Uint8Array;
+  revision: number;
+  generation: number;
+  prevHash: Uint8Array;
+  membersHash: Uint8Array;
+}
+
+export function channelRosterBytes(r: ChannelRosterFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("channel id", r.channelId, HASH_BYTES),
+    u64(r.revision),
+    u64(r.generation),
+    exact("previous roster hash", r.prevHash, HASH_BYTES),
+    exact("members hash", r.membersHash, HASH_BYTES),
+  ]);
+}
+
+// One generation's group key, sealed to one member. Signed, because anyone can seal to a public key:
+// without this, a hostile server could hand a member a key of its own and read everything they post.
+export interface ChannelKeyEntryFields {
+  channelId: Uint8Array;
+  generation: number;
+  memberId: Uint8Array;
+  rosterHash: Uint8Array;
+  sealedHash: Uint8Array;
+}
+
+export function channelKeyEntryBytes(e: ChannelKeyEntryFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("channel id", e.channelId, HASH_BYTES),
+    u64(e.generation),
+    exact("member id", e.memberId, HASH_BYTES),
+    exact("roster hash", e.rosterHash, HASH_BYTES),
+    exact("sealed hash", e.sealedHash, HASH_BYTES),
   ]);
 }

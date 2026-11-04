@@ -36,6 +36,14 @@ export const CONTEXTS = [
   "cello-v2-seal-key-binding",
   "cello-v2-agent-status",
   "cello-v2-agent-status-witness",
+  "cello-v2-channel-record",
+  "cello-v2-channel-info",
+  "cello-v2-channel-post",
+  "cello-v2-channel-post-ack",
+  "cello-v2-channel-state",
+  "cello-v2-channel-member-key",
+  "cello-v2-channel-roster",
+  "cello-v2-channel-key-entry",
 ] as const;
 
 export type SigningContext = (typeof CONTEXTS)[number];

@@ -15,3 +15,16 @@ One change applies to both post-quantum key files: they now get the public key t
 - `test/vectors/acvp-975de31e/`, the official NIST vectors, with their source note. `test/vectors.test.ts` is a rewrite of the harness in `ml-dsa.test.ts` and `ml-kem.test.ts`.
 
 `src/protocol/identity.ts` is new, with its signing frame taken from `core/crypto/src/pq-frame.ts`.
+
+## The screener
+
+From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on their own lines removed, imports rewritten. Each works alone and would be written the same way today. Nothing from the gateway's socket client or its deadline logic came across.
+
+- `src/screener/sanitize.ts`, `scan-variants.ts`, `injection-patterns.ts`, `language.ts`, same names. The deterministic inbound screen.
+- `src/screener/secrets.ts`, `gitleaks-rules.ts`, `exfil.ts`, same names. The outbound screen's detectors.
+- `src/screener/linear-regex.ts`, same name. Native RE2 was removed, because it compiles from source on every install, and WASM gives the same guarantee.
+- `src/screener/injection-windows.ts`, `classifier-selfcheck.ts`, `screener-model-manifest.ts`, `model-installer.ts`, same names, as they were.
+- `src/screener/injection-classifier-onnx.ts`, `injection-classifier-wasm.ts`, same names. Each also offers one window at a time, so a screen can stop between windows. The native one sets four threads and no idle spinning.
+- `src/screener/screener-state.ts`, same name. Its paths now live under this client's home.
+
+`src/screener/inbound.ts` and `outbound.ts` are rewrites of `screen/inbound.ts` and `screen/outbound.ts`, with the same checks, as steps a scheduler can pause. Left out, by the copying test, because they need things v2 doesn't have yet: the outbound rate limiter and the personal-data warnings, which need a decision-and-resend flow.
