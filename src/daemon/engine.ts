@@ -568,9 +568,9 @@ export class Engine {
         return;
       }
       if (frame.push === "delivery") {
-        const wire = (frame.data as { deliveryAck: WireSigned }).deliveryAck;
+        const { deliveryAck: wire, screeningEtaSeconds } = frame.data as { deliveryAck: WireSigned; screeningEtaSeconds: unknown };
         const sessionHex = toHex(signedDeliveryAck.decode(wire, "deliveryAck").fields.sessionId);
-        this.#background("delivery push", this.#lane(agent.hex, sessionHex, () => this.#onPeerDeliveryAck(agent, wire)));
+        this.#background("delivery push", this.#lane(agent.hex, sessionHex, () => this.#onPeerDeliveryAck(agent, wire, screeningEtaSeconds)));
         return;
       }
       const item = frame.data as WitnessedOnWire;
@@ -1040,14 +1040,15 @@ export class Engine {
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened, screeningEtaSeconds: etaSeconds };
+    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
-    await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
+    // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
+    await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
     this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through, acked_screened: screened });
   }
 
   // How far the reader has screened what it holds. This is only ever used to tell and to pace, so a false one costs a delay.
-  async #onPeerDeliveryAck(agent: AgentContext, wire: WireSigned): Promise<void> {
+  async #onPeerDeliveryAck(agent: AgentContext, wire: WireSigned, etaSeconds: unknown): Promise<void> {
     const signed = signedDeliveryAck.decode(wire, "deliveryAck");
     const { fields } = signed;
     const local = this.#store.session(agent.signer.id, fields.sessionId);
@@ -1055,9 +1056,10 @@ export class Engine {
     if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-delivery-ack", deliveryAckBytes(fields), signed.signature))) return;
     if (fields.screenedThrough > local.peer_screened_through) this.#store.updateSession(agent.signer.id, local.session_id, { peer_screened_through: fields.screenedThrough });
     const position = fields.screenedThrough + 1;
-    if (fields.screeningEtaSeconds > 0 && position > local.peer_eta_told) {
+    // Nothing signs the time, so it's only ever a number in a notice, and only a whole one gets that far.
+    if (Number.isSafeInteger(etaSeconds) && (etaSeconds as number) > 0 && position > local.peer_eta_told) {
       this.#store.updateSession(agent.signer.id, local.session_id, { peer_eta_told: position });
-      this.#notify(agent, local.session_id, `The other side is still screening position ${position}, for about ${fields.screeningEtaSeconds} more seconds. Its machine has the message, and its agent hasn't been shown it yet.`);
+      this.#notify(agent, local.session_id, `The other side is still screening position ${position}, for about ${etaSeconds as number} more seconds. Its machine has the message, and its agent hasn't been shown it yet.`);
     }
   }
 
