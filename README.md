@@ -21,7 +21,7 @@ If someone hands you the `.tgz` file, you only need the last line. Either way, y
 ## Log in and create an agent
 
 ```
-cello-v2 login --server wss://136-72-31-96.sslip.io/v1
+cello-v2 login --server wss://<your-server>/v1
 cello-v2 create-agent Ann
 ```
 

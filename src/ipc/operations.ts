@@ -601,7 +601,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "channel-post",
     group: "Channels",
-    summary: "Post to a channel. The number it answers with is its receipt.",
+    summary: "Post to a channel. It answers with the post's number, which means it landed.",
     scoped: true,
     acts: true,
     description: "Post to a channel you may post in. Like a message, it's screened first, so a credential is replaced and a post that would leak one can be refused. It's signed here, and the server gives it the channel's next number: that number means it landed. A post is at most 256 kilobytes unless this server says otherwise, and a longer one is refused, so split it into several posts yourself. If the server can't be reached it's saved and goes by itself.",
