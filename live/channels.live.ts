@@ -369,9 +369,11 @@ test("old posts leave the reader's machine and the server's table, with position
 
   sql(`UPDATE channel_posts SET created_at = now() - interval '40 days' WHERE channel_id = ${bytea(channel)} AND position <= 2`);
   const row = collect("cyd", channel);
-  assert.equal(sql(`SELECT count(*) FROM channel_posts WHERE channel_id = ${bytea(channel)}`), "3", "this pass clears them, with the rows still there or gone by the next");
-  ok("cyd", "channel-collect", channel);
-  assert.equal(sql(`SELECT count(*) FROM channel_posts WHERE channel_id = ${bytea(channel)}`), "1", "the cleared rows are gone");
+  // One sweep clears the text and the next deletes the row, and every read sweeps.
+  await until("the cleared rows to go", () => {
+    ok("cyd", "channel-collect", channel);
+    return sql(`SELECT count(*) FROM channel_posts WHERE channel_id = ${bytea(channel)}`) === "1";
+  });
   assert.deepEqual([row.first_held, row.position, row.missing, row.lost], [3, 3, [], []], "first-held tells the rest, and nothing looks lost");
   assert.equal(await codeOf(rawPost(raw, pia, channel, 1, "a new post under a deleted number")), "replayed_post", "a deleted post's number can't come back");
   raw.close();
