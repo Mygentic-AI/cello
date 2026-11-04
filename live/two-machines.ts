@@ -45,6 +45,12 @@ function makeLine(id: string, bytes: number): string {
   return `${id}|${sha(filler)}|${filler}`;
 }
 
+// A pid of 0 or less would signal a whole process group, and only a bad status could produce one.
+function signalDaemon(pid: number, signal: NodeJS.Signals): void {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`refusing to signal process ${pid}: it isn't a daemon this run started`);
+  process.kill(pid, signal);
+}
+
 function checkLine(text: string): { id: string; whole: boolean } {
   const [id = "", hash, ...rest] = text.split("|");
   return { id, whole: sha(rest.join("|")) === hash };
@@ -99,6 +105,7 @@ async function worker(caller: string): Promise<void> {
     const status = (await must(["status"])).json as { pid: number; home: string };
     // The only process this script ever kills, and only once it has said it lives in this temporary home.
     if (status.home !== home) throw new Error(`the daemon answering is for ${status.home}, not ${home}`);
+    if (!Number.isInteger(status.pid) || status.pid <= 0) throw new Error(`the daemon reported process ${status.pid}, which can't be a daemon`);
     daemonPid = status.pid;
   }
 
@@ -150,15 +157,17 @@ async function worker(caller: string): Promise<void> {
   async function sendLine(agent: string, session: string, id: string, bytes: number, killAfterMs?: number): Promise<Json> {
     const text = makeLine(id, bytes);
     const victim = daemonPid;
+    // Refused here rather than in the timer, where a throw would end this worker with no reply.
+    if (killAfterMs !== undefined && !(victim > 0)) throw new Error(`refusing to signal process ${victim}: it isn't a daemon this run started`);
     let fired = false;
     let timer: NodeJS.Timeout | undefined;
     const run = await cello(["send", session, "-", "--over", "--agent", agent], text, () => {
-      if (killAfterMs !== undefined) timer = setTimeout(() => { fired = true; process.kill(victim, "SIGKILL"); }, killAfterMs);
+      if (killAfterMs !== undefined) timer = setTimeout(() => { fired = true; signalDaemon(victim, "SIGKILL"); }, killAfterMs);
     });
     clearTimeout(timer);
     // The send beat the timer. The kill still happens, now, or it would land on the next daemon.
     const killedAfterSend = killAfterMs !== undefined && !fired;
-    if (killedAfterSend) process.kill(victim, "SIGKILL");
+    if (killedAfterSend) signalDaemon(victim, "SIGKILL");
     return { id, bytes, send_start: run.start, send_end: run.end, status: run.status, result: run.json, stderr: run.stderr, killed_after_send: killedAfterSend };
   }
 
@@ -334,7 +343,7 @@ async function worker(caller: string): Promise<void> {
       case "killDaemon": {
         await sleep(command["afterMs"] as number);
         const killedAt = now();
-        process.kill(daemonPid, "SIGKILL");
+        signalDaemon(daemonPid, "SIGKILL");
         await sleep(command["downMs"] as number);
         await login();
         return { killedAt, online: (await allOnline(120_000)) - killedAt };
@@ -362,9 +371,9 @@ async function worker(caller: string): Promise<void> {
   }
 
   async function stopDaemon(): Promise<void> {
-    if (!daemonPid) return;
+    if (daemonPid === 0) return;
     try {
-      process.kill(daemonPid, "SIGTERM");
+      signalDaemon(daemonPid, "SIGTERM");
     } catch {
       // Already gone.
     }
