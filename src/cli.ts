@@ -20,6 +20,7 @@ const DISK_MB = 618;
 // Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
 // Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
 const CALLER = process.env["CELLO_CALLER"] || "cli";
+const STATUS_COMMANDS: readonly string[] = ["suspend", "retire", "remove-agent", "publish-status"];
 const EXIT_REFUSED = 1;
 const EXIT_USAGE = 2;
 const EXIT_TIMEOUT = 3;
@@ -341,6 +342,18 @@ async function screenerCommand(args: string[]): Promise<void> {
   }
 }
 
+// A code shown only on the terminal, so an answer can't be prepared in advance. A shell naming itself as a caller is an agent's, by the rule in the help.
+async function confirmAtTerminal(what: string): Promise<void> {
+  const refuse = (error: string, message: string): never => fail(`${JSON.stringify({ error, message })}\n`, EXIT_REFUSED);
+  const refusal = "This takes a person at a terminal, on this machine. Nothing changed.";
+  if (!process.stdin.isTTY || !process.stdout.isTTY) refuse("person_required", refusal);
+  if (process.env["CELLO_CALLER"]) refuse("person_required", `${refusal} This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own.`);
+  const code = randomBytes(3).toString("hex");
+  process.stdout.write(`\n${what}\n\n`);
+  const answer = await askTerminal(`To go ahead, type ${code}: `);
+  if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "--help" || command === "-h" || command === "help") {
@@ -376,6 +389,10 @@ async function main(): Promise<void> {
     return;
   }
   const params = parse(op, args);
+  if (STATUS_COMMANDS.includes(op.command)) {
+    await confirmAtTerminal(`${op.command}${params["agent"] ? ` for ${params["agent"] as string}` : ""}: ${op.description}`);
+    params["person_confirmed"] = true;
+  }
   if (op.local) {
     const checked = await runLocal(op.method, params);
     process.stdout.write(render(checked));

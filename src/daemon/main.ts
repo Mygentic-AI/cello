@@ -98,6 +98,10 @@ function acting(params: Record<string, unknown>): string {
   return agent;
 }
 
+function requirePerson(params: Record<string, unknown>): void {
+  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello-v2 command. Nothing changed.");
+}
+
 function stopListening(socket: Socket): void {
   for (const [agent, set] of listeners) {
     // All of this socket's listeners go first, so a wait in progress on it can't keep a dead caller's hold alive.
@@ -156,6 +160,8 @@ function waitForEvent(socket: Socket, agent: string, caller: string, seconds: nu
 }
 
 async function handle(socket: Socket, method: string, params: Record<string, unknown>): Promise<unknown> {
+  // Channel actions stop with everything else. The server refuses them too, so this only saves the trip and covers what's read from here.
+  if (method.startsWith("channel_") && typeof params["agent"] === "string") engine.assertCanAct(engine.resolveAgent(params["agent"]));
   switch (method) {
     case "status": {
       // A fact about this thread, measured here. It's the longest it has been held up since the last time anyone asked.
@@ -202,6 +208,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       const agent = acting(params);
       const seconds = params["timeout_seconds"] === undefined ? DEFAULT_WAIT_SECONDS : params["timeout_seconds"];
       if (typeof seconds !== "number" || !(seconds > 0)) throw new LocalError("bad_argument", "timeout_seconds must be a positive number");
+      engine.assertCanAct(agent);
       const unread = engine.unreadCount(agent);
       if (unread > 0) return { event: "unread", unread };
       return waitForEvent(socket, agent, text(params, "caller"), seconds);
@@ -220,6 +227,22 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
         all: params["all"] === true,
         sealId: params["seal_id"] === undefined ? undefined : text(params, "seal_id"),
       });
+    // Only a person at a terminal, through the command line, which confirms first. These have no tools.
+    case "suspend":
+      requirePerson(params);
+      return engine.suspend(engine.resolveAgent(text(params, "agent")), params["reason"]);
+    case "retire":
+      requirePerson(params);
+      return engine.retire(engine.resolveAgent(text(params, "agent")), params["reason"]);
+    case "remove_agent": {
+      requirePerson(params);
+      const agent = engine.resolveAgent(text(params, "agent"));
+      const answer = await engine.removeAgent(agent);
+      holders.delete(agent);
+      return answer;
+    }
+    case "agent_status":
+      return engine.agentStatus(engine.resolveAgent(text(params, "agent")));
     // Reading a record acts as nobody, so these need no hold.
     case "agents":
       return engine.agents();
