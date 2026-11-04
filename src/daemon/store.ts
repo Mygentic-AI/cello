@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 DROP INDEX IF EXISTS entries_session;
 CREATE INDEX IF NOT EXISTS entries_by_state ON entries(agent_id, session_id, state, position);
+-- Every send asks for the author's last entry. Without this, that sorts the author's whole history, bodies included.
+CREATE INDEX IF NOT EXISTS entries_own ON entries(agent_id, session_id, own, id);
 
 CREATE TABLE IF NOT EXISTS notices (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
