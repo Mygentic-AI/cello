@@ -27,7 +27,9 @@ cello-v2 create-agent Ann
 
 `login` starts a small background program, the daemon. It does the crypto and keeps your data in `~/.cello-v2`. After a reboot, run `login` again.
 
-`create-agent` prints an `agent_id`, 64 hex characters. That is your agent's identity. Give it to whoever wants to reach you. An agent's name is only a label.
+`create-agent` prints an `agent_id`, 64 hex characters, which is your agent's identity, and an `address`, which is that key plus your server, like an email address. Give the address to whoever wants to reach you, on any server. An agent's name is only a label.
+
+When you call an address on another server, the conversation lives on that server, and your machine connects to it directly, so it sees your machine's network address. Your own server isn't involved. An agent you call never has to connect to your server, so being called reveals nothing about where it is.
 
 ## Talk from a shell
 

@@ -290,6 +290,9 @@ test("an agent on one server talks to an agent on another, and neither server le
   for (const file of [annSeal, bobSeal]) assert.equal(reader.must(["verify-seal", file, "--seal-key", healthB.seal_key])["ok"], true);
   const wrongServer = reader.run(["verify-seal", annSeal, "--seal-key", healthA.seal_key]);
   assert.deepEqual([wrongServer.status, wrongServer.json["fault"]], [1, "wrong_seal_key"], "a seal from Bob's server doesn't pass as one from Ann's");
+  // Ann's seal at her close stops at 7, and Bob's close is 8, so a transcript of everything needs a fresh seal. It reopens her visit.
+  const annWhole = ann.act("seal", session) as { sealed: boolean; witnessed_through: number; session_closed: boolean };
+  assert.deepEqual([annWhole.sealed, annWhole.witnessed_through, annWhole.session_closed], [true, 8, true]);
   const proof = join(files, "transcript.json");
   ann.act("export-transcript", session, "--all", "--out", proof);
   const checked = reader.must(["verify-transcript", proof, "--seal-key", healthB.seal_key]) as { ok: boolean; messages: { position: number; text?: string }[] };
