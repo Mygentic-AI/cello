@@ -622,7 +622,7 @@ async function killTest(victim: Side, peer: Side, tag: string, kills: number, de
     const killAfterMs = Math.round(delays.start + Math.random() * Math.max(50, sendMs - delays.start));
     const sent = await victim.call("sendLine", { agent: agents.aName, session, id, bytes, killAfterMs });
     const back = await victim.call("relogin");
-    const event: Json = { scenario: "sender killed", bytes, killAfterMs, killed_after_send: sent["killed_after_send"], send_status: sent["status"], send_result: sent["result"], online_ms: Math.round(back["online"] as number) };
+    const event: Json = { scenario: "sender killed", bytes, killAfterMs, killed_after_send: sent["killed_after_send"], send_status: sent["status"], send_result: sent["result"], send_stderr: sent["stderr"], online_ms: Math.round(back["online"] as number) };
     // The sender can't tell from the failed command whether its line was saved. It looks before saying it again.
     if (sent["status"] !== 0) {
       const fate = await victim.call("fate", { agent: agents.aName, session, id, timeoutMs: 40_000 });
