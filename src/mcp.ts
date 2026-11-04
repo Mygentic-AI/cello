@@ -60,6 +60,7 @@ function doorbellText(frame: IpcNotification): string {
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
+    case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
     default: return `CELLO: ${frame.notification}.`;
   }
@@ -166,6 +167,7 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
 }
 
 for (const op of OPERATIONS) {
+  if (op.personOnly) continue;
   server.registerTool(op.tool, { description: op.description, inputSchema: inputSchema(op) }, (args: Record<string, unknown>) => asResult(() => run(op, args)));
 }
 

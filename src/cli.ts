@@ -2,7 +2,8 @@
 // Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
 import "./require-node.ts";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { createInterface } from "node:readline";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -246,6 +247,30 @@ async function login(args: string[]): Promise<void> {
   process.stdout.write(`Daemon started, process ${status.pid}, for ${status.server}: ${state}.\n`);
 }
 
+function askTerminal(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((done) => {
+    rl.once("close", () => done(""));
+    rl.question(question, (answer) => {
+      rl.removeAllListeners("close");
+      rl.close();
+      done(answer.trim());
+    });
+  });
+}
+
+// A code shown only on the terminal, so an answer can't be prepared in advance. A shell naming itself as a caller is an agent's, by the rule in the help.
+async function confirmPerson(what: string): Promise<void> {
+  const refuse = (error: string, message: string): never => fail(`${JSON.stringify({ error, message })}\n`, EXIT_REFUSED);
+  const refusal = "This takes a person at a terminal, on this machine. Nothing changed.";
+  if (!process.stdin.isTTY || !process.stdout.isTTY) refuse("person_required", refusal);
+  if (process.env["CELLO_CALLER"]) refuse("person_required", `${refusal} This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own.`);
+  const code = randomBytes(3).toString("hex");
+  process.stdout.write(`\n${what}\n\n`);
+  const answer = await askTerminal(`To go ahead, type ${code}: `);
+  if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "--help" || command === "-h" || command === "help") {
@@ -280,6 +305,10 @@ async function main(): Promise<void> {
     return;
   }
   const params = parse(op, args);
+  if (op.personOnly) {
+    await confirmPerson(`${op.command}${params["agent"] ? ` for ${params["agent"] as string}` : ""}: ${op.description}`);
+    params["person_confirmed"] = true;
+  }
   if (op.local) {
     const checked = await runLocal(op.method, params);
     process.stdout.write(render(checked));
