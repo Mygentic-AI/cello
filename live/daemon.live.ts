@@ -163,7 +163,9 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   // The first kill, mid-conversation with a message waiting for Alice. Nothing is lost.
   const firstPid = daemon.status().pid;
   daemon.kill();
-  await assert.rejects(alice.send(sessionId, "the daemon is gone", "over"), { code: "daemon_not_running" });
+  // This client's socket can still look open just after the kill, so it can't tell "never sent" from "cut off", and it
+  // says whichever it knows. The position asserted after the restart proves this send never landed.
+  await assert.rejects(alice.send(sessionId, "the daemon is gone", "over"), (err: { code: string }) => ["daemon_not_running", "daemon_stopped_during_call"].includes(err.code));
   daemon.login();
   assert.notEqual(daemon.status().pid, firstPid);
   await online(daemon, "Alice");
