@@ -68,7 +68,7 @@ Usage: cello-v2 <command> [args]
 ${sections.join("\n\n")}
 
 Run 'cello-v2 <command> --help' for details on any command.
-Commands print JSON. A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
+Commands print JSON on one line, and --pretty indents it. A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
 Any agent that can run a shell command can use all of this with no MCP.
 Each agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
@@ -113,6 +113,10 @@ function readValue(param: Param, raw: string): string | number {
   return raw;
 }
 
+// One line by default, because the usual reader is a program or an agent paying for every character.
+let pretty = false;
+const render = (value: unknown): string => `${pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`;
+
 // Fails on anything it doesn't recognise, so a mistyped flag can't quietly change what a command does.
 function parse(op: Operation, args: string[]): Record<string, unknown> {
   const params: Record<string, unknown> = {};
@@ -127,6 +131,10 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
     }
     if (arg === "--") {
       flagsEnded = true;
+      continue;
+    }
+    if (arg === "--pretty") {
+      pretty = true;
       continue;
     }
     if (op.acts && arg === "--force") {
@@ -273,7 +281,7 @@ async function main(): Promise<void> {
   const params = parse(op, args);
   if (op.local) {
     const checked = await runLocal(op.method, params);
-    process.stdout.write(`${JSON.stringify(checked, null, 2)}\n`);
+    process.stdout.write(render(checked));
     if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
     return;
   }
@@ -284,7 +292,7 @@ async function main(): Promise<void> {
     : client.call(op.method, params, waited);
   const result = await answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(render(result));
   // The id, never the name: a name is a label, and it could later mean a different agent.
   if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${result.agent_id as string}\n`, { mode: 0o600 });
   if (op.method === "stop_using_agent" && currentAgent() === result.agent_id) rmSync(currentAgentFile());
