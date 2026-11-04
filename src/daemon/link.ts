@@ -1,6 +1,7 @@
-// The daemon's one WebSocket to its server. Daemons only dial out, so NAT never matters.
+// One WebSocket from the daemon to its server. Daemons only dial out, so NAT never matters.
 // It reconnects by itself, and everything sent over it can be repeated safely.
 import { randomBytes } from "node:crypto";
+import type { Socket } from "node:net";
 import WebSocket from "ws";
 import { toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, identityId, verifySignature } from "../protocol/identity.ts";
@@ -55,11 +56,16 @@ export class ServerLink {
   #backoff = 1000;
   #problem: string | null = null;
   #silence: NodeJS.Timeout | undefined;
+  #tcp: Socket | undefined;
+  #bytesHeard = 0;
   readonly #waiting = new Map<number, { resolve(value: unknown): void; reject(err: Error): void; timer: NodeJS.Timeout }>();
+  // Names this link's log events, so a count of reconnects means one connection.
+  readonly #name: string;
 
-  constructor(url: string, events: LinkEvents) {
+  constructor(url: string, events: LinkEvents, name = "server") {
     this.#url = url;
     this.#events = events;
+    this.#name = name;
   }
 
   get ready(): boolean {
@@ -83,22 +89,30 @@ export class ServerLink {
     if (this.#stopped) return;
     const socket = new WebSocket(this.#url, { maxPayload: MAX_FRAME_BYTES });
     this.#socket = socket;
+    this.#tcp = undefined;
+    socket.on("upgrade", (response) => { this.#tcp = response.socket; });
     socket.on("open", () => { void this.#greet(); });
     socket.on("message", (raw: Buffer) => this.#receive(raw));
     socket.on("ping", () => this.#heardServer());
     socket.on("close", () => this.#closed());
     socket.on("error", (err) => {
       this.#problem = `can't reach the server: ${err.message}`;
-      logEvent("server.socket_error", { message: err.message });
+      logEvent(`${this.#name}.socket_error`, { message: err.message });
     });
     this.#heardServer();
   }
 
   // A silent drop shows as no pings. The server pings every 15 seconds.
+  // On a slow link a ping can queue behind one long message, so bytes still arriving count as hearing the server.
   #heardServer(): void {
     clearTimeout(this.#silence);
+    this.#bytesHeard = this.#tcp?.bytesRead ?? 0;
     this.#silence = setTimeout(() => {
-      logEvent("server.silent");
+      if ((this.#tcp?.bytesRead ?? 0) > this.#bytesHeard) {
+        this.#heardServer();
+        return;
+      }
+      logEvent(`${this.#name}.silent`);
       this.#socket?.terminate();
     }, SERVER_SILENCE_MS);
   }
@@ -119,11 +133,11 @@ export class ServerLink {
       this.#ready = true;
       this.#problem = null;
       this.#backoff = 1000;
-      logEvent("server.connected", { server: toHex(id) });
+      logEvent(`${this.#name}.connected`, { server: toHex(id) });
       await this.#events.connected({ identity, id, nonce: serverNonce });
     } catch (err: unknown) {
       this.#problem = err instanceof Error ? err.message : String(err);
-      logEvent("server.greeting_failed", { message: this.#problem });
+      logEvent(`${this.#name}.greeting_failed`, { message: this.#problem });
       this.#socket?.close();
     }
   }
@@ -168,7 +182,7 @@ export class ServerLink {
     else waiter.reject(new ServerRefused(frame.error.code, frame.error.message, frame.error.tip));
   }
 
-  #send(method: string, params: unknown): Promise<unknown> {
+  #send(method: string, params: unknown, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
     const socket = this.#socket;
     if (!socket || socket.readyState !== socket.OPEN) return Promise.reject(new ServerUnreachable("not connected to the server"));
     const id = this.#nextId++;
@@ -176,14 +190,14 @@ export class ServerLink {
       const timer = setTimeout(() => {
         this.#waiting.delete(id);
         reject(new ServerUnreachable(`the server didn't answer ${method} in time`));
-      }, CALL_TIMEOUT_MS);
+      }, timeoutMs);
       this.#waiting.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ v: PROTOCOL_VERSION, id, method, params }));
     });
   }
 
-  call(method: string, params: unknown): Promise<unknown> {
+  call(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
     if (!this.#ready) return Promise.reject(new ServerUnreachable(this.#problem ?? "not connected to the server"));
-    return this.#send(method, params);
+    return this.#send(method, params, timeoutMs);
   }
 }
