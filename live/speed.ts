@@ -607,14 +607,48 @@ async function baseline(label: string): Promise<void> {
   const session = await startSession(a, b);
   const { turns, texts } = await converse({ a, b, session, turns: args.gentle ? 16 : 30, thinkMs: 200, tag: `base-${label}` });
   results[label] = { conversation: conversationSummary(turns) };
+  if (label === "baseline_before") noBot = spread(turns.filter((t) => t.ok).map((t) => t.readMs));
   allChecks.push(...await checkSession(label, a, b, session, [], texts));
   await finishHomes([home]);
+}
+
+// The rule: the other conversation must not visibly slow down. Measured against this same run's no-bot pair, because
+// the machine's other work moved that figure from 245 to 299 ms between runs. Measured ratios: the fixed code's worst
+// was 1.2 at the middle and 1.33 at p90. The old stall was 1.6 to 2.2 and 2.2 to 2.5, and it grew with the queue.
+const MAX_SLOWDOWN_P50 = 1.4;
+const MAX_SLOWDOWN_P90 = 1.7;
+const MIN_TURNS = 5;
+let noBot: Spread | undefined;
+
+// A far-away link goes through a throttle on another port. Its hold-up is known and awaits a ruling, and a shared server's numbers measure the link.
+function onFastLink(): boolean {
+  return args.local && url === `ws://127.0.0.1:${LOCAL_PORT}/v1`;
+}
+
+async function needBaseline(): Promise<void> {
+  if (onFastLink() && !noBot) await baseline("baseline_before");
+}
+
+// mustHaveTurns is for a whole flood, where too few turns means the pair was stalled. A short window can't say.
+function checkNotSlowed(name: string, turns: Turn[], mustHaveTurns: boolean): void {
+  if (!onFastLink()) return;
+  const check = `${name}: the other conversation didn't slow down`;
+  if (!noBot) {
+    allChecks.push({ name: check, ok: false, detail: "this run has no no-bot baseline to compare with" });
+    return;
+  }
+  const failed = turns.filter((t) => !t.ok).length;
+  const seen = spread(turns.filter((t) => t.ok).map((t) => t.readMs));
+  const measured = seen.n >= MIN_TURNS;
+  const ok = failed === 0 && (measured ? seen.p50 <= noBot.p50 * MAX_SLOWDOWN_P50 && seen.p90 <= noBot.p90 * MAX_SLOWDOWN_P90 : !mustHaveTurns);
+  allChecks.push({ name: check, ok, detail: `middle ${seen.p50} ms, p90 ${seen.p90} ms, over ${seen.n} turns with ${failed} failed. No bot: ${noBot.p50} and ${noBot.p90}. Limits: ${MAX_SLOWDOWN_P50} and ${MAX_SLOWDOWN_P90} times.` });
 }
 
 interface BotPlan { via: "cli" | "socket"; label: string; reader: "keeps_up" | "stops"; separateDaemon: boolean; sizes: number[]; concurrency: number; seconds: number; limit?: number }
 
 // The test that matters most: a bot floods while another pair talks, and the pair is timed.
 async function withBot(plan: BotPlan): Promise<void> {
+  await needBaseline();
   const home = await freshHome();
   const second = plan.separateDaemon ? await freshHome() : home;
   const a = await makeAgent(home, "Ana");
@@ -691,6 +725,8 @@ async function withBot(plan: BotPlan): Promise<void> {
     database: databaseTime(),
     guard: guard.tripped,
   };
+  checkNotSlowed(`${plan.label} while flooding`, during(turns, started, floodEnded), true);
+  checkNotSlowed(`${plan.label} while draining`, during(turns, floodEnded, drainEnded), false);
   writeFileSync(join(runDir, `samples-${plan.label}.json`), JSON.stringify({ samples: sampler.samples, sent, turns }));
   allChecks.push(...await checkSession(`${plan.label} bot`, bot, reader, botSession, sent, undefined, plan.reader === "keeps_up" || drain.every((d) => !d.error) ? reads : undefined));
   allChecks.push(...await checkSession(`${plan.label} pair`, a, b, talk, [], texts));
@@ -765,6 +801,7 @@ async function readerOffline(seconds: number): Promise<void> {
   const sampler = new Sampler();
   sampler.start({ daemon: home });
   let conversing = true;
+  await needBaseline();
   const talking = converse({ a, b, session: talk, thinkMs: 200, tag: "talk-offline", stop: () => !conversing || Boolean(guard.tripped) });
   const started = performance.now();
   const sent = await flood({ from: bot, sessions: [botSession], sizes: MIXED, concurrency: 4, seconds, tag: "bot-offline" });
@@ -785,6 +822,8 @@ async function readerOffline(seconds: number): Promise<void> {
     conversationWhileDraining: conversationSummary(during(turns, floodEnded, performance.now())),
     processes: await sampler.stop(),
   };
+  checkNotSlowed("reader_offline while flooding", during(turns, started, floodEnded), true);
+  checkNotSlowed("reader_offline while draining", during(turns, floodEnded, performance.now()), false);
   allChecks.push(...await checkSession("reader_offline bot", bot, reader, botSession, sent));
   allChecks.push(...await checkSession("reader_offline pair", a, b, talk, [], texts));
   await proveTextGone("reader_offline", second, reader.name, [botSession]);
@@ -850,6 +889,7 @@ async function slowLinkBatch(): Promise<void> {
 
 // The reader falls so far behind that its queue is larger than one reply can hold, in bursts with gaps to spare the machine.
 async function deepQueue(): Promise<void> {
+  await needBaseline();
   const home = await freshHome();
   const a = await makeAgent(home, "Ana");
   const b = await makeAgent(home, "Ben");
@@ -862,6 +902,7 @@ async function deepQueue(): Promise<void> {
   const sent: Sent[] = [];
   const target = Number(args["deep-target"]);
   const bursts: unknown[] = [];
+  const burstTurns: Turn[] = [];
   let conversing = true;
   const talking = converse({ a, b, session: talk, thinkMs: 200, tag: "talk-deep", stop: () => !conversing || Boolean(guard.tripped) });
   for (let burst = 0; burst < 8 && sent.length < target && !guard.tripped; burst++) {
@@ -869,7 +910,10 @@ async function deepQueue(): Promise<void> {
     const burstStarted = performance.now();
     const more = await flood({ from: bot, sessions: [botSession], sizes: [MB1], concurrency: 3, seconds: 30, limit: target - sent.length, tag: `deep${burst}` });
     sent.push(...more);
-    bursts.push({ burst, sent: more.length, perSecond: Number((more.length / ((performance.now() - burstStarted) / 1000)).toFixed(2)), queueMbAfter: sent.length, conversation: conversationSummary(during(talkingTurns(), burstStarted, performance.now())) });
+    const inBurst = during(talkingTurns(), burstStarted, performance.now());
+    burstTurns.push(...inBurst);
+    checkNotSlowed(`deep_queue burst ${burst + 1}, ${sent.length} MB queued`, inBurst, false);
+    bursts.push({ burst, sent: more.length, perSecond: Number((more.length / ((performance.now() - burstStarted) / 1000)).toFixed(2)), queueMbAfter: sent.length, conversation: conversationSummary(inBurst) });
     results["deep_queue"] = { bursts };
     saveResults();
     await pause(10_000);
@@ -905,6 +949,8 @@ async function deepQueue(): Promise<void> {
     conversationWhileDraining: conversationSummary(turns.filter((t) => t.at >= drainStarted && t.at < drainStarted + drainMs)),
     processes,
   };
+  checkNotSlowed("deep_queue across all bursts", burstTurns, true);
+  checkNotSlowed("deep_queue while draining", turns.filter((t) => t.at >= drainStarted && t.at < drainStarted + drainMs), false);
   const closed = reads.every((r) => !r.error);
   allChecks.push({ name: "deep_queue: the reader could read its whole queue", ok: closed && total === sent.filter((s) => s.position !== undefined).length, detail: `read ${total} of ${sent.length}: ${reads.find((r) => r.error)?.error ?? ""}` });
   if (closed) allChecks.push(...await checkSession("deep_queue bot", bot, reader, botSession, sent));
