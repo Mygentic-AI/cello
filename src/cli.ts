@@ -3,7 +3,7 @@
 import "./require-node.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
@@ -76,10 +76,24 @@ Where there's a tool, it has the same name: cello-v2 send ↔ cello_send.
 `;
 }
 
+// Written synchronously, because process.exit can drop what process.stderr still holds, and the caller would get no reason.
+function fail(text: string, code: number): never {
+  const bytes = Buffer.from(text);
+  let written = 0;
+  while (written < bytes.length) {
+    try {
+      written += writeSync(2, bytes, written);
+    } catch (err: unknown) {
+      // A full pipe that doesn't block asks to be tried again. Anything else means nobody is reading.
+      if ((err as NodeJS.ErrnoException).code !== "EAGAIN") break;
+    }
+  }
+  process.exit(code);
+}
+
 function usageError(message: string, op?: Operation): never {
   const hint = op ? `\n\n${usageLine(op)}\nRun 'cello-v2 ${op.command} --help' for details.` : "\n\nRun 'cello-v2 --help' for the list of commands.";
-  process.stderr.write(`${message}${hint}\n`);
-  process.exit(EXIT_USAGE);
+  fail(`${message}${hint}\n`, EXIT_USAGE);
 }
 
 // Per caller, so one caller's choice can't make another act as the wrong agent.
@@ -156,8 +170,7 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
   if (op.scoped) {
     params["agent"] ??= currentAgent();
     if (!params["agent"]) {
-      process.stderr.write(`${JSON.stringify({ error: "no_current_agent", message: "Name the agent with --agent, or choose one with: cello-v2 use-agent --agent <name>" })}\n`);
-      process.exit(EXIT_REFUSED);
+      fail(`${JSON.stringify({ error: "no_current_agent", message: "Name the agent with --agent, or choose one with: cello-v2 use-agent --agent <name>" })}\n`, EXIT_REFUSED);
     }
     params["caller"] = CALLER;
   }
@@ -170,8 +183,7 @@ function daemonEntry(): string {
   const here = fileURLToPath(import.meta.url);
   const entry = join(dirname(here), "daemon", `main${extname(here)}`);
   if (!existsSync(entry)) {
-    process.stderr.write(`${JSON.stringify({ error: "daemon_entry_missing", message: `The daemon's code isn't at ${entry}, so this install is incomplete. Install CELLO again.` })}\n`);
-    process.exit(EXIT_REFUSED);
+    fail(`${JSON.stringify({ error: "daemon_entry_missing", message: `The daemon's code isn't at ${entry}, so this install is incomplete. Install CELLO again.` })}\n`, EXIT_REFUSED);
   }
   return entry;
 }
@@ -188,8 +200,7 @@ async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient
     }
   }
   const tail = readFileSync(logPath(), "utf8").trim().split("\n").slice(-5).join("\n");
-  process.stderr.write(`The daemon didn't start. The last lines of ${logPath()}:\n${tail}\n`);
-  return process.exit(EXIT_REFUSED);
+  return fail(`The daemon didn't start. The last lines of ${logPath()}:\n${tail}\n`, EXIT_REFUSED);
 }
 
 async function login(args: string[]): Promise<void> {
@@ -201,8 +212,7 @@ async function login(args: string[]): Promise<void> {
     const status = await running.call("status") as { pid: number; server: string };
     running.close();
     if (status.server !== server) {
-      process.stderr.write(`A daemon is already running for ${status.server}. Run: cello-v2 logout\n`);
-      process.exit(EXIT_REFUSED);
+      fail(`A daemon is already running for ${status.server}. Run: cello-v2 logout\n`, EXIT_REFUSED);
     }
     process.stdout.write(`Already running, process ${status.pid}.\n`);
     return;
@@ -284,9 +294,7 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   if (err instanceof DaemonGone || err instanceof DaemonRefused) {
-    process.stderr.write(`${JSON.stringify({ error: err.code, message: err.message })}\n`);
-    process.exit(EXIT_REFUSED);
+    fail(`${JSON.stringify({ error: err.code, message: err.message })}\n`, EXIT_REFUSED);
   }
-  process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(EXIT_REFUSED);
+  fail(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`, EXIT_REFUSED);
 });

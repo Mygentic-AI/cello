@@ -132,7 +132,8 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   const status = JSON.parse(cli("status")) as { pid: number };
   process.kill(status.pid, "SIGKILL");
   const gone = await one.tool("cello_receive");
-  assert.equal(gone["error"], "daemon_not_running");
+  // Which of the two depends on whether this connection has noticed yet. Either is true.
+  assert.ok(["daemon_not_running", "daemon_stopped_during_call"].includes(gone["error"] as string), `unexpected: ${String(gone["error"])}`);
   cli("login", "--server", url);
 
   // Tool calls racing the reconnect may find no daemon yet, but must never find a connection with no agent.
