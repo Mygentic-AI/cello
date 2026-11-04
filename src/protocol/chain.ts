@@ -13,6 +13,7 @@ export interface WitnessedEntry {
 }
 
 export type ChainFault =
+  | "malformed_entry"
   | "wrong_session"
   | "not_participant"
   | "bad_entry_signature"
@@ -77,7 +78,15 @@ export class ChainVerifier {
   }
 
   // Runs every check, and advances only if all of them pass.
+  // Records come from outside, so a row that can't be encoded is a fault to report, not an exception.
   async check(item: WitnessedEntry): Promise<ChainFault | null> {
+    try {
+      entryBytes(item.fields);
+      ackBytes(item.ack);
+    } catch (err: unknown) {
+      if (err instanceof RangeError) return "malformed_entry";
+      throw err;
+    }
     const { fields, signature, ack, ackSignature } = item;
     if (!equalBytes(fields.sessionId, this.#parties.sessionId)) return "wrong_session";
     const author = this.#keysById.get(toHex(fields.authorId));

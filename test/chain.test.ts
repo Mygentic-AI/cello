@@ -94,6 +94,8 @@ async function faultWhen(change: (items: WitnessedEntry[]) => Promise<void> | vo
 test("each tampering is caught, and named", async () => {
   const at = (items: WitnessedEntry[], i: number): WitnessedEntry => items[i] as WitnessedEntry;
 
+  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, fields: { ...i.fields, contentHash: new Uint8Array(5) } }; }), "malformed_entry");
+  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, ack: { ...i.ack, position: -1 } }; }), "malformed_entry");
   assert.equal(await faultWhen((x) => { x.splice(1, 1); }), "bad_position");
   assert.equal(await faultWhen((x) => { const a = at(x, 1); x[1] = at(x, 2); x[2] = a; }), "bad_position");
 
