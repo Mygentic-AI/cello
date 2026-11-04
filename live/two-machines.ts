@@ -150,10 +150,16 @@ async function worker(caller: string): Promise<void> {
   async function sendLine(agent: string, session: string, id: string, bytes: number, killAfterMs?: number): Promise<Json> {
     const text = makeLine(id, bytes);
     const victim = daemonPid;
+    let fired = false;
+    let timer: NodeJS.Timeout | undefined;
     const run = await cello(["send", session, "-", "--over", "--agent", agent], text, () => {
-      if (killAfterMs !== undefined) setTimeout(() => { process.kill(victim, "SIGKILL"); }, killAfterMs);
+      if (killAfterMs !== undefined) timer = setTimeout(() => { fired = true; process.kill(victim, "SIGKILL"); }, killAfterMs);
     });
-    return { id, bytes, send_start: run.start, send_end: run.end, status: run.status, result: run.json, stderr: run.stderr };
+    clearTimeout(timer);
+    // The send beat the timer. The kill still happens, now, or it would land on the next daemon.
+    const killedAfterSend = killAfterMs !== undefined && !fired;
+    if (killedAfterSend) process.kill(victim, "SIGKILL");
+    return { id, bytes, send_start: run.start, send_end: run.end, status: run.status, result: run.json, stderr: run.stderr, killed_after_send: killedAfterSend };
   }
 
   async function conversation(agent: string, session: string, plan: Step[]): Promise<Json[]> {
@@ -610,7 +616,7 @@ async function killTest(victim: Side, peer: Side, tag: string, kills: number, de
     const killAfterMs = Math.round(delays.start + Math.random() * Math.max(50, sendMs - delays.start));
     const sent = await victim.call("sendLine", { agent: agents.aName, session, id, bytes, killAfterMs });
     const back = await victim.call("relogin");
-    const event: Json = { scenario: "sender killed", bytes, killAfterMs, send_status: sent["status"], send_result: sent["result"], online_ms: Math.round(back["online"] as number) };
+    const event: Json = { scenario: "sender killed", bytes, killAfterMs, killed_after_send: sent["killed_after_send"], send_status: sent["status"], send_result: sent["result"], online_ms: Math.round(back["online"] as number) };
     // The sender can't tell from the failed command whether its line was saved. It looks before saying it again.
     if (sent["status"] !== 0) {
       const fate = await victim.call("fate", { agent: agents.aName, session, id, timeoutMs: 40_000 });
@@ -632,7 +638,7 @@ async function killTest(victim: Side, peer: Side, tag: string, kills: number, de
     const id = line();
     const arrival = victim.call("expect", { agent: agents.aName, id });
     await sleep(1500);
-    const killed = victim.call("killDaemon", { afterMs: Math.round(Math.random() * delays.short), downMs: 300 });
+    const killed = victim.call("killDaemon", { afterMs: Math.round(Math.random() * delays.short * 0.5), downMs: 300 });
     const sent = await peer.call("sendLine", { agent: agents.bName, session, id, bytes: 60 });
     if (sent["status"] !== 0) throw new Error(`the peer's send of ${id} failed: ${String(sent["stderr"])}`);
     const back = await killed;
