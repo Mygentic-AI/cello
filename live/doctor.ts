@@ -63,6 +63,11 @@ await check("the server is running the latest commit", () => {
   if (deployed !== latest) throw new Error(`it runs ${deployed.slice(0, 8)}, and cello-server is at ${latest.slice(0, 8)}. Redeploy with scripts/deploy-remote.sh`);
   return latest.slice(0, 8);
 });
+await check("the server's code is committed", () => {
+  const dirty = run("git", "-C", serverDir, "status", "--short", "src", "migrations");
+  if (dirty) throw new Error("uncommitted changes, so what's deployed isn't what's here");
+  return "clean";
+});
 await check("this client's code is committed", () => {
   const dirty = run("git", "-C", here, "status", "--short", "src");
   if (dirty) throw new Error(`uncommitted changes in src: ${dirty.split("\n").length} files, so this run wouldn't test a known version`);

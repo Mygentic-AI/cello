@@ -250,4 +250,5 @@ test("a message waits on the server for a laptop that's shut, unreadable, then g
   assert.match(logs, /session\.active/, "the check must be reading the real log");
   assert.doesNotMatch(logs, /zebra-lantern|purple-walrus/);
   assert.doesNotMatch(logs, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, "the server's log holds an IP address");
+  assert.doesNotMatch(logs, /\b[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}\b|\b[0-9a-f]{1,4}::[0-9a-f:]*[0-9a-f]\b/i, "the server's log holds an IPv6 address");
 });

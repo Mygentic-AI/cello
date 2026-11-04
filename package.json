@@ -10,7 +10,7 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "lint": "eslint .",
     "typecheck": "tsc",
-    "check": "pnpm run test && pnpm run lint && pnpm run typecheck",
+    "check": "./scripts/check-protocol-copy.sh && pnpm run test && pnpm run lint && pnpm run typecheck",
     "test:live": "./scripts/live-test.sh",
     "prepare": "git config core.hooksPath .githooks"
   },

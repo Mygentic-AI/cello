@@ -43,7 +43,8 @@ const ANY_DOORBELL = /<channel source="[^"]*cello-v2"/;
 const base = realpathSync(mkdtempSync("/tmp/cv2-"));
 const home = join(base, "home");
 const env = { ...process.env, CELLO_V2_HOME: home };
-const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
+const startedAt = Date.now();
+const stamp = new Date(startedAt).toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", stamp);
 mkdirSync(evidence, { recursive: true });
 
@@ -244,8 +245,10 @@ function conversation(alphaId: string): { position: number | null; author: strin
   }
 }
 
+// Only this run's part of the logs, so a long-lived server can't overflow the read.
 function serverLogs(): string {
-  const command = "cd ~/cello-server && sudo docker compose -f docker-compose.yml -f deploy/docker-compose.tls.yml logs --no-log-prefix server caddy";
+  const since = new Date(startedAt - 5 * 60 * 1000).toISOString();
+  const command = `cd ~/cello-server && sudo docker compose -f docker-compose.yml -f deploy/docker-compose.tls.yml logs --no-log-prefix --since ${since} server caddy`;
   return execFileSync("gcloud", ["compute", "ssh", args.instance as string, "--zone", args.zone as string, "--tunnel-through-iap", "--quiet", "--command", command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
 }
 
@@ -253,14 +256,25 @@ function serverLogs(): string {
 async function checkServerLogs(texts: readonly string[]): Promise<void> {
   const logs = serverLogs();
   assert.match(logs, /session\.active/, "the check must be reading the real log");
-  const ownAddress = (await (await fetch("https://api.ipify.org")).text()).trim();
-  assert.ok(/^[0-9a-f.:]+$/.test(ownAddress), `that isn't an address: ${ownAddress}`);
-  assert.ok(!logs.includes(ownAddress), "this machine's address is in the server's logs");
   for (const text of texts) {
     if (text.length >= 8) assert.ok(!logs.includes(text), `a message's text is in the server's logs: ${text.slice(0, 40)}`);
   }
+  // Finding out this machine's address depends on someone else's service, and its outage mustn't fail a good run. The report says what was checked.
+  const addressesChecked: string[] = [];
+  for (const lookup of ["https://api.ipify.org", "https://api6.ipify.org"]) {
+    let address: string;
+    try {
+      address = (await (await fetch(lookup, { signal: AbortSignal.timeout(10_000) })).text()).trim();
+    } catch {
+      continue;
+    }
+    if (!/^[0-9a-f.:]+$/i.test(address)) continue;
+    assert.ok(!logs.includes(address), "this machine's address is in the server's logs");
+    addressesChecked.push(address.includes(":") ? "IPv6" : "IPv4");
+  }
+  report["server_log_addresses_checked"] = addressesChecked;
   report["server_logs_clean"] = true;
-  say("the server's logs hold no message text and not this machine's address");
+  say(`the server's logs hold no message text, and not this machine's address (checked: ${addressesChecked.join(", ") || "none, the lookup failed"})`);
 }
 
 const report: Record<string, unknown> = { started: stamp, server: args.server, model: args.model, unscripted: args.unscripted };
