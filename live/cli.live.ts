@@ -388,10 +388,10 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   const mismatch = cello(["seal", session, "--through", "3", "--agent", "Jan"]);
   assert.deepEqual([mismatch.status, mismatch.json["error"]], [1, "seal_root_mismatch"], mismatch.stdout + mismatch.stderr);
 
-  // A log that no longer rebuilds its own root yields no seal, and says the server is at fault rather than the party.
-  const broken = ok(["seal", session, "--through", "2", "--agent", "Jan"]);
-  assert.equal(broken["sealed"], false);
-  assert.match(broken["message"] as string, /failed/);
+  // A log that no longer rebuilds its own root yields no seal, names the server as the cause, and isn't retried forever.
+  const broken = cello(["seal", session, "--through", "2", "--agent", "Jan"]);
+  assert.deepEqual([broken.status, broken.json["error"]], [1, "seal_log_inconsistent"], broken.stdout + broken.stderr);
+  assert.deepEqual((ok(["seals", "--session-id", session, "--agent", "Jan"]) as { waiting: unknown[] }).waiting, []);
 
   // Offline: both daemons gone, the server down, and a home with nothing in it. The file still checks out.
   okIn(kitHome, ["logout"]);

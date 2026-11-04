@@ -925,7 +925,8 @@ export class Engine {
       const label = want.through === SEAL_EVERYTHING_HELD ? "The seal after your close" : `Your seal through position ${want.through}`;
       try {
         const result = await this.#attemptSeal(agent, sessionId, want.through) as { sealed: boolean; seal_id?: string };
-        if (!result.sealed) return;
+        // One still waiting mustn't hold up a different one that could finish.
+        if (!result.sealed) continue;
         this.#notify(agent, sessionId, `${label} is done. Its id is ${result.seal_id as string}.`);
       } catch (err: unknown) {
         if (!(err instanceof LocalError)) throw err;

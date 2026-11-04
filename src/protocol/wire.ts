@@ -32,6 +32,7 @@ export const ERROR_CODES = [
   "nothing_to_seal",
   "seal_beyond_tip",
   "seal_root_mismatch",
+  "seal_log_inconsistent",
   "internal_error",
 ] as const;
 
