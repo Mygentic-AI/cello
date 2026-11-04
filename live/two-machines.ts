@@ -627,6 +627,8 @@ async function killTest(victim: Side, peer: Side, tag: string, kills: number, de
     if (sent["status"] !== 0) {
       const fate = await victim.call("fate", { agent: agents.aName, session, id, timeoutMs: 40_000 });
       event["landed_by_itself"] = fate["landed"];
+      // "Not running" must mean nothing was sent. If such a line lands, a caller who believed it sends it twice.
+      if (fate["landed"] === true && (sent["result"] as Json)["error"] === "daemon_not_running") throw new Error(`line ${id} landed after its sender was told the daemon wasn't running`);
       if (fate["landed"] !== true) {
         const again = await victim.call("sendLine", { agent: agents.aName, session, id, bytes });
         if (again["status"] !== 0) throw new Error(`the resend of ${id} failed: ${String(again["stderr"])}`);

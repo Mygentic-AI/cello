@@ -43,7 +43,8 @@ export class IpcClient {
       else waiter?.reject(new DaemonRefused(frame.error.code, frame.error.message));
     });
     socket.on("close", () => {
-      for (const waiter of this.#waiting.values()) waiter.reject(new DaemonGone());
+      // The daemon may have saved this call before it stopped, so a send cut off here can still land by itself.
+      for (const waiter of this.#waiting.values()) waiter.reject(new DaemonRefused("daemon_stopped_during_call", "the daemon stopped during this call, so it may still take effect. A message may go out by itself after the next login: check the transcript before sending it again."));
       this.#waiting.clear();
       this.onClose();
     });
