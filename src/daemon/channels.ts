@@ -605,6 +605,7 @@ export class Channels {
       this.#background("channel check", this.#serial(agentHex, channelHex, async () => {
         const follow = this.#db.follow(signer.id, channel);
         if (!follow) return;
+        this.#db.prune(signer.id, channel, Date.now() - this.#setting("channel_local_retention_days") * 86_400_000);
         if (tip.state !== follow.state) this.#stateChanged(agentHex, channel, follow.state, tip.state);
         this.#db.updateFollow(signer.id, channel, { state: tip.state, tip: Math.max(follow.tip, tip.tip), ...(tip.readers === undefined ? {} : { readers: tip.readers }) });
         if (tip.state !== "active") return;

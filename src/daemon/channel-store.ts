@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS channel_log (
   wire       TEXT NOT NULL,
   position   INTEGER,
   ack        TEXT,
+  logged_at  INTEGER NOT NULL,
   PRIMARY KEY (agent_id, channel_id, author_seq)
 );
 
@@ -311,6 +312,24 @@ export class ChannelStore {
     });
   }
 
+  // Positions live on the follow row, so they're untouched. Each author's newest row stays, because refusing a replayed
+  // number and an older key generation both compare against it. Unread posts and anything above the position always stay.
+  prune(agent: Uint8Array, channel: Uint8Array, olderThan: number): void {
+    this.#db.run(
+      `DELETE FROM channel_posts WHERE agent_id = ? AND channel_id = ?
+       AND position <= (SELECT position FROM channel_follows WHERE agent_id = ? AND channel_id = ?)
+       AND state IN ('read', 'blocked', 'refused') AND (published_at IS NULL OR published_at < ?)
+       AND position NOT IN (SELECT max(position) FROM channel_posts WHERE agent_id = ? AND channel_id = ? AND author_id IS NOT NULL GROUP BY author_id)`,
+      [agent, channel, agent, channel, olderThan, agent, channel],
+    );
+    // The newest stays here too: the next number comes from it.
+    this.#db.run(
+      `DELETE FROM channel_log WHERE agent_id = ? AND channel_id = ? AND position IS NOT NULL AND logged_at < ?
+       AND author_seq < (SELECT max(author_seq) FROM channel_log WHERE agent_id = ? AND channel_id = ?)`,
+      [agent, channel, olderThan, agent, channel],
+    );
+  }
+
   gaps(agent: Uint8Array, channel: Uint8Array): GapRow[] {
     return this.#db.all("SELECT position, first_seen, state FROM channel_gaps WHERE agent_id = ? AND channel_id = ? ORDER BY position", [agent, channel]) as GapRow[];
   }
@@ -349,7 +368,7 @@ export class ChannelStore {
   }
 
   addLog(agent: Uint8Array, channel: Uint8Array, seq: number, title: Uint8Array, body: Uint8Array, wire: string): void {
-    this.#db.run("INSERT INTO channel_log (agent_id, channel_id, author_seq, title, body, wire) VALUES (?, ?, ?, ?, ?, ?)", [agent, channel, seq, title, body, wire]);
+    this.#db.run("INSERT INTO channel_log (agent_id, channel_id, author_seq, title, body, wire, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [agent, channel, seq, title, body, wire, Date.now()]);
   }
 
   setLogWire(agent: Uint8Array, channel: Uint8Array, seq: number, wire: string): void {

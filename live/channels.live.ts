@@ -348,6 +348,35 @@ test("aged out, a gap, a gap filled and a post lost are told apart, and only the
   assert.equal(sql(`SELECT count(*) FROM channel_lost WHERE channel_id = ${bytea(channel)} AND position = 12`), "1");
 });
 
+test("old posts leave the reader's machine and the server's table, with positions kept and old numbers still refused", async () => {
+  const channel = create("ada", "Bounded", "public", "posters");
+  ok("cyd", "channel-join", channel);
+  const raw = await Raw.open();
+  const pia = await raw.newAgent("Pia");
+  ok("ada", "channel-add-poster", channel, Buffer.from(pia.id).toString("hex"));
+  const old = Date.now() - 40 * 86_400_000;
+  await rawPost(raw, pia, channel, 1, "old one", { publishedAt: old });
+  await rawPost(raw, pia, channel, 2, "old two", { publishedAt: old });
+  await rawPost(raw, pia, channel, 3, "recent");
+  await until("all three", () => view("cyd", channel).position === 3);
+  assert.equal((ok("cyd", "channel-read", channel) as { posts: unknown[] }).posts.length, 3);
+  const shown = await until("the read old posts to be pruned here", () => {
+    const history = ok("cyd", "channel-history", channel) as { posts: { position: number }[] };
+    return history.posts.length === 1 && history.posts;
+  });
+  assert.deepEqual(shown.map((p) => p.position), [3], "the author's newest stays");
+  assert.equal(view("cyd", channel).position, 3, "the position is kept");
+
+  sql(`UPDATE channel_posts SET created_at = now() - interval '40 days' WHERE channel_id = ${bytea(channel)} AND position <= 2`);
+  const row = collect("cyd", channel);
+  assert.equal(sql(`SELECT count(*) FROM channel_posts WHERE channel_id = ${bytea(channel)}`), "3", "this pass clears them, with the rows still there or gone by the next");
+  ok("cyd", "channel-collect", channel);
+  assert.equal(sql(`SELECT count(*) FROM channel_posts WHERE channel_id = ${bytea(channel)}`), "1", "the cleared rows are gone");
+  assert.deepEqual([row.first_held, row.position, row.missing, row.lost], [3, 3, [], []], "first-held tells the rest, and nothing looks lost");
+  assert.equal(await codeOf(rawPost(raw, pia, channel, 1, "a new post under a deleted number")), "replayed_post", "a deleted post's number can't come back");
+  raw.close();
+});
+
 test("a reader who was offline catches up by itself, with its position intact", async () => {
   const channel = create("ada", "Catch up", "public");
   ok("cyd", "channel-join", channel);
