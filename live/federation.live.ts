@@ -543,8 +543,15 @@ test("an agent on one server talks to an agent on another, and neither server le
   }
   assert.ok(!(logsA + dumpA).includes(healthB.server), "Ann's server holds the identity of Bob's");
   assert.ok(!(logsB + dumpB).includes(healthA.server), "Bob's server holds the identity of Ann's");
-  // What a hosting server does learn, by design: the visitor's key and name. Stated here so that a change shows.
+  // What a hosting server does learn, by design: the visitor's key. Stated here so that a change shows.
   assert.equal(sql(B, `SELECT count(*) FROM agents WHERE agent_id = '\\x${annAgent.id}' AND NOT resident`), "1");
+
+  // A refusal crosses servers too: Ann is a visitor on Bob's server, and hears the same words at once.
+  bob.act("contact-set-tier", annAgent.id, "--tier", "blocked");
+  const refused = ann.act("initiate-session", bobAgent.address);
+  assert.equal(refused["state"], "refused");
+  assert.equal(refused["message"], "This agent is not accepting connections. Retrying will not change this.");
+  assert.ok(!sql(B, `SELECT refusal::text FROM sessions WHERE encode(session_id, 'hex') = '${refused["session_id"] as string}'`).includes("not_accepting"));
 
   report["session"] = session;
   report["back_session"] = backSession;
