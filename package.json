@@ -3,21 +3,37 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.7" },
+  "engines": {
+    "node": ">=24.7"
+  },
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "lint": "eslint .",
     "typecheck": "tsc",
-    "check": "pnpm run test && pnpm run lint && pnpm run typecheck"
+    "check": "pnpm run test && pnpm run lint && pnpm run typecheck",
+    "test:live": "./scripts/live-test.sh"
   },
   "dependencies": {
     "@noble/curves": "latest",
-    "@noble/hashes": "latest"
+    "@noble/hashes": "latest",
+    "@signalapp/sqlcipher": "latest",
+    "ws": "latest",
+    "@modelcontextprotocol/sdk": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
     "eslint": "latest",
     "typescript": "^6.0.0",
-    "typescript-eslint": "latest"
+    "typescript-eslint": "latest",
+    "@types/ws": "latest"
+  },
+  "bin": {
+    "cello-v2": "./src/cli.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@signalapp/sqlcipher"
+    ]
   }
 }

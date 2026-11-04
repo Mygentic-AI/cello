@@ -1,0 +1,254 @@
+// The daemon's durable state, in SQLCipher. Everything here is a fact: holders, sockets and doorbells live in memory.
+// The session key is on disk until the session ends (ruled, so a restart doesn't end a conversation).
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import Database from "@signalapp/sqlcipher";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS agents (
+  agent_id   BLOB PRIMARY KEY,
+  name       TEXT NOT NULL,
+  ed_seed    BLOB NOT NULL,
+  pq_seed    BLOB NOT NULL,
+  registered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  agent_id          BLOB NOT NULL REFERENCES agents(agent_id),
+  session_id        BLOB NOT NULL,
+  role              TEXT NOT NULL CHECK (role IN ('caller', 'callee')),
+  counterparty_id   BLOB NOT NULL,
+  counterparty_name TEXT NOT NULL,
+  counterparty_keys TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK (state IN ('offered', 'accepted', 'active', 'closed')),
+  x25519_secret     BLOB,
+  mlkem_seed        BLOB,
+  session_key       BLOB,
+  own_salt          BLOB,
+  salt              BLOB,
+  offer             TEXT NOT NULL,
+  accept            TEXT,
+  confirm           TEXT,
+  assignment        TEXT,
+  read_position     INTEGER NOT NULL DEFAULT 0,
+  verified_position INTEGER NOT NULL DEFAULT 0,
+  delivered_through INTEGER NOT NULL DEFAULT 0,
+  own_closed        INTEGER NOT NULL DEFAULT 0,
+  peer_closed       INTEGER NOT NULL DEFAULT 0,
+  fault             TEXT,
+  PRIMARY KEY (agent_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS entries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    BLOB NOT NULL,
+  session_id  BLOB NOT NULL,
+  entry_hash  BLOB NOT NULL,
+  position    INTEGER,
+  state       TEXT NOT NULL CHECK (state IN ('pending', 'landed', 'received', 'not_sent')),
+  own         INTEGER NOT NULL,
+  entry       TEXT NOT NULL,
+  ack         TEXT,
+  ciphertext  BLOB,
+  body        BLOB NOT NULL,
+  UNIQUE (agent_id, session_id, position),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS entries_session ON entries(agent_id, session_id, state);
+
+CREATE TABLE IF NOT EXISTS notices (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id   BLOB NOT NULL REFERENCES agents(agent_id),
+  session_id BLOB,
+  text       TEXT NOT NULL
+);
+`;
+
+export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number }
+
+export interface SessionRow {
+  agent_id: Uint8Array;
+  session_id: Uint8Array;
+  role: "caller" | "callee";
+  counterparty_id: Uint8Array;
+  counterparty_name: string;
+  counterparty_keys: string;
+  state: "offered" | "accepted" | "active" | "closed";
+  x25519_secret: Uint8Array | null;
+  mlkem_seed: Uint8Array | null;
+  session_key: Uint8Array | null;
+  own_salt: Uint8Array | null;
+  salt: Uint8Array | null;
+  offer: string;
+  accept: string | null;
+  confirm: string | null;
+  assignment: string | null;
+  read_position: number;
+  verified_position: number;
+  delivered_through: number;
+  own_closed: number;
+  peer_closed: number;
+  fault: string | null;
+}
+
+export interface EntryRow {
+  id: number;
+  agent_id: Uint8Array;
+  session_id: Uint8Array;
+  entry_hash: Uint8Array;
+  position: number | null;
+  state: "pending" | "landed" | "received" | "not_sent";
+  own: number;
+  entry: string;
+  ack: string | null;
+  ciphertext: Uint8Array | null;
+  body: Uint8Array;
+}
+
+export interface NoticeRow { id: number; session_id: Uint8Array | null; text: string }
+
+type SessionUpdate = Partial<Omit<SessionRow, "agent_id" | "session_id">>;
+
+function openKey(dbPath: string): string {
+  const keyPath = `${dbPath}.key`;
+  if (existsSync(keyPath)) {
+    const key = readFileSync(keyPath);
+    if (key.length !== 32) throw new Error(`the database key file ${keyPath} is ${key.length} bytes, not 32. Restore it from backup.`);
+    return key.toString("hex");
+  }
+  // Never make a new key for an existing database: that would look like data loss.
+  if (existsSync(dbPath)) throw new Error(`the database ${dbPath} exists but its key file ${keyPath} is missing. Restore it from backup.`);
+  const key = randomBytes(32);
+  writeFileSync(keyPath, key, { mode: 0o600, flag: "wx" });
+  return key.toString("hex");
+}
+
+export class Store {
+  readonly #db: Database;
+
+  constructor(dbPath: string) {
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+    const keyHex = openKey(dbPath);
+    this.#db = new Database(dbPath);
+    chmodSync(dbPath, 0o600);
+    this.#db.pragma(`key = "x'${keyHex}'"`);
+    this.#prep("SELECT count(*) AS c FROM sqlite_master").get([]);
+    this.#db.pragma("journal_mode=WAL");
+    this.#db.pragma("synchronous=FULL");
+    this.#db.pragma("busy_timeout=5000");
+    this.#db.pragma("foreign_keys=ON");
+    this.#db.exec(SCHEMA);
+  }
+
+  // The driver's types want one exact byte-array type. Our bytes are all plain Uint8Array.
+  #prep(sql: string): { run(params: unknown[]): unknown; get(params: unknown[]): unknown; all(params: unknown[]): unknown[] } {
+    return this.#db.prepare(sql) as never;
+  }
+
+  close(): void {
+    this.#db.close();
+  }
+
+  transaction<T>(work: () => T): T {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = work();
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      this.#db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  getConfig(key: string): string | undefined {
+    return (this.#prep("SELECT value FROM config WHERE key = ?").get([key]) as { value: string } | undefined)?.value;
+  }
+
+  setConfig(key: string, value: string): void {
+    this.#prep("INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run([key, value]);
+  }
+
+  insertAgent(agentId: Uint8Array, name: string, edSeed: Uint8Array, pqSeed: Uint8Array): void {
+    this.#prep("INSERT INTO agents (agent_id, name, ed_seed, pq_seed) VALUES (?, ?, ?, ?)").run([agentId, name, edSeed, pqSeed]);
+  }
+
+  markRegistered(agentId: Uint8Array): void {
+    this.#prep("UPDATE agents SET registered = 1 WHERE agent_id = ?").run([agentId]);
+  }
+
+  agents(): AgentRow[] {
+    return this.#prep("SELECT * FROM agents ORDER BY rowid").all([]) as unknown as AgentRow[];
+  }
+
+  insertSession(row: Pick<SessionRow, "agent_id" | "session_id" | "role" | "counterparty_id" | "counterparty_name" | "counterparty_keys" | "state" | "offer"> & SessionUpdate): void {
+    const keys = Object.keys(row) as (keyof typeof row)[];
+    const sql = `INSERT INTO sessions (${keys.join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`;
+    this.#prep(sql).run(keys.map((k) => row[k]));
+  }
+
+  updateSession(agentId: Uint8Array, sessionId: Uint8Array, update: SessionUpdate): void {
+    const keys = Object.keys(update) as (keyof SessionUpdate)[];
+    if (keys.length === 0) return;
+    const sql = `UPDATE sessions SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE agent_id = ? AND session_id = ?`;
+    this.#prep(sql).run([...keys.map((k) => update[k]), agentId, sessionId]);
+  }
+
+  session(agentId: Uint8Array, sessionId: Uint8Array): SessionRow | undefined {
+    return this.#prep("SELECT * FROM sessions WHERE agent_id = ? AND session_id = ?").get([agentId, sessionId]) as SessionRow | undefined;
+  }
+
+  sessionsOf(agentId: Uint8Array): SessionRow[] {
+    return this.#prep("SELECT * FROM sessions WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SessionRow[];
+  }
+
+  insertEntry(row: Omit<EntryRow, "id" | "ciphertext" | "ack" | "position"> & { position?: number | null; ack?: string | null; ciphertext?: Uint8Array | null }): void {
+    this.#prep(
+      "INSERT INTO entries (agent_id, session_id, entry_hash, position, state, own, entry, ack, ciphertext, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run([row.agent_id, row.session_id, row.entry_hash, row.position ?? null, row.state, row.own, row.entry, row.ack ?? null, row.ciphertext ?? null, row.body]);
+  }
+
+  ownEntryByHash(agentId: Uint8Array, sessionId: Uint8Array, hash: Uint8Array): EntryRow | undefined {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND entry_hash = ? AND own = 1").get([agentId, sessionId, hash]) as EntryRow | undefined;
+  }
+
+  markLanded(id: number, position: number, ack: string): void {
+    this.#prep("UPDATE entries SET state = 'landed', position = ?, ack = ?, ciphertext = NULL WHERE id = ?").run([position, ack, id]);
+  }
+
+  markNotSent(id: number): void {
+    this.#prep("UPDATE entries SET state = 'not_sent', ciphertext = NULL WHERE id = ?").run([id]);
+  }
+
+  pendingEntries(agentId: Uint8Array, sessionId: Uint8Array): EntryRow[] {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'pending' ORDER BY id").all([agentId, sessionId]) as unknown as EntryRow[];
+  }
+
+  // The last entry in this author's chain, landed or still trying to.
+  lastOwnEntry(agentId: Uint8Array, sessionId: Uint8Array): EntryRow | undefined {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND state IN ('pending', 'landed') ORDER BY id DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
+  }
+
+  verifiedEntries(agentId: Uint8Array, sessionId: Uint8Array, throughPosition: number): EntryRow[] {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position <= ? ORDER BY position").all([agentId, sessionId, throughPosition]) as unknown as EntryRow[];
+  }
+
+  unreadEntries(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): EntryRow[] {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? ORDER BY position").all([agentId, sessionId, readPosition]) as unknown as EntryRow[];
+  }
+
+  addNotice(agentId: Uint8Array, sessionId: Uint8Array | null, text: string): void {
+    this.#prep("INSERT INTO notices (agent_id, session_id, text) VALUES (?, ?, ?)").run([agentId, sessionId, text]);
+  }
+
+  notices(agentId: Uint8Array): NoticeRow[] {
+    return this.#prep("SELECT id, session_id, text FROM notices WHERE agent_id = ? ORDER BY id").all([agentId]) as unknown as NoticeRow[];
+  }
+
+  clearNotices(agentId: Uint8Array, throughId: number): void {
+    this.#prep("DELETE FROM notices WHERE agent_id = ? AND id <= ?").run([agentId, throughId]);
+  }
+}
