@@ -12,7 +12,7 @@ import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import type { IpcNotification } from "./ipc/protocol.ts";
-import { verifySeal } from "./verify-seal.ts";
+import { exportTranscript, runLocal } from "./local-operations.ts";
 
 const RECONNECT_MS = 1000;
 
@@ -27,7 +27,7 @@ Doorbells arrive as <channel> tags with a source ending in cello-v2, a type and 
 
 Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
 
-Closing also seals your copy, and cello_seal seals at any time, with only you needed. A seal attests that the conversation took place. It never says the parties agreed, so never describe one that way.
+Closing also seals your copy, and cello_seal seals at any time, with only you needed. A seal attests that the conversation took place. It never says the parties agreed, so never describe one that way. A seal holds hashes only: cello_export_transcript writes a file that also shows chosen messages in plaintext, and cello_verify_transcript checks one. Those show what was passed, never that it's true or agreed.
 
 A send that answered sent: true has landed, whatever happens afterwards, so never send it again. If a send failed because the daemon was gone, a notice tells you if it landed once the daemon is back.
 
@@ -151,7 +151,7 @@ function inputSchema(op: Operation): Record<string, z.ZodType> {
 }
 
 async function run(op: Operation, args: Record<string, unknown>): Promise<unknown> {
-  if (op.local) return verifySeal(args);
+  if (op.local) return runLocal(op.method, args);
   const connected = await connect();
   const params = op.scoped ? { ...args, caller: CALLER } : args;
   if (op.method === "use_agent") {
@@ -159,6 +159,7 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
     heldAgents.add(args["agent"] as string);
     return result;
   }
+  if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
   if (op.method === "stop_using_agent") heldAgents.delete(args["agent"] as string);
   const waited = op.method === "wait" ? ((args["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   return connected.call(op.method, params, waited);

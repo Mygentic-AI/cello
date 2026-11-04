@@ -2,7 +2,7 @@
 // This is what any agent that can run a shell command gets. Run it with scripts/live-test.sh.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -11,9 +11,10 @@ import { IpcClient } from "../src/ipc/client.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
 import { signerFromSeeds } from "../src/protocol/identity.ts";
 import { RunningMerkle } from "../src/protocol/merkle.ts";
+import { saltedContentHash } from "../src/protocol/salt.ts";
 import { type SealRecordOnWire, encodeHashes } from "../src/protocol/seal.ts";
 import { sealCertificateBytes } from "../src/protocol/structures.ts";
-import { fromB64, signedSealCertificate } from "../src/protocol/wire.ts";
+import { fromB64, signedSealCertificate, toB64 } from "../src/protocol/wire.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
@@ -610,6 +611,267 @@ test("a standby past its time tells each side once, across restarts, and changes
   assert.doesNotMatch(readFileSync(join(nora.inHome, "daemon.log"), "utf8"), /back in a moment/);
   nora.must(["logout"]);
   owen.must(["logout"]);
+});
+
+interface TranscriptOutput {
+  ok: boolean;
+  fault?: string;
+  message: string;
+  sealer_id: string;
+  witnessed_through: number;
+  received_through: number;
+  revealed_positions: number[];
+  hidden_positions: number[];
+  messages: { position: number; author: string; author_id: string; kind: string; text?: string; signal?: string; basis: string }[];
+  statement: Record<string, string>;
+}
+
+interface TranscriptFile {
+  seal: SealRecordOnWire;
+  entries: { entry: { fields: Record<string, string> }; ack: unknown }[];
+  salt: string;
+  revealed: { position: number; body: string }[];
+}
+
+test("provable transcripts: all and partial reveals, each forgery caught, and checked with nothing running", { timeout: 240_000 }, async () => {
+  const healthz = url.replace(/^ws/, "http").replace(/\/v1$/, "/healthz");
+  await until("the server", async () => {
+    try {
+      return (await fetch(healthz)).ok;
+    } catch {
+      return false;
+    }
+  });
+  const sealKey = (await (await fetch(healthz)).json() as { seal_key: string }).seal_key;
+
+  const nedHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-ned-"));
+  const oraHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-ora-"));
+  okIn(nedHome, ["login", "--server", url]);
+  okIn(oraHome, ["login", "--server", url]);
+  const nedAgent = okIn(nedHome, ["create-agent", "Ned"]);
+  const oraAgent = okIn(oraHome, ["create-agent", "Ora"]);
+  await until("both online", () => [nedHome, oraHome].every((inHome) => (okIn(inHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online)));
+  const ned = (...args: string[]): Record<string, unknown> => okIn(nedHome, [...args, "--agent", "Ned"]);
+  const ora = (...args: string[]): Record<string, unknown> => okIn(oraHome, [...args, "--agent", "Ora"]);
+  const unreadBy = (read: (...args: string[]) => Record<string, unknown>): number => (read("inbox") as { waiting: { unread: number }[] }).waiting.reduce((sum, w) => sum + w.unread, 0);
+  const session = ned("initiate-session", oraAgent["agent_id"] as string)["session_id"] as string;
+  const hexSession = `\\x${session}`;
+  const nextOut = (): string => join(scratch, `transcript-${nextFile++}.json`);
+
+  const refusal = (inHome: string, ...args: string[]): Record<string, unknown> => {
+    const run = cello(["export-transcript", session, ...args], undefined, undefined, inHome);
+    assert.equal(run.status, 1, `a refusal exits 1: ${run.stdout}${run.stderr}`);
+    return JSON.parse(run.stderr) as Record<string, unknown>;
+  };
+  const check = (file: string, key = sealKey, inHome = nedHome): TranscriptOutput => {
+    const run = cello(["verify-transcript", file, "--seal-key", key], undefined, undefined, inHome);
+    assert.equal(run.status, run.json["ok"] ? 0 : 1, `verify-transcript exits by its answer: ${run.stderr}`);
+    return run.json as unknown as TranscriptOutput;
+  };
+
+  // Positions 1 to 3 reach Ora, and position 4 goes while she's away.
+  ned("send", session, "the price is forty-two", "--over");
+  await until("Ora's copy", () => unreadBy(ora) === 1);
+  ora("receive");
+  ora("send", session, "understood, and I accept", "--over");
+  await until("Ned's copy", () => unreadBy(ned) === 1);
+  ned("receive");
+  ned("send", session, "third", "--over");
+  await until("Ora's delivery ack through 3", () => sql(`SELECT count(*) FROM delivery_acks WHERE session_id = '${hexSession}' AND reader_id = '\\x${oraAgent["agent_id"] as string}' AND through_position = 3`) === "1");
+  process.kill((okIn(oraHome, ["status"]) as { pid: number }).pid, "SIGKILL");
+  ned("send", session, "fourth, while Ora is away", "--over");
+
+  // Help says what the file holds, and a tool or a shell has to say where it goes.
+  const help = cello(["export-transcript", "--help"], undefined, undefined, nedHome);
+  assert.match(help.stdout, /HOLDS THE PLAINTEXT OF WHAT YOU REVEAL/);
+  assert.equal(cello(["export-transcript", session, "--all", "--agent", "Ned"], undefined, undefined, nedHome).status, 2, "out is required");
+
+  // No seal yet: it names the failure, and says what to run.
+  const unsealed = refusal(nedHome, "--all", "--out", nextOut(), "--agent", "Ned");
+  assert.equal(unsealed["error"], "no_seal_covers");
+  assert.match(unsealed["message"] as string, new RegExp(`cello-v2 seal ${session} --agent Ned`));
+
+  const seal = ned("seal", session) as unknown as SealOutput;
+  assert.deepEqual([seal.witnessed_through, seal.received_through], [4, 3]);
+
+  // There's no default that reveals everything by accident.
+  assert.equal(refusal(nedHome, "--out", nextOut(), "--agent", "Ned")["error"], "no_reveal_chosen");
+  assert.equal(refusal(nedHome, "--all", "--reveal", "1", "--out", nextOut(), "--agent", "Ned")["error"], "bad_argument");
+  assert.equal(refusal(nedHome, "--reveal", "one", "--out", nextOut(), "--agent", "Ned")["error"], "bad_argument");
+  assert.equal(refusal(nedHome, "--reveal", "9", "--out", nextOut(), "--agent", "Ned")["error"], "no_seal_covers");
+  assert.equal(cello(["export-transcript", "00".repeat(16), "--all", "--out", nextOut(), "--agent", "Ned"], undefined, undefined, nedHome).json["error"], "unknown_session");
+
+  // Everything shown.
+  const wholeFile = nextOut();
+  const wholeAnswer = ned("export-transcript", session, "--all", "--out", wholeFile);
+  assert.deepEqual([wholeAnswer["file"], wholeAnswer["revealed_positions"], wholeAnswer["hidden_positions"]], [wholeFile, [1, 2, 3, 4], []]);
+  assert.match(wholeAnswer["warning"] as string, /holds the plaintext of positions 1-4/);
+  assert.doesNotMatch(JSON.stringify(wholeAnswer), /forty-two/, "the plaintext goes in the file, never in the answer");
+  assert.equal(statSync(wholeFile).mode & 0o777, 0o600, "only its owner can read it");
+  assert.equal(refusal(nedHome, "--all", "--out", wholeFile, "--agent", "Ned")["error"], "out_exists");
+  assert.match(readFileSync(wholeFile, "utf8"), /"salt"/);
+  assert.doesNotMatch(readFileSync(join(nedHome, "daemon.log"), "utf8"), /forty-two/);
+
+  // A relative out starts from where the command runs.
+  const relativeFolder = mkdtempSync(join(scratch, "relative-"));
+  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: nedHome } });
+  assert.equal(relative.status, 0, relative.stderr);
+  assert.equal(realpathSync((JSON.parse(relative.stdout) as { file: string }).file), realpathSync(join(relativeFolder, "here.json")));
+
+  const whole = check(wholeFile);
+  assert.ok(whole.ok, whole.message);
+  assert.deepEqual([whole.witnessed_through, whole.received_through, whole.hidden_positions], [4, 3, []]);
+  assert.deepEqual(whole.messages.map((m) => [m.position, m.author, m.kind, m.text, m.signal, m.basis]), [
+    [1, "sealer", "message", "the price is forty-two", "over", "counterparty_signature"],
+    [2, "counterparty", "message", "understood, and I accept", "over", "counterparty_signature"],
+    [3, "sealer", "message", "third", "over", "counterparty_signature"],
+    [4, "sealer", "message", "fourth, while Ora is away", "over", "sender_signature_and_server"],
+  ]);
+  assert.equal(whole.messages[0]?.author_id, nedAgent["agent_id"]);
+  assert.equal(whole.messages[1]?.author_id, oraAgent["agent_id"]);
+  assert.match(whole.statement["meaning"] as string, /says nothing about whether they're true, or whether either party agreed/);
+  assert.match(whole.statement["bound_by_the_counterparty_signature"] as string, /Positions 1-3/);
+  assert.match(whole.statement["rests_on_the_sender_and_the_server"] as string, /Positions 4: only the signature of the person who made this file.*Nothing shows the counterparty ever received them/);
+  assert.match(whole.statement["hidden"] as string, /hadn't closed/);
+
+  // A partial reveal: position 1 shown, and Ora's acceptance kept back.
+  const partFile = nextOut();
+  ned("export-transcript", session, "--reveal", "1,4", "--out", partFile);
+  const partBytes = readFileSync(partFile, "utf8");
+  assert.doesNotMatch(partBytes, /accept/);
+  assert.equal(Buffer.from((JSON.parse(partBytes) as TranscriptFile).revealed.map((r) => r.body).join(""), "base64url").includes("understood"), false);
+  const part = check(partFile);
+  assert.ok(part.ok, part.message);
+  assert.deepEqual([part.revealed_positions, part.hidden_positions], [[1, 4], [2, 3]]);
+  assert.deepEqual(part.messages.map((m) => m.text), ["the price is forty-two", "fourth, while Ora is away"]);
+  assert.match(part.statement["hidden"] as string, /Positions 2-3 are hidden.*may change the meaning/);
+
+  // Revealing the salt: the words of hidden position 2 are known here, and without its random value they don't confirm.
+  const wholeOnDisk = JSON.parse(readFileSync(wholeFile, "utf8")) as TranscriptFile;
+  const partOnDisk = JSON.parse(partBytes) as TranscriptFile;
+  assert.equal(partOnDisk.salt, wholeOnDisk.salt, "one salt for the whole session");
+  const salt = fromB64(partOnDisk.salt, "salt");
+  const target = (partOnDisk.entries[1]?.entry.fields as Record<string, string>)["contentHash"];
+  const guess = (n: string): string => toB64(saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "understood, and I accept", signal: "over", est_minutes: null }))));
+  assert.notEqual(guess(toB64(new Uint8Array(16))), target);
+  const realValue = (JSON.parse(Buffer.from(wholeOnDisk.revealed[1]?.body as string, "base64url").toString()) as { n: string }).n;
+  assert.equal(guess(realValue), target, "with the random value the same guess matches, so this check can fail");
+
+  // Ora comes back. She exports with her messages unread, and with another caller holding her: neither stands in the way.
+  okIn(oraHome, ["login", "--server", url]);
+  await until("Ora's catch-up", () => (ora("sessions") as { sessions: { position: number }[] }).sessions[0]?.position === 4);
+  await until("Ned's delivery ack through 2", () => sql(`SELECT count(*) FROM delivery_acks WHERE session_id = '${hexSession}' AND reader_id = '\\x${nedAgent["agent_id"] as string}' AND through_position = 2`) === "1");
+  const unreadBefore = unreadBy(ora);
+  assert.equal(unreadBefore, 2);
+  assert.equal(ora("seal", session)["sealed"], true);
+  ora("stop-using-agent");
+  assert.equal(cello(["use-agent", "--agent", "Ora"], undefined, "another-shell", oraHome).status, 0);
+  assert.equal(cello(["receive", "--agent", "Ora"], undefined, undefined, oraHome).json["error"], "agent_held");
+  const oraFile = nextOut();
+  ora("export-transcript", session, "--reveal", "2,3", "--out", oraFile);
+  assert.equal(unreadBy(ora), unreadBefore, "exporting doesn't count as reading");
+  assert.equal(cello(["stop-using-agent", "--agent", "Ora"], undefined, "another-shell", oraHome).status, 0);
+  // From her side, Ned has confirmed through 2. His words at 3 still carry his own signature.
+  const fromOra = check(oraFile);
+  assert.ok(fromOra.ok, fromOra.message);
+  assert.deepEqual([fromOra.sealer_id, fromOra.received_through], [oraAgent["agent_id"], 2]);
+  assert.deepEqual(fromOra.messages.map((m) => [m.position, m.author, m.basis]), [[2, "sealer", "counterparty_signature"], [3, "counterparty", "sender_signature_and_server"]]);
+  assert.match(fromOra.statement["rests_on_the_sender_and_the_server"] as string, /Positions 3: the counterparty's signature on the entry stands behind the words/);
+
+  // A second session and a shorter seal, for the forgeries that need something real from elsewhere.
+  const otherSession = ned("initiate-session", oraAgent["agent_id"] as string)["session_id"] as string;
+  ned("send", otherSession, "another matter", "--over");
+  ned("seal", otherSession);
+  const otherFile = nextOut();
+  ned("export-transcript", otherSession, "--all", "--out", otherFile);
+  const elsewhere = JSON.parse(readFileSync(otherFile, "utf8")) as TranscriptFile;
+  const shorter = ned("seal", session, "--through", "2") as unknown as SealOutput;
+  assert.equal(shorter.witnessed_through, 2);
+  const shortFile = nextOut();
+  ned("export-transcript", session, "--all", "--seal-id", shorter.seal_id, "--out", shortFile);
+  const shortCheck = check(shortFile);
+  assert.deepEqual([shortCheck.ok, shortCheck.witnessed_through, shortCheck.revealed_positions], [true, 2, [1, 2]]);
+  assert.match(shortCheck.statement["hidden"] as string, /2 more positions came after.*may change the meaning/);
+  const shortSeal = (JSON.parse(readFileSync(shortFile, "utf8")) as TranscriptFile).seal;
+
+  // ---- Forgeries, on the real file. ----
+  const forged = (edit: (f: TranscriptFile) => void): string => {
+    const copy = structuredClone(wholeOnDisk);
+    edit(copy);
+    const path = nextOut();
+    writeFileSync(path, JSON.stringify(copy));
+    return path;
+  };
+  const expectFault = (fault: string, edit: (f: TranscriptFile) => void): void => assert.equal(check(forged(edit)).fault, fault, fault);
+  const reveal = (f: TranscriptFile, i: number): { position: number; body: string } => f.revealed[i] as { position: number; body: string };
+  // A body that doesn't match.
+  expectFault("body_does_not_match", (f) => { reveal(f, 1).body = Buffer.from(Buffer.from(reveal(f, 1).body, "base64url").toString().replace("I accept", "I refuse")).toString("base64url"); });
+  // A position swapped: the bodies of two positions, then two entries.
+  expectFault("body_does_not_match", (f) => { reveal(f, 0).position = 2; reveal(f, 1).position = 1; });
+  expectFault("bad_position", (f) => { f.entries.splice(1, 0, ...f.entries.splice(1, 2).reverse()); });
+  // An entry from another session, then a whole seal from one.
+  expectFault("wrong_session", (f) => { f.entries[0] = elsewhere.entries[0] as TranscriptFile["entries"][number]; });
+  expectFault("wrong_session", (f) => { f.seal = elsewhere.seal; f.entries = f.entries.slice(0, 1); f.revealed = []; });
+  // A body attributed to the wrong author: a label beside it, then the entry's own author.
+  expectFault("malformed_transcript", (f) => { (f.revealed[1] as unknown as Record<string, string>)["author"] = oraAgent["agent_id"] as string; });
+  expectFault("ack_wrong_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(Buffer.from(oraAgent["agent_id"] as string, "hex")); });
+  // A truncated chain, and a seal that covers less than the file holds, so it's for a different root.
+  expectFault("truncated_chain", (f) => { f.entries.pop(); });
+  expectFault("entries_beyond_seal", (f) => { f.seal = shortSeal; });
+  // The seal's own checks still run. The same checks on the seal record as verify-seal.
+  expectFault("bad_seal_signature", (f) => { (f.seal.certificate.fields as Record<string, number>)["receivedThrough"] = 4; });
+  expectFault("bad_salt", (f) => { f.salt = `${f.salt}AA`; });
+  expectFault("body_does_not_match", (f) => { f.salt = toB64(new Uint8Array(32).fill(1)); });
+  assert.equal(check(wholeFile, "00".repeat(32)).fault, "wrong_seal_key");
+  assert.equal(check(wholeFile, "not hex").fault, "bad_seal_key");
+  assert.equal(check(join(scratch, "no-such-file")).fault, "unreadable_file");
+  // verify-seal and verify-transcript each refuse the other's file by name.
+  assert.equal(check(saved(wholeOnDisk.seal)).fault, "malformed_transcript");
+
+  // Both close. The session key is gone after that, and the record can still be shown.
+  ned("close-session", session);
+  await until("Ora's copy of the close", () => (ora("sessions") as { sessions: { session_id: string; position: number }[] }).sessions.find((s) => s.session_id === session)?.position === 5);
+  ora("receive");
+  ora("close-session", session);
+  await until("Ned's copy of the close", () => (ned("sessions", "--all") as { sessions: { session_id: string; state: string; position: number }[] }).sessions.find((s) => s.session_id === session)?.position === 6);
+  // Ned's last seal stops at his own close, so all can't quietly mean less than he holds.
+  assert.equal(refusal(nedHome, "--all", "--out", nextOut(), "--agent", "Ned")["error"], "no_seal_covers");
+  await until("Ned's whole seal", () => (ned("seal", session) as unknown as SealOutput).session_closed);
+  const closedFile = nextOut();
+  ned("export-transcript", session, "--all", "--out", closedFile);
+  const closed = check(closedFile);
+  assert.ok(closed.ok, closed.message);
+  assert.deepEqual(closed.messages.slice(4).map((m) => [m.position, m.kind, m.text, m.author]), [[5, "close", undefined, "sealer"], [6, "close", undefined, "counterparty"]]);
+  assert.match(closed.statement["hidden"] as string, /Nothing is hidden/);
+
+  // The salt question, on real bodies: every one has its random value, closes included, and no two share one.
+  const values = (JSON.parse(readFileSync(closedFile, "utf8")) as TranscriptFile).revealed.map((r) => (JSON.parse(Buffer.from(r.body, "base64url").toString()) as { n: string }).n);
+  assert.equal(values.length, 6);
+  assert.ok(values.every((n) => Buffer.from(n, "base64url").length === 16));
+  assert.equal(new Set(values).size, 6);
+
+  // A hidden close still exports: only its words are hidden, and it has none.
+  const hiddenCloseFile = nextOut();
+  ned("export-transcript", session, "--reveal", "1", "--out", hiddenCloseFile);
+  assert.deepEqual(check(hiddenCloseFile).hidden_positions, [2, 3, 4, 5, 6]);
+
+  // The server is down: exporting reads this agent's own record, so it still works.
+  compose("stop", "server");
+  await until("the daemon to see the server gone", () => !(okIn(nedHome, ["status"]) as { connected: boolean }).connected);
+  const noServerFile = nextOut();
+  ned("export-transcript", session, "--reveal", "2", "--out", noServerFile);
+
+  // Nothing running: no daemon, no server, and a home with nothing in it. The files still check out, and forgeries still fail.
+  okIn(nedHome, ["logout"]);
+  okIn(oraHome, ["logout"]);
+  const stranger = mkdtempSync(join(tmpdir(), "cello-v2-stranger-"));
+  assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
+  const offline = check(noServerFile, sealKey, stranger);
+  assert.ok(offline.ok, offline.message);
+  assert.deepEqual(offline.messages.map((m) => m.text), ["understood, and I accept"]);
+  assert.equal(check(wholeFile, sealKey, stranger).ok, true);
+  assert.equal(check(forged((f) => { reveal(f, 0).body = reveal(f, 1).body; }), sealKey, stranger).fault, "body_does_not_match");
+  compose("start", "server");
 });
 
 // A proxy in front of the real server, which rewrites its answers to seal requests. An honest server would never show these.
