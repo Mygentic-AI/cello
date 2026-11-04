@@ -1420,7 +1420,9 @@ export class Engine {
       // Channels share the one screening queue, so a channel takes turns with conversations by sender.
       screen: (agentHex, scope, position, senderHex, text) => new Promise((resolve) => {
         this.#nextChannelJob -= 1;
-        this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: text.length, arrived: Date.now(), channelText: { bytes: text, done: resolve } });
+        // The worker reads the shape a message body has. Anything else, it takes as text nobody can read and passes unscanned.
+        const bytes = new TextEncoder().encode(JSON.stringify({ text }));
+        this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
       }),
       screenOutbound: async (agentHex, text) => {
         const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text);

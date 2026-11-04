@@ -593,6 +593,7 @@ test("MCP: every channel operation is a tool, its description says channel text 
       assert.ok(!result.isError, `${name} failed: ${result.content[0]?.text}`);
       return JSON.parse(result.content[0]?.text as string) as Record<string, unknown>;
     };
+    ok("bea", "stop-using-agent");
     await tool("cello_use_agent");
     assert.equal((await tool("cello_channel_join", { channel_id: channel, note: "by tool" }))["state"], "waiting");
     await until("the admin to see the request", () => (ok("ada", "channel-requests", channel) as { requests: { note: string }[] }).requests.some((r) => r.note === "by tool"));

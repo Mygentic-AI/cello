@@ -61,7 +61,7 @@ export interface ChannelHost {
   serverIdentity(): PublicIdentity;
   ring(agentHex: string, bell: Doorbell): void;
   // Waits for its turn in the one screening queue. Always answers: a screen that keeps failing answers blocked.
-  screen(agentHex: string, scope: string, position: number, senderHex: string, text: Uint8Array): Promise<InboundVerdict>;
+  screen(agentHex: string, scope: string, position: number, senderHex: string, text: string): Promise<InboundVerdict>;
   screenOutbound(agentHex: string, text: string): Promise<{ text: string; report: Record<string, unknown> }>;
 }
 
@@ -787,7 +787,7 @@ export class Channels {
     const text = part === "title" ? row.title : row.body;
     const work = (text && text.length > 0 && row.author_id
       // Titles and bodies queue apart, so a long body can't hold up the titles that come after it.
-      ? this.#host.screen(agentHex, `${channelHex}:${part}`, row.position, toHex(row.author_id), text)
+      ? this.#host.screen(agentHex, `${channelHex}:${part}`, row.position, toHex(row.author_id), DEC.decode(text))
       : Promise.resolve<InboundVerdict>({ verdict: "allow", delivered: null, findings: [], reason: null, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } })
     ).then((verdict) => {
       const detail: ScreenDetail = { delivered: verdict.delivered, findings: verdict.findings, reason: verdict.reason, score: verdict.score, ran: verdict.ran };
