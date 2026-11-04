@@ -32,7 +32,14 @@ export class IpcClient {
   private constructor(socket: Socket) {
     this.#socket = socket;
     createInterface({ input: socket }).on("line", (line) => {
-      const frame = JSON.parse(line) as IpcResponse | IpcNotification;
+      let frame: IpcResponse | IpcNotification;
+      try {
+        frame = JSON.parse(line) as IpcResponse | IpcNotification;
+      } catch {
+        // A daemon killed part way through a line. This is the call being cut off, so the close below reports it.
+        socket.destroy();
+        return;
+      }
       if ("notification" in frame) {
         this.onNotification(frame);
         return;

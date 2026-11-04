@@ -23,3 +23,14 @@ test("a call cut off in flight says it may still take effect, and a call never m
   await new Promise((resolve) => daemon.close(resolve));
   await assert.rejects(IpcClient.connect(path), DaemonGone);
 });
+
+test("a line cut short by a dying daemon counts as the call being cut off", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "c2i-")), "s.sock");
+  const daemon = createServer((socket) => {
+    socket.once("data", () => socket.end("{\"id\":1,\"ok\":tr"));
+  });
+  await new Promise<void>((resolve) => daemon.listen(path, resolve));
+  const client = await IpcClient.connect(path);
+  await assert.rejects(client.call("status"), { code: "daemon_stopped_during_call" });
+  await new Promise((resolve) => daemon.close(resolve));
+});
