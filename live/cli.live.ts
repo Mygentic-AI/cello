@@ -405,6 +405,213 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   compose("start", "server");
 });
 
+test("a standby past its time tells each side once, across restarts, and changes nothing else", { timeout: 240_000 }, async () => {
+  interface Standby { by: string; position: number; due_at: string; overdue: boolean }
+  interface Read { messages: { text?: string }[]; notices: { session_id: string; text: string }[] }
+
+  // Two machines' worth of state, each shell with its own caller.
+  const side = (agent: string) => {
+    const inHome = mkdtempSync(join(tmpdir(), `cello-v2-cli-${agent}-`));
+    const caller = `shell-${agent}`;
+    const must = (args: string[]): Record<string, unknown> => {
+      const done = cello(args, undefined, caller, inHome);
+      assert.equal(done.status, 0, `${agent}: cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+      return done.json;
+    };
+    const act = (...args: string[]): Record<string, unknown> => must([...args, "--agent", agent]);
+    const online = (): boolean => (must(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online);
+    return {
+      inHome,
+      must,
+      act,
+      read: () => act("receive") as unknown as Read,
+      unread: () => (act("inbox") as { waiting: { unread: number }[] }).waiting[0]?.unread ?? 0,
+      standbys: () => (act("sessions") as { sessions: { standbys: Standby[] }[] }).sessions[0]?.standbys,
+      statusStandbys: () => (must(["status"]) as { agents: { sessions: { standbys: Standby[] }[] }[] }).agents[0]?.sessions[0]?.standbys,
+      kill: () => process.kill((must(["status"]) as { pid: number }).pid, "SIGKILL"),
+      online,
+      restart: async () => {
+        must(["login", "--server", url]);
+        await until(`${agent} online`, online);
+      },
+      // A command that blocks, so this test can carry on while it does.
+      wait: () => new Promise<Run>((resolve) => {
+        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
+          resolve({ status: err ? (err.code as number) : 0, stdout, stderr, json: JSON.parse(stdout) as Record<string, unknown> });
+        });
+      }),
+    };
+  };
+  const nora = side("Nora");
+  const owen = side("Owen");
+  await nora.restart();
+  nora.must(["create-agent", "Nora"]);
+  await owen.restart();
+  const owenId = owen.must(["create-agent", "Owen"])["agent_id"] as string;
+  await until("both online", () => nora.online() && owen.online());
+  const session = nora.act("initiate-session", owenId)["session_id"] as string;
+  assert.ok(session);
+
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const THREE_SECONDS = "0.05";
+  const SIX_SECONDS = "0.1";
+  const WELL_PAST_THREE = 3500;
+  const FOR_ANY_LATE_NOTICE = 1500;
+  const noraGets = (count: number): Promise<boolean> => until(`${count} to reach Nora`, () => nora.unread() === count);
+  // Owen makes a promise that Nora has read. Returns the position, so a check can name it.
+  const promised = async (minutes: string): Promise<number> => {
+    const position = owen.act("send", session, "back in a moment", "--standby", minutes)["position"] as number;
+    await noraGets(1);
+    nora.read();
+    return position;
+  };
+  const settle = async (): Promise<void> => {
+    owen.act("send", session, "here it is", "--over");
+    await noraGets(1);
+    nora.read();
+    await until("both sides to see it settled", () => nora.standbys()?.length === 0 && owen.standbys()?.length === 0);
+  };
+  const toldOnce = (read: Read, words: RegExp, who: string): void => {
+    assert.equal(read.notices.length, 1, `${who} is told once: ${JSON.stringify(read.notices)}`);
+    assert.match(read.notices[0]?.text as string, words);
+    assert.equal(read.notices[0]?.session_id, session);
+  };
+  const READER = /other side said it would follow up by now.*it hasn't/;
+  const AUTHOR = /You said you'd follow up by now/;
+
+  // A follow-up in time tells nobody, and the fractional minutes are accepted.
+  owen.act("send", session, "back in a moment", "--standby", THREE_SECONDS);
+  owen.act("send", session, "that was quick", "--over");
+  await noraGets(2);
+  await sleep(WELL_PAST_THREE);
+  assert.deepEqual([nora.read().messages.length, nora.standbys()], [2, []]);
+  assert.deepEqual([owen.read().notices, owen.standbys()], [[], []]);
+  assert.deepEqual(nora.read().notices, [], "nothing reached the reader either");
+
+  // Open, and both sides work out the same due time. Then it passes, and a wait ends on it for each side.
+  const position = await promised(SIX_SECONDS);
+  const [noraSees] = nora.standbys() as [Standby];
+  const [owenSees] = owen.standbys() as [Standby];
+  assert.deepEqual([noraSees.by, noraSees.position, noraSees.overdue], ["other_side", position, false]);
+  assert.deepEqual([owenSees.by, owenSees.position, owenSees.overdue], ["you", position, false]);
+  assert.equal(noraSees.due_at, owenSees.due_at);
+  assert.deepEqual(nora.statusStandbys(), [noraSees]);
+  const [noraWoke, owenWoke] = await Promise.all([nora.wait(), owen.wait()]);
+  for (const woke of [noraWoke, owenWoke]) {
+    assert.deepEqual([woke.status, woke.json["event"], woke.json["session_id"]], [0, "standby_overdue", session], woke.stdout + woke.stderr);
+    assert.doesNotMatch(woke.stdout, /back in a moment/);
+  }
+  assert.doesNotMatch(noraWoke.stdout, /Owen/, "a doorbell carries no name from the other party");
+  assert.deepEqual(nora.standbys(), [{ ...noraSees, overdue: true }]);
+  assert.deepEqual(owen.statusStandbys(), [{ ...owenSees, overdue: true }]);
+
+  // It doesn't count as a message: with the notice unread, the reader can still reply. That doesn't settle Owen's promise.
+  assert.equal(nora.act("send", session, "any news?", "--over")["sent"], true);
+  toldOnce(nora.read(), READER, "the reader");
+  const owenRead = owen.read();
+  toldOnce(owenRead, AUTHOR, "the author");
+  assert.deepEqual(owenRead.messages.map((m) => m.text), ["any news?"]);
+  assert.equal(owen.standbys()?.length, 1);
+
+  // A restart after it fired doesn't repeat it, and the standby still shows.
+  nora.kill();
+  owen.kill();
+  await Promise.all([nora.restart(), owen.restart()]);
+  await sleep(FOR_ANY_LATE_NOTICE);
+  assert.deepEqual([nora.read().notices, owen.read().notices], [[], []]);
+  assert.equal(nora.standbys()?.[0]?.overdue, true);
+  await settle();
+
+  // Killed before it falls due, and back after: both are still told, once.
+  await promised(SIX_SECONDS);
+  assert.equal(owen.standbys()?.[0]?.overdue, false, "the kill must come before it falls due");
+  nora.kill();
+  owen.kill();
+  await sleep(6500);
+  await Promise.all([nora.restart(), owen.restart()]);
+  await until("the reader's notice", () => nora.unread() === 0 && (nora.must(["status"]) as { agents: { unread: number }[] }).agents[0]?.unread === 1);
+  toldOnce(nora.read(), READER, "the reader");
+  toldOnce(owen.read(), AUTHOR, "the author");
+  assert.deepEqual([nora.read().notices, owen.read().notices], [[], []]);
+
+  // A new promise replaces the old one. It fires and nobody has read the notice when the kill comes: it's neither lost nor repeated.
+  await promised(THREE_SECONDS);
+  await Promise.all([nora.wait(), owen.wait()]);
+  nora.kill();
+  owen.kill();
+  await Promise.all([nora.restart(), owen.restart()]);
+  await sleep(FOR_ANY_LATE_NOTICE);
+  toldOnce(nora.read(), READER, "the reader");
+  toldOnce(owen.read(), AUTHOR, "the author");
+  await settle();
+
+  // Both daemons frozen past the due time, the nearest a test gets to a sleeping laptop. On waking, each side is told once.
+  await promised(SIX_SECONDS);
+  const frozen = [nora, owen].map((who) => (who.must(["status"]) as { pid: number }).pid);
+  assert.equal(owen.standbys()?.[0]?.overdue, false, "the freeze must come before it falls due");
+  for (const pid of frozen) process.kill(pid, "SIGSTOP");
+  await sleep(6500);
+  for (const pid of frozen) process.kill(pid, "SIGCONT");
+  await until("both sides told on waking", () => (nora.must(["status"]) as { agents: { unread: number }[] }).agents[0]?.unread === 1 && (owen.must(["status"]) as { agents: { unread: number }[] }).agents[0]?.unread === 1);
+  await sleep(FOR_ANY_LATE_NOTICE);
+  toldOnce(nora.read(), READER, "the reader");
+  toldOnce(owen.read(), AUTHOR, "the author");
+  await settle();
+
+  // The reader is away while the promise is kept. Coming back after its time, it reads the follow-up and hears no false alarm.
+  nora.kill();
+  owen.act("send", session, "back in a moment", "--standby", THREE_SECONDS);
+  owen.act("send", session, "done, while you were away", "--over");
+  await sleep(WELL_PAST_THREE);
+  await nora.restart();
+  await noraGets(2);
+  await sleep(FOR_ANY_LATE_NOTICE);
+  const backRead = nora.read();
+  assert.deepEqual([backRead.messages.length, backRead.notices, nora.standbys()], [2, [], []]);
+  assert.deepEqual(owen.read().notices, []);
+
+  // With the server gone, the author is still told. The reader can't know, so its session shows overdue and the notice waits.
+  await promised("0.3");
+  compose("stop", "server");
+  await until("the reader to see the server gone", () => !(nora.must(["status"]) as { connected: boolean }).connected);
+  const [dueSoon] = nora.standbys() as [Standby];
+  assert.equal(dueSoon.overdue, false, "the server must be gone before it falls due");
+  await sleep(Date.parse(dueSoon.due_at) - Date.now() + 500);
+  toldOnce(await until("the author's notice with no server", () => {
+    const read = owen.read();
+    return read.notices.length > 0 && read;
+  }), AUTHOR, "the author");
+  assert.deepEqual([nora.read().notices, nora.standbys()?.[0]?.overdue], [[], true]);
+  compose("start", "server");
+  toldOnce(await until("the reader's notice once the server is back", () => {
+    const read = nora.read();
+    return read.notices.length > 0 && read;
+  }), READER, "the reader");
+  await until("both back online", () => nora.online() && owen.online());
+  assert.deepEqual([nora.read().notices, owen.read().notices], [[], []]);
+
+  // Closing settles it, on both sides.
+  owen.act("send", session, "back in a moment", "--standby", THREE_SECONDS);
+  const owenClosed = owen.act("close-session", session) as { closed: boolean };
+  assert.equal(owenClosed.closed, true);
+  await noraGets(2);
+  assert.deepEqual([nora.standbys(), owen.standbys()], [[], []]);
+  await sleep(WELL_PAST_THREE);
+  const late = /follow up/;
+  assert.deepEqual(nora.read().notices.filter((n) => late.test(n.text)), []);
+  assert.deepEqual(owen.read().notices.filter((n) => late.test(n.text)), []);
+
+  // Nothing about any of this went on the record, or in a log as text.
+  nora.act("close-session", session);
+  await until("the session closed on both sides", () => (owen.act("sessions", "--all") as { sessions: { state: string }[] }).sessions[0]?.state === "closed");
+  const reports = [nora, owen].map((who) => who.act("verify-session", session));
+  assert.deepEqual([reports[0]?.["ok"], reports[1]?.["ok"], reports[0]?.["root"]], [true, true, reports[1]?.["root"]]);
+  assert.doesNotMatch(JSON.stringify(nora.act("transcript", session)), /follow up by now/);
+  assert.doesNotMatch(readFileSync(join(nora.inHome, "daemon.log"), "utf8"), /back in a moment/);
+  nora.must(["logout"]);
+  owen.must(["logout"]);
+});
+
 // A proxy in front of the real server, which rewrites its answers to seal requests. An honest server would never show these.
 async function lyingProxy(rewrite: { current: ((answer: { record: SealRecordOnWire; logProof: string[] | null }) => void) | null }): Promise<{ url: string; close(): void }> {
   const wss = new WebSocketServer({ port: 0, maxPayload: 2_000_000 });

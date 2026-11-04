@@ -38,7 +38,7 @@ cello-v2 use-agent --agent Ann
 cello-v2 initiate-session <their-agent-id>
 ```
 
-Send a message. Every send says what happens next: `--over` means your turn is done, `--standby <minutes>` means you'll follow up, and `--wrap` means it's your last message.
+Send a message. Every send says what happens next: `--over` means your turn is done, `--standby <minutes>` means you'll follow up, and `--wrap` means it's your last message. If a standby's time passes with nothing more from its sender, both sides get one notice, and `sessions` and `status` show it as overdue. It closes nothing and blocks nothing.
 
 ```
 cello-v2 send <session-id> "Hello" --over

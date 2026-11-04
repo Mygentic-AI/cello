@@ -83,6 +83,15 @@ CREATE TABLE IF NOT EXISTS seal_wants (
   PRIMARY KEY (agent_id, session_id, through),
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
+
+-- A standby whose lateness has been told, so a restart can neither repeat that nor lose it. Its position names the promise.
+CREATE TABLE IF NOT EXISTS standby_told (
+  agent_id   BLOB NOT NULL,
+  session_id BLOB NOT NULL,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, session_id, position),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
 `;
 
 export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number }
@@ -252,6 +261,18 @@ export class Store {
   // The last entry in this author's chain, landed or still trying to.
   lastOwnEntry(agentId: Uint8Array, sessionId: Uint8Array): EntryRow | undefined {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND state IN ('pending', 'landed') ORDER BY id DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
+  }
+
+  lastPeerEntry(agentId: Uint8Array, sessionId: Uint8Array): EntryRow | undefined {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 0 ORDER BY position DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
+  }
+
+  standbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): boolean {
+    return this.#prep("SELECT 1 FROM standby_told WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) !== undefined;
+  }
+
+  markStandbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): void {
+    this.#prep("INSERT INTO standby_told (agent_id, session_id, position) VALUES (?, ?, ?)").run([agentId, sessionId, position]);
   }
 
   verifiedEntries(agentId: Uint8Array, sessionId: Uint8Array, throughPosition: number): EntryRow[] {

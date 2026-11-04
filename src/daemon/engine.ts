@@ -64,6 +64,9 @@ const CONFIG_SEAL_LOG_HEAD = "seal_log_head";
 const SEAL_EVERYTHING_HELD = 0;
 // Not refusals of the seal itself: the first means this agent's login hasn't finished, the second that the server failed.
 const SEAL_RETRY_CODES: readonly string[] = ["not_authenticated", "internal_error"];
+// A timer can stop counting while a machine sleeps, so no wait outlasts this before the clock is read again.
+const STANDBY_CHECK_MAX_MS = 60_000;
+const LATEST_DATE_MS = 8.64e15;
 
 export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
@@ -78,7 +81,7 @@ export class LocalError extends Error {
 }
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue";
   agent: string;
   session_id?: string;
   from_id?: string;
@@ -116,6 +119,21 @@ function parseBody(bytes: Uint8Array): Body | null {
   }
 }
 
+interface OpenStandby {
+  by: "you" | "other_side";
+  position: number;
+  due: number;
+}
+
+// Both daemons start from the server's ack time, so they agree on the due time. Each compares it with its own clock,
+// so a clock that's wrong by a minute tells a minute early or late, and changes nothing else.
+// The minutes can come from the other party, so anything that isn't a usable time counts as no time.
+function standbyDue(estMinutes: unknown, ackTime: number): number | undefined {
+  if (typeof estMinutes !== "number" || !(estMinutes > 0)) return undefined;
+  const due = Math.ceil(ackTime + estMinutes * 60_000);
+  return due <= LATEST_DATE_MS ? due : undefined;
+}
+
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);
@@ -147,6 +165,8 @@ export class Engine {
   readonly #activation = new Map<string, () => void>();
   #server: ConnectedServer | undefined;
   #positionCheck: NodeJS.Timeout | undefined;
+  #standbyCheck: NodeJS.Timeout | undefined;
+  #standbyCheckAt = 0;
 
   constructor(store: Store, url: string, events: EngineEvents) {
     this.#store = store;
@@ -174,6 +194,7 @@ export class Engine {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
       this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false });
     }
+    this.#checkStandbys();
     this.#link.start();
     // Pushes are hints. This catches a lost one, so it costs seconds rather than a conversation.
     this.#positionCheck = setInterval(() => {
@@ -183,6 +204,7 @@ export class Engine {
 
   stop(): void {
     clearInterval(this.#positionCheck);
+    clearTimeout(this.#standbyCheck);
     this.#link.stop();
   }
 
@@ -260,12 +282,17 @@ export class Engine {
 
   async #catchUpAgent(agent: AgentContext): Promise<void> {
     try {
+      const listedAt = Date.now();
       const listed = await this.#link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
       const seen = new Set<string>();
       for (const wire of listed.sessions) {
-        const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
+        const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
+        const sessionHex = toHex(sessionId);
         seen.add(sessionHex);
-        this.#background("session update", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire)));
+        this.#background("session update", this.#lane(agent.hex, sessionHex, async () => {
+          await this.#onSessionWire(agent, wire);
+          this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
+        }));
       }
       // An offer written to disk just before a crash may never have reached the server.
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
@@ -581,10 +608,12 @@ export class Engine {
     let body: Uint8Array | undefined;
 
     if (fromMe) {
-      if (!this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash)) {
+      const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash);
+      if (!own) {
         this.#hold(agent, local, "own_entry_unknown", position);
         return false;
       }
+      body = own.body;
     } else {
       if (!item.ciphertext) {
         this.#hold(agent, local, "encrypted_text_missing", position);
@@ -640,7 +669,97 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
+    const written = parseBody(body as Uint8Array);
+    const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, witnessed.ack.time) : undefined;
+    if (due !== undefined) this.#armStandbyCheck(due);
     return true;
+  }
+
+  // ---- Standbys past their time. Only the two daemons can see these, so all of this is local, and it only tells. ----
+
+  #standbyIn(row: EntryRow | undefined, by: OpenStandby["by"], local: SessionRow): OpenStandby | undefined {
+    if (!row || row.position === null || row.ack === null || row.position > local.verified_position) return undefined;
+    if (signedEntry.decode(JSON.parse(row.entry)).fields.kind !== EntryKind.message) return undefined;
+    const body = parseBody(row.body);
+    if (body?.signal !== "standby") return undefined;
+    const due = standbyDue(body.est_minutes, signedAck.decode(JSON.parse(row.ack)).fields.time);
+    return due === undefined ? undefined : { by, position: row.position, due };
+  }
+
+  // A promise is open while it's its author's latest word. A follow-up still on its way to the server has no position
+  // yet, so it counts as following up. If it's refused it leaves the chain, and the promise before it is open again.
+  #openStandbys(agent: AgentContext, local: SessionRow): OpenStandby[] {
+    if (local.state !== "active") return [];
+    const own = this.#standbyIn(this.#store.lastOwnEntry(agent.signer.id, local.session_id), "you", local);
+    const peer = this.#standbyIn(this.#store.lastPeerEntry(agent.signer.id, local.session_id), "other_side", local);
+    return [own, peer].filter((standby) => standby !== undefined);
+  }
+
+  #standbyView(agent: AgentContext, local: SessionRow): unknown[] {
+    const now = Date.now();
+    return this.#openStandbys(agent, local).map((s) => ({ by: s.by, position: s.position, due_at: new Date(s.due).toISOString(), overdue: s.due <= now }));
+  }
+
+  // One timer, set only while a promise is open. Every wait ends at the due time or the limit, and then reads the clock.
+  #armStandbyCheck(due: number): void {
+    if (this.#standbyCheck && due >= this.#standbyCheckAt) return;
+    clearTimeout(this.#standbyCheck);
+    const now = Date.now();
+    this.#standbyCheckAt = Math.min(due, now + STANDBY_CHECK_MAX_MS);
+    this.#standbyCheck = setTimeout(() => this.#checkStandbys(), Math.max(0, this.#standbyCheckAt - now));
+  }
+
+  // Your own promise is settled by what's on this disk, so it can be told right now, even with no server.
+  // The other side's may have been kept on the server, unread, so it's left for a catch-up to confirm.
+  #checkStandbys(): void {
+    this.#standbyCheck = undefined;
+    const now = Date.now();
+    let next = Infinity;
+    for (const agent of this.#agents.values()) {
+      let confirm = false;
+      for (const local of this.#store.sessionsOf(agent.signer.id)) {
+        try {
+          for (const standby of this.#openStandbys(agent, local)) {
+            if (this.#store.standbyTold(agent.signer.id, local.session_id, standby.position)) continue;
+            if (standby.due > now) next = Math.min(next, standby.due);
+            else if (standby.by === "you") this.#tellLate(agent, local, standby);
+            else confirm = true;
+          }
+        } catch (err: unknown) {
+          logEvent("standby.check_failed", { agent: agent.hex, session: toHex(local.session_id), message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      // Offline, the catch-up comes with the reconnect. A failed one comes round again with the position check.
+      if (confirm && agent.online) void this.#catchUpAgent(agent);
+    }
+    if (next !== Infinity) this.#armStandbyCheck(next);
+  }
+
+  // The list was asked for after the promise fell due and this daemon holds all of it, so nothing kept the promise by then.
+  #tellLatePeer(agent: AgentContext, sessionId: Uint8Array, listedAt: number, tip: number): void {
+    const local = this.#store.session(agent.signer.id, sessionId);
+    if (!local || local.verified_position < tip) return;
+    for (const standby of this.#openStandbys(agent, local)) {
+      if (standby.by === "other_side" && standby.due <= listedAt) this.#tellLate(agent, local, standby);
+    }
+  }
+
+  // The mark and the notice commit together. A crash before the doorbell still leaves the notice for the next receive or wait.
+  #tellLate(agent: AgentContext, local: SessionRow, standby: OpenStandby): void {
+    const due = new Date(standby.due).toISOString();
+    const text = standby.by === "you"
+      ? `You said you'd follow up by now, in your message at position ${standby.position}, due ${due}.`
+      : `The other side said it would follow up by now, in its message at position ${standby.position}, due ${due}, and it hasn't.`;
+    const told = this.#store.transaction(() => {
+      if (this.#store.standbyTold(agent.signer.id, local.session_id, standby.position)) return false;
+      this.#store.markStandbyTold(agent.signer.id, local.session_id, standby.position);
+      this.#store.addNotice(agent.signer.id, local.session_id, text);
+      return true;
+    });
+    if (!told) return;
+    const sessionHex = toHex(local.session_id);
+    logEvent("standby.overdue", { agent: agent.hex, session: sessionHex, by: standby.by, position: standby.position });
+    this.#events.ring(agent.hex, { type: "standby_overdue", agent: agent.name, session_id: sessionHex });
   }
 
   #latestFromPeer(agent: AgentContext, local: SessionRow): number {
@@ -675,6 +794,7 @@ export class Engine {
       if (err instanceof ServerRefused) {
         // A repeat of a landed entry always returns its ack, so a refusal means this entry never landed.
         this.#store.markNotSent(row.id);
+        this.#armStandbyCheck(Date.now());
         return { status: "refused", code: err.code, message: err.message };
       }
       throw err;
@@ -748,7 +868,7 @@ export class Engine {
   async send(agentHex: string, sessionHex: string, text: string, signal: Signal, estMinutes: number | undefined, notice: boolean): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
-    if (signal === "standby" && !(typeof estMinutes === "number" && estMinutes > 0)) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
+    if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
@@ -1095,6 +1215,7 @@ export class Engine {
         own_closed: s.own_closed === 1,
         peer_closed: s.peer_closed === 1,
         fault: s.fault,
+        standbys: this.#standbyView(agent, s),
       })),
     };
   }
@@ -1169,6 +1290,7 @@ export class Engine {
           own_closed: s.own_closed === 1,
           peer_closed: s.peer_closed === 1,
           fault: s.fault,
+          standbys: this.#standbyView(agent, s),
         })),
       })),
     };
