@@ -81,6 +81,16 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   // over, from standard input, with a text that starts with dashes.
   assert.deepEqual(ok(["send", session, "-", "--over", "--agent", "Gail"], "--hello from a pipe"), { sent: true, position: 1 });
 
+  // The inbox says who wrote, with no text, and looking doesn't count as reading.
+  await until("the message to reach Hugo", () => ((ok(["inbox", "--agent", "Hugo"]) as { waiting: unknown[] }).waiting.length === 1));
+  const inbox = ok(["inbox", "--agent", "Hugo"]) as { waiting: { from_id: string; unread: number }[] };
+  assert.deepEqual(inbox.waiting.map((w) => [w.from_id, w.unread]), [[gail["agent_id"], 1]]);
+  assert.doesNotMatch(JSON.stringify(inbox), /hello from a pipe/);
+  const peek = ok(["transcript", session, "--agent", "Hugo"]) as { entries: { text: string }[]; read_position: number };
+  assert.deepEqual([peek.entries.map((e) => e.text), peek.read_position], [["--hello from a pipe"], 0], "a transcript doesn't count as reading");
+  assert.equal((ok(["sessions", "--agent", "Hugo"]) as { sessions: { unread: number }[] }).sessions[0]?.unread, 1);
+  assert.deepEqual((ok(["agents"]) as { agents: { name: string; online: boolean }[] }).agents.map((a) => [a.name, a.online]), [["Gail", true], ["Hugo", true]]);
+
   // wait is how an agent with no doorbell learns something arrived.
   const woke = ok(["wait", "--agent", "Hugo", "--timeout-seconds", "20"]);
   assert.equal(woke["event"], "unread");
@@ -121,6 +131,21 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
 
   const reportG = ok(["verify-session", session, "--agent", "Gail"]);
   const reportH = ok(["verify-session", session, "--agent", "Hugo"]);
+
+  // After closing, the whole conversation can still be read, both sides of it, with the same order on each side.
+  const fullG = ok(["transcript", session, "--agent", "Gail"]) as { state: string; entries: { position: number; own: boolean; text?: string; signal?: string; closed_their_side?: boolean }[] };
+  const fullH = ok(["transcript", session, "--agent", "Hugo"]) as typeof fullG;
+  assert.equal(fullG.state, "closed");
+  assert.deepEqual(fullG.entries.map((e) => [e.position, e.text, e.signal]).slice(0, 4), [
+    [1, "--hello from a pipe", "over"],
+    [2, "looking into it", "standby"],
+    [3, "still with you", "over"],
+    [4, "that's all from me", "wrap"],
+  ]);
+  assert.deepEqual(fullG.entries.map((e) => e.own), fullH.entries.map((e) => !e.own), "each side knows which are its own");
+  assert.equal(fullG.entries.filter((e) => e.closed_their_side).length, 2);
+  assert.deepEqual((ok(["sessions", "--agent", "Gail"]) as { sessions: unknown[] }).sessions, [], "closed sessions are hidden by default");
+  assert.equal((ok(["sessions", "--all", "--agent", "Gail"]) as { sessions: unknown[] }).sessions.length, 1);
   assert.deepEqual([reportG["ok"], reportG["position"]], [true, 6]);
   assert.equal(reportG["root"], reportH["root"]);
   assert.doesNotMatch(readFileSync(join(home, "daemon.log"), "utf8"), /still with you/);

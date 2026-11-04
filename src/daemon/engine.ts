@@ -908,6 +908,61 @@ export class Engine {
     };
   }
 
+  // These four only read. None moves a read position, so looking never counts as reading.
+  agents(): unknown {
+    return {
+      agents: [...this.#agents.values()].map((agent) => ({ name: agent.name, agent_id: agent.hex, registered: agent.registered, online: agent.online, unread: this.unreadCount(agent.hex) })),
+    };
+  }
+
+  sessions(agentHex: string, includeClosed: boolean): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const rows = this.#store.sessionsOf(agent.signer.id).filter((s) => includeClosed || s.state !== "closed");
+    return {
+      sessions: rows.map((s) => ({
+        session_id: toHex(s.session_id),
+        with: s.counterparty_name,
+        with_id: toHex(s.counterparty_id),
+        state: s.state,
+        position: s.verified_position,
+        unread: this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length,
+        own_closed: s.own_closed === 1,
+        peer_closed: s.peer_closed === 1,
+        fault: s.fault,
+      })),
+    };
+  }
+
+  // Who has written and how much, with none of the text.
+  inbox(agentHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const waiting = this.#store.sessionsOf(agent.signer.id).flatMap((s) => {
+      const unread = this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length;
+      return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread }] : [];
+    });
+    return { waiting, notices: this.#store.notices(agent.signer.id).length };
+  }
+
+  // Everything this agent holds of a conversation, its own messages included, in the order the server set.
+  transcript(agentHex: string, sessionHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    const entries = this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => {
+      const body = parseBody(row.body);
+      const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
+      return {
+        position: row.position,
+        from: row.own === 1 ? agent.name : local.counterparty_name,
+        from_id: toHex(row.own === 1 ? agent.signer.id : local.counterparty_id),
+        own: row.own === 1,
+        ...(closing ? { closed_their_side: true } : { text: body?.text ?? null, signal: body?.signal ?? null }),
+        ...(body?.est_minutes ? { est_minutes: body.est_minutes } : {}),
+        ...(!closing && !body ? { unreadable: true } : {}),
+      };
+    });
+    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries };
+  }
+
   unreadCount(agentHex: string): number {
     const agent = this.#requireAgent(agentHex);
     const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length, 0);

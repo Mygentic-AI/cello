@@ -190,7 +190,15 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "close_session":
       return engine.close(acting(params), text(params, "session_id"));
-    // Reading a record acts as nobody, so it needs no hold.
+    // Reading a record acts as nobody, so these need no hold.
+    case "agents":
+      return engine.agents();
+    case "sessions":
+      return engine.sessions(engine.resolveAgent(text(params, "agent")), params["all"] === true);
+    case "inbox":
+      return engine.inbox(engine.resolveAgent(text(params, "agent")));
+    case "transcript":
+      return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "shutdown":
