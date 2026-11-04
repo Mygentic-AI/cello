@@ -305,3 +305,62 @@ export function sealKeyBindingBytes(b: SealKeyBindingFields): Uint8Array {
 export function structureHash(bytes: Uint8Array): Uint8Array {
   return sha256(bytes);
 }
+
+// ---- An agent's status ----
+
+export const AgentStatus = { active: 1, suspended: 2, retired: 3 } as const;
+export type AgentStatus = (typeof AgentStatus)[keyof typeof AgentStatus];
+
+export const StatusReason = { none: 0, owner_request: 1, lost_machine: 2, compromise: 3 } as const;
+export type StatusReason = (typeof StatusReason)[keyof typeof StatusReason];
+
+// Who signed. agent: the identity's own keys. portal: a key a server is configured to trust. server: that server's operator, good on that server only.
+export const StatusIssuer = { agent: 1, portal: 2, server: 3 } as const;
+export type StatusIssuer = (typeof StatusIssuer)[keyof typeof StatusIssuer];
+
+// Names no server, so the same bytes are good on any server that trusts the issuer.
+export interface StatusStatementFields {
+  agentId: Uint8Array;
+  status: AgentStatus;
+  reason: StatusReason;
+  issuer: StatusIssuer;
+  issuerId: Uint8Array;
+  issuedAt: number;
+}
+
+export function statusStatementBytes(s: StatusStatementFields): Uint8Array {
+  if (!Object.values(AgentStatus).includes(s.status)) throw new RangeError(`unknown agent status: ${s.status}`);
+  if (!Object.values(StatusReason).includes(s.reason)) throw new RangeError(`unknown status reason: ${s.reason}`);
+  if (!Object.values(StatusIssuer).includes(s.issuer)) throw new RangeError(`unknown status issuer: ${s.issuer}`);
+  return encodeFields([
+    VERSION,
+    exact("agent id", s.agentId, HASH_BYTES),
+    u8(s.status),
+    u8(s.reason),
+    u8(s.issuer),
+    exact("issuer id", s.issuerId, HASH_BYTES),
+    u64(s.issuedAt),
+  ]);
+}
+
+// The server saying when it took a statement. Each links to the one before for that agent, so a reader sees the whole history in order.
+export interface StatusWitnessFields {
+  serverId: Uint8Array;
+  agentId: Uint8Array;
+  seq: number;
+  prevHash: Uint8Array;
+  statementHash: Uint8Array;
+  time: number;
+}
+
+export function statusWitnessBytes(w: StatusWitnessFields): Uint8Array {
+  return encodeFields([
+    VERSION,
+    exact("server id", w.serverId, HASH_BYTES),
+    exact("agent id", w.agentId, HASH_BYTES),
+    u64(w.seq),
+    exact("previous hash", w.prevHash, HASH_BYTES),
+    exact("statement hash", w.statementHash, HASH_BYTES),
+    u64(w.time),
+  ]);
+}
