@@ -1218,7 +1218,8 @@ export class Engine {
             own: 0,
             entry: JSON.stringify(item.entry),
             ack: JSON.stringify(item.ack),
-            body: body as Uint8Array,
+            // Nobody will read it, and the signed hashes are what the chain and a seal rest on, so past the limit a flood costs no disk for its words.
+            body: counted?.withheld ? new Uint8Array(0) : (body as Uint8Array),
           });
           if (counted?.withheld) this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: BYTE_LIMIT_REASON, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies VerdictDetail));
         }
@@ -1250,7 +1251,7 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
-    const written = parseBody(body as Uint8Array);
+    const written = counted?.withheld ? null : parseBody(body as Uint8Array);
     const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, witnessed.ack.time) : undefined;
     if (due !== undefined) this.#armStandbyCheck(due);
     return true;
@@ -1569,7 +1570,7 @@ export class Engine {
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text, { ...params, session_id: sessionHex });
+    const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
@@ -1803,7 +1804,7 @@ export class Engine {
         position: row.position as number,
         entry: JSON.parse(row.entry) as WireSigned,
         ack: row.ack ? JSON.parse(row.ack) as WireSigned : null,
-        body: row.body,
+        body: row.withheld === 1 ? null : row.body,
       })),
       seals: this.#store.seals(agent.signer.id, local.session_id).map((row) => JSON.parse(row.record) as unknown),
       salt: local.salt,

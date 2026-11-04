@@ -333,7 +333,7 @@ test("the salt: an exact length, and guesses about a hidden body need its random
   const guess = (n: string): Uint8Array => saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "I offer $1M", signal: "over", est_minutes: null })));
   assert.notDeepEqual(guess(toB64(new Uint8Array(16))), target);
   // With the random value the same guess does match, which is what shows this test can fail.
-  assert.deepEqual(guess((JSON.parse(new TextDecoder().decode(hidden.body)) as { n: string }).n), target);
+  assert.deepEqual(guess((JSON.parse(new TextDecoder().decode(hidden.body as Uint8Array)) as { n: string }).n), target);
 });
 
 test("a hidden body with no random value can be guessed at, so it's refused until it's shown", async () => {

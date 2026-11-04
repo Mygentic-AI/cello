@@ -264,7 +264,8 @@ export interface HeldEntry {
   position: number;
   entry: WireSigned;
   ack: WireSigned | null;
-  body: Uint8Array;
+  // Null when this party never kept the words, because they arrived past its byte limit. The signed entry and ack are still here.
+  body: Uint8Array | null;
 }
 
 export interface TranscriptRequest {
@@ -337,9 +338,13 @@ export async function buildTranscript(request: TranscriptRequest): Promise<Trans
 
   const shown = new Set<number>();
   for (const [first, last] of ranges ?? [[1, n]] as const) for (let p = first; p <= last; p++) shown.add(p);
+  const notKept = covered.filter((row) => row.body === null).map((row) => row.position);
+  const askedNotKept = ranges ? notKept.filter((p) => shown.has(p)) : [];
+  if (askedNotKept.length > 0) return refuse("body_not_kept", `Positions ${listPositions(askedNotKept)} arrived past this conversation's byte limit, so their words were never kept and can't be shown. Nothing was written.`);
 
   // The salt goes in the file, and it's the same one for the whole session. Only each body's random value still protects a hidden one.
-  const guessable = covered.filter((row) => !shown.has(row.position) && !readBody(row.body)?.hasRandomValue).map((row) => row.position);
+  // Words not kept can't be checked for one. They're the sender's own, sent past a limit, and nobody here read them.
+  const guessable = covered.filter((row) => row.body !== null && !shown.has(row.position) && !readBody(row.body)?.hasRandomValue).map((row) => row.position);
   if (guessable.length > 0) {
     return refuse("hidden_body_guessable", `Positions ${listPositions(guessable)} have no random value in them, because the other party's software didn't add one. With the salt in this file, anyone could test guesses about what they say. Nothing was written. Reveal those positions too if you're content to show them.`);
   }
@@ -349,7 +354,7 @@ export async function buildTranscript(request: TranscriptRequest): Promise<Trans
     seal,
     entries: covered.map((row) => ({ entry: row.entry, ack: row.ack as WireSigned })),
     salt: toB64(salt),
-    revealed: covered.filter((row) => shown.has(row.position)).map((row) => ({ position: row.position, body: toB64(row.body) })),
+    revealed: covered.flatMap((row) => (row.body !== null && shown.has(row.position) ? [{ position: row.position, body: toB64(row.body) }] : [])),
   };
   const cert = decodeSealRecord(seal).certificate.fields;
   const check = await checkTranscript(file, cert.sealKeyId);
@@ -366,6 +371,7 @@ export async function buildTranscript(request: TranscriptRequest): Promise<Trans
       received_through: cert.receivedThrough,
       revealed_positions: revealedPositions,
       hidden_positions: check.report["hidden_positions"],
+      not_kept_positions: notKept,
       warning: `This file holds the plaintext of positions ${listPositions(revealedPositions)}. Anyone you give it to can read them. It also holds the session's salt.`,
     },
   };
