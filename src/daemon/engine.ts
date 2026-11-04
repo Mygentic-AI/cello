@@ -49,6 +49,7 @@ import {
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
+import { formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
@@ -153,6 +154,22 @@ export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
 }
 
+// A way to a server. The home route is the server this daemon logged in to, where its agents live and can be called.
+// Any other is a server hosting a conversation one of these agents started. Only a caller's own act opens one:
+// nothing arriving from outside can make this daemon dial anywhere, so a stranger can't learn where it is.
+interface Route {
+  url: string;
+  home: boolean;
+  link: ServerLink;
+  server: ConnectedServer | undefined;
+  // On a visit: the agents that have a conversation here, and those that have proved their keys on this connection.
+  wanted: Set<string>;
+  online: Set<string>;
+  visits: Map<string, Promise<void>>;
+  // Calls being set up, which have no session row yet to keep this route open.
+  opening: number;
+}
+
 function notSealedYet(reason: string): unknown {
   return { sealed: false, status: "not_sealed_yet", message: `This isn't sealed yet: ${reason}. The request is saved and retried by itself, and you'll get a notice.` };
 }
@@ -162,6 +179,8 @@ export class Engine {
   readonly #events: EngineEvents;
   readonly #link: ServerLink;
   readonly #url: string;
+  readonly #home: Route;
+  readonly #visiting = new Map<string, Route>();
   readonly #agents = new Map<string, AgentContext>();
   readonly #lanes = new Map<string, Promise<unknown>>();
   readonly #verifiers = new Map<string, ChainVerifier>();
@@ -176,7 +195,7 @@ export class Engine {
     this.#events = events;
     this.#url = url;
     this.#link = new ServerLink(url, {
-      checkIdentity: (identity) => this.#checkServerIdentity(identity),
+      checkIdentity: (identity) => this.#checkServerIdentity(identity, url),
       connected: async (server) => {
         this.#server = server;
         for (const agent of this.#agents.values()) void this.#bringOnline(agent, server);
@@ -185,8 +204,9 @@ export class Engine {
         this.#server = undefined;
         for (const agent of this.#agents.values()) agent.online = false;
       },
-      push: (frame) => this.#onPush(frame),
+      push: (frame) => this.#onPush(frame, this.#home),
     });
+    this.#home = { url, home: true, link: this.#link, server: undefined, wanted: new Set(), online: new Set(), visits: new Map(), opening: 0 };
   }
 
   async start(): Promise<void> {
@@ -199,9 +219,16 @@ export class Engine {
     }
     this.#checkStandbys();
     this.#link.start();
+    // Back to every conversation hosted elsewhere, because a restart doesn't end one.
+    for (const agent of this.#agents.values()) {
+      for (const local of this.#store.sessionsOf(agent.signer.id)) {
+        if (local.server_url && !this.#visitFinished(agent, local)) this.#routeFor(agent, local);
+      }
+    }
     // Pushes are hints. This catches a lost one, so it costs seconds rather than a conversation.
     this.#positionCheck = setInterval(() => {
-      for (const agent of this.#agents.values()) if (agent.online) void this.#catchUpAgent(agent);
+      this.#catchUpEverywhere();
+      this.#retireIdleVisits();
     }, POSITION_CHECK_MS);
   }
 
@@ -209,26 +236,184 @@ export class Engine {
     clearInterval(this.#positionCheck);
     clearTimeout(this.#standbyCheck);
     this.#link.stop();
+    for (const route of this.#visiting.values()) route.link.stop();
   }
 
-  #checkServerIdentity(identity: PublicIdentity): string | null {
+  // ---- Servers other than this daemon's own ----
+
+  #pinKey(key: string, url: string): string {
+    return url === this.#url ? key : `${key}:${url}`;
+  }
+
+  #urlOf(local: SessionRow): string {
+    return local.server_url ?? this.#url;
+  }
+
+  #visitRoute(url: string): Route {
+    const existing = this.#visiting.get(url);
+    if (existing) return existing;
+    const route: Route = {
+      url,
+      home: false,
+      server: undefined,
+      wanted: new Set(),
+      online: new Set(),
+      visits: new Map(),
+      opening: 0,
+      link: new ServerLink(url, {
+        checkIdentity: (identity) => this.#checkServerIdentity(identity, url),
+        connected: async (server) => {
+          route.server = server;
+          for (const hex of route.wanted) this.#wantVisit(route, this.#requireAgent(hex));
+        },
+        disconnected: () => {
+          route.server = undefined;
+          route.online.clear();
+        },
+        push: (frame) => this.#onPush(frame, route),
+      }),
+    };
+    this.#visiting.set(url, route);
+    route.link.start();
+    return route;
+  }
+
+  #routeFor(agent: AgentContext, local: SessionRow): Route {
+    if (!local.server_url) return this.#home;
+    const route = this.#visitRoute(local.server_url);
+    this.#wantVisit(route, agent);
+    return route;
+  }
+
+  #wantVisit(route: Route, agent: AgentContext): void {
+    route.wanted.add(agent.hex);
+    if (route.server && !route.online.has(agent.hex)) this.#background("visit", this.#visit(route, agent));
+  }
+
+  #visit(route: Route, agent: AgentContext): Promise<void> {
+    const running = route.visits.get(agent.hex);
+    if (running) return running;
+    const started = this.#visitOnce(route, agent).finally(() => route.visits.delete(agent.hex));
+    route.visits.set(agent.hex, started);
+    return started;
+  }
+
+  // Keys alone are enough: the other server needs no enrolment and doesn't ask anyone about this agent.
+  async #visitOnce(route: Route, agent: AgentContext): Promise<void> {
+    const server = route.server;
+    while (server && route.server === server) {
+      try {
+        const identity = agent.signer.publicIdentity;
+        const clientNonce = new Uint8Array(randomBytes(32));
+        await route.link.call("visit", {
+          identity: identityCodec.encode(identity),
+          name: agent.name,
+          clientNonce: toB64(clientNonce),
+          nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity, name: agent.name }))),
+          signature: signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
+        });
+        route.online.add(agent.hex);
+        logEvent("agent.visiting", { agent: agent.hex, server: toHex(server.id) });
+        await this.#catchUpAgent(agent, route);
+        return;
+      } catch (err: unknown) {
+        // After an unclean drop, the server holds the old connection until its heartbeat ends it.
+        if (!(err instanceof ServerRefused) || err.code !== "agent_already_connected") throw err;
+        await new Promise((resolve) => setTimeout(resolve, AUTH_RETRY_MS));
+      }
+    }
+  }
+
+  #isOnline(agent: AgentContext, route: Route): boolean {
+    return route.home ? agent.online : route.online.has(agent.hex);
+  }
+
+  #doneOpening(route: Route): void {
+    route.opening--;
+    this.#retireIdleVisits();
+  }
+
+  // The way to the server a new call goes to, ready to use, or a failure naming why not.
+  // The caller of this holds the route open, and lets go with #doneOpening.
+  async #reach(agent: AgentContext, url: string | undefined): Promise<Route> {
+    const home = (): Route => {
+      this.#home.opening++;
+      return this.#home;
+    };
+    if (!url || url === serverUrlFrom(this.#url)) return home();
+    const route = this.#visitRoute(url);
+    route.opening++;
+    route.wanted.add(agent.hex);
+    try {
+      const deadline = Date.now() + INITIATE_WAIT_MS;
+      while (!route.server && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!route.server) throw new LocalError("server_unreachable", `can't reach ${url}: ${route.link.problem ?? "it didn't answer"}`);
+      // This daemon's own server under another address. It's where these agents already live.
+      if (this.#store.getConfig(CONFIG_SERVER_IDENTITY) && equalBytes(route.server.id, this.#serverId())) {
+        route.wanted.delete(agent.hex);
+        this.#doneOpening(route);
+        return home();
+      }
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new LocalError("server_unreachable", `${url} didn't take this agent's proof of identity in time`)), INITIATE_WAIT_MS); });
+      try {
+        await Promise.race([this.#call(() => this.#visit(route, agent)), late]);
+      } finally {
+        clearTimeout(timer);
+      }
+      return route;
+    } catch (err) {
+      this.#doneOpening(route);
+      throw err;
+    }
+  }
+
+  #visitFinished(agent: AgentContext, local: SessionRow): boolean {
+    if (local.state === "offered") return signedOffer.decode(JSON.parse(local.offer)).fields.expiresAt <= Date.now() && this.#store.pendingEntries(agent.signer.id, local.session_id).length === 0;
+    return local.state === "closed"
+      && this.#store.sealWants(agent.signer.id, local.session_id).length === 0
+      && this.#store.pendingEntries(agent.signer.id, local.session_id).length === 0
+      && local.delivered_through >= this.#latestFromPeer(agent, local);
+  }
+
+  // A visit is for its conversations, so the connection goes once they have nothing left to do. A later seal reopens it.
+  #retireIdleVisits(): void {
+    for (const route of this.#visiting.values()) {
+      if (route.opening > 0) continue;
+      const busy = [...this.#agents.values()].some((agent) => this.#store.sessionsOf(agent.signer.id).some((local) => local.server_url === route.url && !this.#visitFinished(agent, local)));
+      if (busy) continue;
+      route.link.stop();
+      this.#visiting.delete(route.url);
+      logEvent("server.visit_ended", { server: route.server ? toHex(route.server.id) : null });
+    }
+  }
+
+  #catchUpEverywhere(only?: AgentContext): void {
+    for (const agent of this.#agents.values()) {
+      if (only && agent !== only) continue;
+      if (agent.online) void this.#catchUpAgent(agent, this.#home);
+      for (const route of this.#visiting.values()) if (route.online.has(agent.hex)) void this.#catchUpAgent(agent, route);
+    }
+  }
+
+  #checkServerIdentity(identity: PublicIdentity, url: string): string | null {
     const encoded = JSON.stringify(identityCodec.encode(identity));
-    const pinned = this.#store.getConfig(CONFIG_SERVER_IDENTITY);
+    const pinned = this.#store.getConfig(this.#pinKey(CONFIG_SERVER_IDENTITY, url));
     if (!pinned) {
-      this.#store.setConfig(CONFIG_SERVER_IDENTITY, encoded);
+      this.#store.setConfig(this.#pinKey(CONFIG_SERVER_IDENTITY, url), encoded);
       return null;
     }
     return pinned === encoded ? null : "this server's identity keys have changed since first contact, so its signatures can't be trusted";
   }
 
-  #serverIdentity(): PublicIdentity {
-    const pinned = this.#store.getConfig(CONFIG_SERVER_IDENTITY);
-    if (!pinned) throw new LocalError("server_unreachable", "this daemon hasn't reached its server yet");
+  #serverIdentity(url: string = this.#url): PublicIdentity {
+    const pinned = this.#store.getConfig(this.#pinKey(CONFIG_SERVER_IDENTITY, url));
+    if (!pinned) throw new LocalError("server_unreachable", "this daemon hasn't reached that server yet");
     return identityCodec.decode(JSON.parse(pinned), "pinned server identity");
   }
 
-  #serverId(): Uint8Array {
-    return identityId(this.#serverIdentity());
+  #serverId(url: string = this.#url): Uint8Array {
+    return identityId(this.#serverIdentity(url));
   }
 
   // Runs work for one session one at a time, so order on disk matches order of arrival.
@@ -283,25 +468,25 @@ export class Engine {
     logEvent("agent.registered", { agent: agent.hex });
   }
 
-  async #catchUpAgent(agent: AgentContext): Promise<void> {
+  async #catchUpAgent(agent: AgentContext, route: Route = this.#home): Promise<void> {
     try {
       const listedAt = Date.now();
-      const listed = await this.#link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
+      const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
       const seen = new Set<string>();
       for (const wire of listed.sessions) {
         const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
         const sessionHex = toHex(sessionId);
         seen.add(sessionHex);
         this.#background("session update", this.#lane(agent.hex, sessionHex, async () => {
-          await this.#onSessionWire(agent, wire);
+          await this.#onSessionWire(agent, wire, route);
           this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
         }));
       }
       // An offer written to disk just before a crash may never have reached the server.
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
         const sessionHex = toHex(row.session_id);
-        if (seen.has(sessionHex) || row.state !== "offered") continue;
-        this.#background("offer resend", this.#link.call("session.offer", { agent: toB64(agent.signer.id), offer: JSON.parse(row.offer) }));
+        if (seen.has(sessionHex) || row.state !== "offered" || this.#urlOf(row) !== route.url) continue;
+        this.#background("offer resend", route.link.call("session.offer", { agent: toB64(agent.signer.id), offer: JSON.parse(row.offer) }));
       }
     } catch (err: unknown) {
       logEvent("agent.catch_up_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) });
@@ -309,19 +494,19 @@ export class Engine {
   }
 
   // Frames come from outside, and one bad frame mustn't take down every agent on this daemon.
-  #onPush(frame: PushFrame): void {
+  #onPush(frame: PushFrame, route: Route): void {
     try {
       const agent = this.#agents.get(frame.agent);
       if (!agent) return;
       if (frame.push === "session") {
         const wire = frame.data as SessionOnWire;
         const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
-        this.#background("session push", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire)));
+        this.#background("session push", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire, route)));
         return;
       }
       const item = frame.data as WitnessedOnWire;
       const sessionHex = toHex(signedEntry.decode(item.entry).fields.sessionId);
-      this.#background("entry push", this.#lane(agent.hex, sessionHex, () => this.#onEntryPush(agent, item)));
+      this.#background("entry push", this.#lane(agent.hex, sessionHex, () => this.#onEntryPush(agent, item, route)));
     } catch (err: unknown) {
       logEvent("server.bad_push", { kind: frame.push, message: err instanceof Error ? err.message : String(err) });
     }
@@ -329,7 +514,7 @@ export class Engine {
 
   // ---- Session setup ----
 
-  async #onSessionWire(agent: AgentContext, wire: SessionOnWire): Promise<void> {
+  async #onSessionWire(agent: AgentContext, wire: SessionOnWire, route: Route): Promise<void> {
     const offer = signedOffer.decode(wire.offer, "offer");
     const sessionId = offer.fields.sessionId;
     let local = this.#store.session(agent.signer.id, sessionId);
@@ -338,7 +523,17 @@ export class Engine {
         logEvent("session.unknown_as_caller", { agent: agent.hex, session: toHex(sessionId) });
         return;
       }
+      // An agent is called only at its own server. Any other server claiming a call for it is making it up.
+      if (!route.home) {
+        logEvent("session.offer_from_wrong_server", { agent: agent.hex, session: toHex(sessionId) });
+        return;
+      }
       await this.#acceptOffer(agent, wire);
+      return;
+    }
+    // One server can't speak for a conversation another one hosts.
+    if (this.#urlOf(local) !== route.url) {
+      logEvent("session.frame_from_wrong_server", { agent: agent.hex, session: toHex(sessionId) });
       return;
     }
     if (local.role === "caller") {
@@ -450,7 +645,7 @@ export class Engine {
   async #finishAsCaller(agent: AgentContext, local: SessionRow, wireAssignment: WireSigned | null): Promise<void> {
     let assignment = wireAssignment;
     if (!assignment) {
-      const result = await this.#link.call("session.confirm", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id), confirm: JSON.parse(local.confirm as string) }) as { assignment: WireSigned };
+      const result = await this.#routeFor(agent, local).link.call("session.confirm", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id), confirm: JSON.parse(local.confirm as string) }) as { assignment: WireSigned };
       assignment = result.assignment;
     }
     await this.#activate(agent, local, JSON.parse(local.confirm as string) as WireSigned, assignment, local.salt as Uint8Array);
@@ -470,14 +665,14 @@ export class Engine {
   async #activate(agent: AgentContext, local: SessionRow, wireConfirm: WireSigned, wireAssignment: WireSigned, salt: Uint8Array): Promise<void> {
     const assignment = signedAssignment.decode(wireAssignment, "assignment");
     const expected: Omit<AssignmentFields, "time"> = {
-      serverId: this.#serverId(),
+      serverId: this.#serverId(this.#urlOf(local)),
       sessionId: local.session_id,
       callerId: local.role === "caller" ? agent.signer.id : local.counterparty_id,
       calleeId: local.role === "caller" ? local.counterparty_id : agent.signer.id,
       confirmHash: structureHash(confirmBytes(signedConfirm.decode(wireConfirm).fields)),
     };
     const matches = (Object.keys(expected) as (keyof typeof expected)[]).every((key) => equalBytes(assignment.fields[key], expected[key]));
-    if (!matches || !(await verifySignature(this.#serverIdentity(), "cello-v2-session-assignment", assignmentBytes(assignment.fields), assignment.signature))) {
+    if (!matches || !(await verifySignature(this.#serverIdentity(this.#urlOf(local)), "cello-v2-session-assignment", assignmentBytes(assignment.fields), assignment.signature))) {
       throw new Error("the server's assignment doesn't match this session's setup");
     }
     this.#store.updateSession(agent.signer.id, local.session_id, {
@@ -506,7 +701,7 @@ export class Engine {
     if (cached) return cached;
     const verifier = new ChainVerifier({
       sessionId: local.session_id,
-      server: this.#serverIdentity(),
+      server: this.#serverIdentity(this.#urlOf(local)),
       participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)],
     });
     for (const row of this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position)) {
@@ -516,10 +711,10 @@ export class Engine {
     return verifier;
   }
 
-  async #onEntryPush(agent: AgentContext, item: WitnessedOnWire): Promise<void> {
+  async #onEntryPush(agent: AgentContext, item: WitnessedOnWire, route: Route): Promise<void> {
     const sessionId = signedEntry.decode(item.entry).fields.sessionId;
     const local = this.#store.session(agent.signer.id, sessionId);
-    if (!local || (local.state !== "active" && local.state !== "closed")) return;
+    if (!local || (local.state !== "active" && local.state !== "closed") || this.#urlOf(local) !== route.url) return;
     const position = signedAck.decode(item.ack).fields.position;
     const verifier = this.#verifier(agent, local);
     if (position === verifier.position + 1 && (await this.#ingest(agent, local, item))) {
@@ -536,7 +731,7 @@ export class Engine {
     let local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
     for (;;) {
       const before = this.#verifier(agent, local).position;
-      const result = await this.#link.call("entry.fetch", { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: before }) as { items: WitnessedOnWire[]; tip: number };
+      const result = await this.#routeFor(agent, local).link.call("entry.fetch", { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: before }) as { items: WitnessedOnWire[]; tip: number };
       for (const item of result.items) {
         local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
         if (!(await this.#ingest(agent, local, item))) return;
@@ -733,7 +928,7 @@ export class Engine {
         }
       }
       // Offline, the catch-up comes with the reconnect. A failed one comes round again with the position check.
-      if (confirm && agent.online) void this.#catchUpAgent(agent);
+      if (confirm) this.#catchUpEverywhere(agent);
     }
     if (next !== Infinity) this.#armStandbyCheck(next);
   }
@@ -776,16 +971,19 @@ export class Engine {
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
     const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
-    await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
+    await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
     this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through });
   }
 
   // ---- Sending ----
 
   async #attempt(agent: AgentContext, local: SessionRow, row: EntryRow): Promise<AttemptOutcome> {
+    const route = this.#routeFor(agent, local);
+    // Connected but not yet proved would be refused, and a refusal means this entry never goes.
+    if (!this.#isOnline(agent, route)) return { status: "pending" };
     let result: { ack: WireSigned };
     try {
-      result = await this.#link.call("entry.append", {
+      result = await route.link.call("entry.append", {
         agent: toB64(agent.signer.id),
         entry: JSON.parse(row.entry),
         ciphertext: toB64(row.ciphertext as Uint8Array),
@@ -946,17 +1144,18 @@ export class Engine {
       this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
       throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
     }
-    if (!agent.online) return notSealedYet(this.#link.problem ?? "this agent isn't online yet");
+    const route = this.#routeFor(agent, local);
+    if (!this.#isOnline(agent, route)) return notSealedYet(route.link.problem ?? "this agent isn't online yet");
     const root = this.#verifier(agent, local).rootAt(through);
     if (!root) throw new Error(`no root is held for position ${through}`);
-    const fields = { serverId: this.#serverId(), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
+    const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
     const signature = await agent.signer.sign("cello-v2-seal-request", sealRequestBytes(fields));
     let answer: { record: SealRecordOnWire; logProof: string[] | null };
     try {
-      answer = await this.#link.call("seal.request", {
+      answer = await route.link.call("seal.request", {
         agent: toB64(agent.signer.id),
         request: signedSealRequest.encode({ fields, signature }),
-        knownLogSize: this.#knownSealLogHead()?.size ?? 0,
+        knownLogSize: this.#knownSealLogHead(route.url)?.size ?? 0,
       }) as typeof answer;
     } catch (err: unknown) {
       if (err instanceof ServerUnreachable) return notSealedYet(err.message);
@@ -979,15 +1178,15 @@ export class Engine {
     this.#store.transaction(() => {
       this.#store.addSeal(agent.signer.id, sealId(record.certificate.fields), sessionId, JSON.stringify(answer.record));
       this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
-      this.#store.setConfig(CONFIG_SEAL_KEY, toHex(head.sealKeyId));
-      if (head.size > (this.#knownSealLogHead()?.size ?? 0)) this.#store.setConfig(CONFIG_SEAL_LOG_HEAD, JSON.stringify({ size: head.size, root: toB64(head.root) }));
+      this.#store.setConfig(this.#pinKey(CONFIG_SEAL_KEY, route.url), toHex(head.sealKeyId));
+      if (head.size > (this.#knownSealLogHead(route.url)?.size ?? 0)) this.#store.setConfig(this.#pinKey(CONFIG_SEAL_LOG_HEAD, route.url), JSON.stringify({ size: head.size, root: toB64(head.root) }));
     });
     logEvent("seal.stored", { agent: agent.hex, session: toHex(sessionId), through });
     return { sealed: true, ...sealSummary(record), statement: describeSeal(record) };
   }
 
-  #knownSealLogHead(): { size: number; root: Uint8Array } | undefined {
-    const stored = this.#store.getConfig(CONFIG_SEAL_LOG_HEAD);
+  #knownSealLogHead(url: string): { size: number; root: Uint8Array } | undefined {
+    const stored = this.#store.getConfig(this.#pinKey(CONFIG_SEAL_LOG_HEAD, url));
     if (!stored) return undefined;
     const parsed = JSON.parse(stored) as { size: number; root: string };
     return { size: parsed.size, root: fromB64(parsed.root, "stored seal log root") };
@@ -1001,9 +1200,10 @@ export class Engine {
     } catch (err: unknown) {
       throw new LocalError("malformed_record", `the server's seal record can't be read: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (!equalBytes(identityId(decoded.server), this.#serverId())) throw new LocalError("seal_wrong_server", "this seal names a server other than the one this daemon pinned");
+    const url = this.#urlOf(local);
+    if (!equalBytes(identityId(decoded.server), this.#serverId(url))) throw new LocalError("seal_wrong_server", "this seal names a server other than the one this daemon pinned");
     const sealKeyId = identityId(decoded.sealKey);
-    const pinned = this.#store.getConfig(CONFIG_SEAL_KEY);
+    const pinned = this.#store.getConfig(this.#pinKey(CONFIG_SEAL_KEY, url));
     if (pinned && pinned !== toHex(sealKeyId)) throw new LocalError("seal_key_changed", `this server's seal key has changed since your first seal: it was ${pinned}, and it's now ${toHex(sealKeyId)}`);
     const check = await checkSealRecord(raw, sealKeyId);
     if (!check.ok) throw new LocalError(check.fault, check.message);
@@ -1014,13 +1214,13 @@ export class Engine {
     if (cert.tip < local.verified_position || (local.state === "closed" && cert.closed !== 1)) {
       throw new LocalError("seal_misreports_session", `the certificate says ${cert.tip} positions and closed=${cert.closed}, and you hold ${local.verified_position} in a session that is ${local.state}`);
     }
-    this.#checkSealLogHistory(check.record, logProof);
+    this.#checkSealLogHistory(check.record, logProof, url);
     return check.record;
   }
 
   // Catches a log rewritten since this daemon last saw it. It can't catch two readers being shown different logs: only an outside witness can.
-  #checkSealLogHistory(record: SealRecord, logProof: string[] | null): void {
-    const known = this.#knownSealLogHead();
+  #checkSealLogHistory(record: SealRecord, logProof: string[] | null, url: string): void {
+    const known = this.#knownSealLogHead(url);
     if (!known) return;
     const head = record.log.head.fields;
     const rewritten = new LocalError("seal_log_rewritten", `this server's seal log no longer contains what it showed you when it had ${known.size} seals. Nothing was stored.`);
@@ -1105,7 +1305,7 @@ export class Engine {
     this.#agents.set(agent.hex, agent);
     if (this.#server) await this.#bringOnline(agent, this.#server);
     const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
-    return { name, agent_id: agent.hex, registered: agent.registered, online: agent.online, ...note };
+    return { name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
   }
 
   resolveAgent(nameOrId: string): string {
@@ -1121,9 +1321,26 @@ export class Engine {
 
   async initiate(agentHex: string, target: string): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
-    const targetId = parseHex(target, 32, "target");
+    let address: ReturnType<typeof parseAddress>;
+    try {
+      address = parseAddress(target);
+    } catch (err: unknown) {
+      throw new LocalError("bad_argument", err instanceof Error ? err.message : String(err));
+    }
+    const targetId = parseHex(address.id, 32, "target");
     if (equalBytes(targetId, agent.signer.id)) throw new LocalError("bad_argument", "an agent can't start a session with itself");
-    const lookup = await this.#call(() => this.#link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown; name: string };
+    const route = await this.#reach(agent, address.server);
+    try {
+      return await this.#initiateOn(agent, route, targetId);
+    } finally {
+      this.#doneOpening(route);
+    }
+  }
+
+  // The callee's server hosts, and each side connects to it directly. No server relays for another.
+  async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array): Promise<unknown> {
+    const agentHex = agent.hex;
+    const lookup = await this.#call(() => route.link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown; name: string };
     const identity = identityCodec.decode(lookup.identity, "identity");
     // The id you typed is the check: a server can't substitute other keys under it.
     if (!equalBytes(identityId(identity), targetId)) throw new LocalError("wrong_identity", "the server returned keys that don't match the id you asked for");
@@ -1132,7 +1349,7 @@ export class Engine {
     const sessionHex = toHex(sessionId);
     const own = await generateSessionEphemeral();
     const fields = {
-      serverId: this.#serverId(),
+      serverId: this.#serverId(route.url),
       sessionId,
       callerId: agent.signer.id,
       calleeId: targetId,
@@ -1155,8 +1372,9 @@ export class Engine {
         offer: JSON.stringify(offer),
         x25519_secret: own.secretKey,
         mlkem_seed: own.mlKemSeed,
+        server_url: route.home ? null : route.url,
       });
-      await this.#call(() => this.#link.call("session.offer", { agent: toB64(agent.signer.id), offer }));
+      await this.#call(() => route.link.call("session.offer", { agent: toB64(agent.signer.id), offer }));
     });
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([activated, new Promise((resolve) => { timer = setTimeout(resolve, INITIATE_WAIT_MS); })]);
@@ -1228,7 +1446,7 @@ export class Engine {
   // These four only read. None moves a read position, so looking never counts as reading.
   agents(): unknown {
     return {
-      agents: [...this.#agents.values()].map((agent) => ({ name: agent.name, agent_id: agent.hex, registered: agent.registered, online: agent.online, unread: this.unreadCount(agent.hex) })),
+      agents: [...this.#agents.values()].map((agent) => ({ name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, unread: this.unreadCount(agent.hex) })),
     };
   }
 
@@ -1240,6 +1458,7 @@ export class Engine {
         session_id: toHex(s.session_id),
         with: s.counterparty_name,
         with_id: toHex(s.counterparty_id),
+        hosted_on: this.#urlOf(s),
         state: s.state,
         position: s.verified_position,
         unread: this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position),
@@ -1297,7 +1516,7 @@ export class Engine {
       const ack = signedAck.decode(JSON.parse(row.ack as string));
       return { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };
     });
-    const report = await verifyTranscript({ sessionId: local.session_id, server: this.#serverIdentity(), participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)] }, items);
+    const report = await verifyTranscript({ sessionId: local.session_id, server: this.#serverIdentity(this.#urlOf(local)), participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)] }, items);
     return { ok: report.ok, position: report.position, root: toHex(report.root), fault: report.fault ?? null, fault_at: report.faultAt ?? null };
   }
 
@@ -1306,9 +1525,11 @@ export class Engine {
       server: this.#url,
       connected: this.#link.ready,
       problem: this.#link.problem,
+      visiting: [...this.#visiting.values()].map((route) => ({ server: route.url, connected: route.link.ready, problem: route.link.problem, agents: [...route.online].length })),
       agents: [...this.#agents.values()].map((agent) => ({
         name: agent.name,
         agent_id: agent.hex,
+        address: formatAddress(agent.hex, this.#url),
         registered: agent.registered,
         online: agent.online,
         unread: this.unreadCount(agent.hex),
