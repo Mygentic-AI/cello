@@ -565,6 +565,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
       { name: "channel_id", kind: "string", required: true, positional: true, description: "The channel's id, 64 hex characters" },
       { name: "text", kind: "string", required: true, positional: true, description: "The post. On the command line, - reads it from standard input." },
       { name: "title", kind: "string", description: "A short title, 200 bytes at most by default, which lets a reader decide whether to open the body." },
+      { name: "allow_flagged", kind: "boolean", description: "Post a value a guard held. Needs a person at a terminal, unless the autonomous_override guard is on." },
     ],
   },
   {

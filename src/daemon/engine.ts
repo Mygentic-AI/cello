@@ -1036,7 +1036,7 @@ export class Engine {
       }
       let screened: string;
       try {
-        screened = (await this.#screenOutbound(agent, text, {})).text;
+        screened = (await this.#screenOutbound(agent, text, {}, `cello-v2 settings --agent ${agent.hex}`)).text;
       } catch (err: unknown) {
         // A worker that's restarting says nothing about the text, so that one tries again at the next catch-up.
         if (err instanceof LocalError && err.code === "screener_unavailable") return;
@@ -1362,7 +1362,8 @@ export class Engine {
             own: 0,
             entry: JSON.stringify(item.entry),
             ack: JSON.stringify(item.ack),
-            body: body as Uint8Array,
+            // Nobody will read it, and the signed hashes are what the chain and a seal rest on, so past the limit a flood costs no disk for its words.
+            body: counted?.withheld ? new Uint8Array(0) : (body as Uint8Array),
           });
           if (counted?.withheld) this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: BYTE_LIMIT_REASON, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies VerdictDetail));
         }
@@ -1399,7 +1400,7 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
-    const written = parseBody(body as Uint8Array);
+    const written = counted?.withheld ? null : parseBody(body as Uint8Array);
     const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, witnessed.ack.time) : undefined;
     if (due !== undefined) this.#armStandbyCheck(due);
     return true;
@@ -1545,7 +1546,7 @@ export class Engine {
   }
 
   // Credentials and hijack artifacts stop here, before anything is signed, on a thread that never runs the model.
-  async #screenOutbound(agent: AgentContext, text: string, params: Record<string, unknown>): Promise<{ text: string; report: Record<string, unknown> }> {
+  async #screenOutbound(agent: AgentContext, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string; report: Record<string, unknown> }> {
     const keys = [...this.#agents.keys(), ...this.#store.sessionsOf(agent.signer.id).map((s) => toHex(s.counterparty_id))];
     const guards = this.governance.guards;
     const pii = { whitelist: guards.value<string[]>(agent.signer.id, "pii_whitelist"), email: guards.value<boolean>(agent.signer.id, "pii_check_email"), phone: guards.value<boolean>(agent.signer.id, "pii_check_phone") };
@@ -1562,7 +1563,7 @@ export class Engine {
         throw new LocalError("held_by_guard", `Nothing was sent, because it looks like personal data: ${held}. Say it without that, or have it let through with allow_flagged, which needs a person unless autonomous_override is on.`);
       }
       if (!guards.value<boolean>(agent.signer.id, "autonomous_override")) {
-        requirePerson(params, `This sends personal data from ${agent.hex}: ${held}.`, `cello-v2 send ${params["session_id"] as string} - --allow-flagged --over --agent ${agent.hex}`);
+        requirePerson(params, `This sends personal data from ${agent.hex}: ${held}.`, retry);
       }
       logEvent("guard.held_value_sent", { agent: agent.hex, categories: (verdict.held ?? []).map((h) => h.category), by_a_person: params["person_confirmed"] === true });
       return { text: verdict.text, report: { let_through: (verdict.held ?? []).map((h) => h.category) } };
@@ -1718,7 +1719,7 @@ export class Engine {
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text, { ...params, session_id: sessionHex });
+    const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
@@ -1954,7 +1955,7 @@ export class Engine {
         position: row.position as number,
         entry: JSON.parse(row.entry) as WireSigned,
         ack: row.ack ? JSON.parse(row.ack) as WireSigned : null,
-        body: row.body,
+        body: row.withheld === 1 ? null : row.body,
       })),
       seals: this.#store.seals(agent.signer.id, local.session_id).map((row) => JSON.parse(row.record) as unknown),
       salt: local.salt,
@@ -1996,8 +1997,8 @@ export class Engine {
         const bytes = new TextEncoder().encode(JSON.stringify({ text }));
         this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
       }),
-      screenOutbound: async (agentHex, text) => {
-        const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, {});
+      screenOutbound: async (agentHex, text, params, retry) => {
+        const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, params, retry);
         return screened;
       },
     };

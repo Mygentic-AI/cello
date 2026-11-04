@@ -302,7 +302,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "channel_remove_poster":
       return channels.removePoster(acting(params), text(params, "channel_id"), text(params, "poster"));
     case "channel_post":
-      return channels.post(acting(params), text(params, "channel_id"), text(params, "text"), optionalText(params, "title"));
+      return channels.post(acting(params), text(params, "channel_id"), text(params, "text"), optionalText(params, "title"), params);
     case "channel_collect":
       return channels.collect(engine.resolveAgent(text(params, "agent")), optionalText(params, "channel_id"));
     case "channels":

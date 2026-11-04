@@ -2,7 +2,8 @@
 // Who may loosen what is the point of most of this, so each loosening is tried from a pipe, as an agent would, then at a real terminal.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync } from "node:fs";
+import Database from "@signalapp/sqlcipher";
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -102,6 +103,7 @@ async function until<T>(what: string, check: () => T | undefined | false | Promi
   throw new Error(`timed out waiting for ${what}`);
 }
 
+const diskBytes = (folder: string): number => readdirSync(folder, { recursive: true, withFileTypes: true }).reduce((sum, item) => sum + (item.isFile() ? statSync(join(item.parentPath, item.name)).size : 0), 0);
 // These tests hold conversations with agents nobody has selected, so nothing answers for them. live/away.live.ts tests that.
 const idOf = (m: Machine, name: string): string => {
   const id = m.ok(["create-agent", name])["agent_id"] as string;
@@ -335,6 +337,64 @@ test("byte limit: past it nothing is delivered or screened, the owner is told on
   assert.equal(b.ok(["send", session, "enough", "--over", "--agent", "Nia"])["sent"], true, "it doesn't stop a reply");
   // The sender hears nothing about it.
   assert.ok(!read(a, "Max").notices.some((n) => /limit/.test(n.text)));
+});
+
+test("byte limit: a stranger past it adds no body to the disk, and the record still verifies and seals", async () => {
+  const a = machine();
+  const b = machine();
+  idOf(a, "Pax");
+  const bId = idOf(b, "Quin");
+  b.ok(["settings-set", "bounds.unknown.max_bytes", String(Math.floor(FLOOD_MESSAGE_BYTES * 1.5)), "--agent", "Quin"]);
+  const session = await call(a, "Pax", bId);
+  const line = "the quick brown fox jumps over the lazy dog near the river\n";
+  const big = line.repeat(Math.floor(FLOOD_MESSAGE_BYTES / line.length));
+  a.ok(["send", session, "-", "--over", "--agent", "Pax"], big);
+  await until("the first to be readable", () => read(b, "Quin").messages[0]?.text);
+  const view = () => (b.ok(["sessions", "--agent", "Quin"]) as unknown as { sessions: SessionView[] }).sessions[0] as SessionView;
+  const before = diskBytes(b.home);
+  const flood = 20;
+  for (let i = 0; i < flood; i++) a.ok(["send", session, "-", "--notice", "--over", "--agent", "Pax"], big);
+  await until("the flood to arrive", () => view().bytes_received > FLOOD_MESSAGE_BYTES * (flood + 0.9));
+  const grew = diskBytes(b.home) - before;
+  // Signatures, acks and the database's journal stay, about 1 MB here. With the bodies it was 6.8 MB.
+  assert.ok(grew < FLOOD_MESSAGE_BYTES * flood / 2, `the disk grew ${grew} bytes for ${flood} withheld messages of ${FLOOD_MESSAGE_BYTES}`);
+  const db = new Database(join(b.home, "cello.db"));
+  db.pragma(`key = "x'${readFileSync(join(b.home, "cello.db.key")).toString("hex")}'"`);
+  const held = db.prepare("SELECT count(*) AS rows, sum(length(body)) AS bytes, sum(length(ciphertext)) AS sealed FROM entries WHERE withheld = 1").get([]) as { rows: number; bytes: number; sealed: number | null };
+  db.close();
+  assert.deepEqual(held, { rows: flood, bytes: 0, sealed: null }, "the withheld rows hold no words, plain or encrypted");
+
+  const through = flood + 1;
+  assert.deepEqual([b.ok(["verify-session", session, "--agent", "Quin"])["ok"], b.ok(["verify-session", session, "--agent", "Quin"])["position"]], [true, through]);
+  assert.equal(a.ok(["verify-session", session, "--agent", "Pax"])["ok"], true);
+  assert.equal(b.ok(["seal", session, "--agent", "Quin"])["witnessed_through"], through);
+
+  // The seal covers every position, and the words of a withheld one are simply not there to show.
+  const out = (name: string) => join(b.home, name);
+  b.refused(["export-transcript", session, "--reveal", "2", "--out", out("no.json"), "--agent", "Quin"], "body_not_kept");
+  const whole = b.ok(["export-transcript", session, "--all", "--out", out("all.json"), "--agent", "Quin"]) as { revealed_positions: number[]; not_kept_positions: number[] };
+  assert.deepEqual(whole.revealed_positions, [1]);
+  assert.equal(whole.not_kept_positions.length, flood);
+  const health = await fetch(url.replace(/^ws/, "http").replace(/\/v1$/, "/healthz"));
+  const sealKey = (await health.json() as { seal_key: string }).seal_key;
+  const checked = b.ok(["verify-transcript", out("all.json"), "--seal-key", sealKey]);
+  assert.equal(checked["ok"], true);
+  assert.equal(b.ok(["export-transcript", session, "--reveal", "1", "--out", out("one.json"), "--agent", "Quin"])["witnessed_through"], through, "hiding the rest doesn't trip on them");
+});
+
+test("a channel post a guard holds has the same way through as a message: a person, or autonomous_override", async () => {
+  const a = machine();
+  idOf(a, "Tess");
+  const channel = a.ok(["channel-create", "notes", "--type", "public", "--agent", "Tess"])["channel_id"] as string;
+  const held = "write to me at tess@example.com";
+  a.ok(["config-set", "pii_check_email", "true", "--agent", "Tess"]);
+  a.refused(["channel-post", channel, held, "--agent", "Tess"], "held_by_guard");
+  a.refused(["channel-post", channel, "plain", "--title", held, "--agent", "Tess"], "held_by_guard");
+  const refused = a.refused(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"], "person_required");
+  assert.match(JSON.stringify(refused), /channel-post/, "the command it hands over is the one that was run");
+  assert.match(a.person(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"]), /"posted":true/);
+  assert.match(a.person(["config-set", "autonomous_override", "true", "--agent", "Tess"]), /"value":true|autonomous_override/);
+  assert.equal(a.ok(["channel-post", channel, held, "--allow-flagged", "--agent", "Tess"])["posted"], true);
 });
 
 test("tier screening: only a person, only whitelisted or vip, and one sender's rule outranks it", async () => {

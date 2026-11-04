@@ -162,6 +162,7 @@ export interface EntryRow {
   ack: string | null;
   ciphertext: Uint8Array | null;
   body: Uint8Array;
+  withheld: number;
   verdict: "allow" | "flagged" | "blocked" | null;
   verdict_detail: string | null;
 }
@@ -310,9 +311,10 @@ export class Store {
     return this.#prep("SELECT * FROM sessions WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SessionRow[];
   }
 
-  insertEntry(row: Omit<EntryRow, "id" | "ciphertext" | "ack" | "position" | "verdict" | "verdict_detail"> & { position?: number | null; ack?: string | null; ciphertext?: Uint8Array | null }): void {
+  insertEntry(row: Omit<EntryRow, "id" | "ciphertext" | "ack" | "position" | "withheld" | "verdict" | "verdict_detail"> & { position?: number | null; ack?: string | null; ciphertext?: Uint8Array | null }): void {
+    // The driver binds an empty body as NULL, and a withheld message's body is empty.
     this.#prep(
-      "INSERT INTO entries (agent_id, session_id, entry_hash, position, state, own, entry, ack, ciphertext, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO entries (agent_id, session_id, entry_hash, position, state, own, entry, ack, ciphertext, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, x''))",
     ).run([row.agent_id, row.session_id, row.entry_hash, row.position ?? null, row.state, row.own, row.entry, row.ack ?? null, row.ciphertext ?? null, row.body]);
   }
 
