@@ -197,9 +197,8 @@ class Stranger {
     const identity = this.signer.publicIdentity;
     return {
       identity: identityCodec.encode(identity),
-      name: "Stranger",
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity, name: "Stranger" }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity }))),
       signature: signatureCodec.encode(await this.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
@@ -395,6 +394,14 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.equal(bob.read().messages[0]?.closed_their_side, true);
   say("Bob called back, hosted on Ann's server, and it sealed");
 
+  // A refusal crosses servers too: a visitor on Bob's server hears the same words at once. Bob shuts nothing for Ann.
+  const blockedCaller = ann.must(["create-agent", "AnnSpare"]) as { agent_id: string };
+  bob.act("contact-set-tier", blockedCaller.agent_id, "--tier", "blocked");
+  const refused = ann.must(["initiate-session", bobAgent.address, "--agent", "AnnSpare"]);
+  assert.equal(refused["state"], "refused");
+  assert.equal(refused["message"], "This agent is not accepting connections. Retrying will not change this.");
+  assert.ok(!sql(B, `SELECT refusal::text FROM sessions WHERE encode(session_id, 'hex') = '${refused["session_id"] as string}'`).includes("not_accepting"));
+
   // ---- Long messages take a second connection, which on a visit has to go to the hosting server, both ways. ----
   const longFromAnn = `long from ann: ${"the figure stands ".repeat(1200)}`;
   const longFromBob = `long from bob: ${"understood and noted ".repeat(1200)}`;
@@ -544,8 +551,9 @@ test("an agent on one server talks to an agent on another, and neither server le
   }
   assert.ok(!(logsA + dumpA).includes(healthB.server), "Ann's server holds the identity of Bob's");
   assert.ok(!(logsB + dumpB).includes(healthA.server), "Bob's server holds the identity of Ann's");
-  // What a hosting server does learn, by design: the visitor's key and name. Stated here so that a change shows.
+  // What a hosting server does learn, by design: the visitor's key. Stated here so that a change shows.
   assert.equal(sql(B, `SELECT count(*) FROM agents WHERE agent_id = '\\x${annAgent.id}' AND NOT resident`), "1");
+
 
   report["session"] = session;
   report["back_session"] = backSession;

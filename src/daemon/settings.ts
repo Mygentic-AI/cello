@@ -14,6 +14,7 @@ export const SETTINGS = {
   screener_max_attempts: { default: 3, min: 1, max: 100, description: "How many times a screen can fail on one message before that message is refused, so it can't hold its conversation up for good." },
   sender_backlog_gap: { default: 8, min: 1, max: 100_000, description: "How many of your messages a reader can be behind on screening before your daemon waits before sending the next." },
   sender_backlog_wait_ms: { default: 10_000, min: 0, max: 600_000, description: "The longest one send waits for a reader to catch up. Then it goes anyway, and says so." },
+  offer_lifetime_minutes: { default: 10_080, min: 1, max: 525_600, description: "How long a call waits for an answer before it expires." },
   channel_check_seconds: { default: 30, min: 1, max: 86_400, description: "How often the daemon checks every channel, in case a push was missed. A change takes effect at once." },
   channel_lost_wait_seconds: { default: 3_600, min: 1, max: 2_592_000, description: "How long a missing channel post is asked for before a reader calls it lost and moves on, and its publisher is told. A change takes effect at once." },
   channel_default_retention_days: { default: 7, min: 1, max: 3_650, description: "How long a new channel keeps posts unless channel-create says otherwise. The server sets the most it allows." },

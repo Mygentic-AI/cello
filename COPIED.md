@@ -16,6 +16,17 @@ One change applies to both post-quantum key files: they now get the public key t
 
 `src/protocol/identity.ts` is new, with its signing frame taken from `core/crypto/src/pq-frame.ts`.
 
+## Governance
+
+From `cello-client`, comments on their own lines removed, ids changed to blobs, the database and log calls changed to this client's. Channel scopes wait for the channels merge, and the limits they held as constants now come from the database.
+
+- `src/daemon/policy-store.ts`, `policy-proposals.ts`, from `core/daemon/src/`, same names. Written policies, and the agent-proposes, person-approves flow.
+- `src/daemon/policy-cadence.ts`, from `core/daemon/src/`, same name, without the channel half.
+- `src/daemon/pii.ts`, `rate-limit.ts`, from `core/gateway/src/detect/`, same names. Its text now names this client's command.
+- `src/daemon/who-label.ts`, from `core/daemon/src/who-label.ts` and `core/protocol-types/src/moniker.ts`: only the name rule and the short form of a key. The choosing of a label is in `contacts.ts`, since v2 marks a self-declared name.
+- `src/daemon/guards.ts` is a rewrite, with the classifiers, baselines and refusal texts of `core/gateway/src/config/config-store.ts` and `core/daemon/src/gateway-config-handlers.ts`. It keeps a plain log instead of v1's hash chain.
+- `src/daemon/reach.ts` and `tiers.ts` are rewrites, with the numbers and refusal texts of `core/daemon/src/contacts-tier-migration.ts` and `agent-settings-keys.ts`.
+
 ## The screener
 
 From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on their own lines removed, imports rewritten. Each works alone and would be written the same way today. Nothing from the gateway's socket client or its deadline logic came across.

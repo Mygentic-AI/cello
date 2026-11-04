@@ -220,7 +220,7 @@ test("a queue of long messages: nobody overtakes, the reply gate holds, stop get
 test("a session's very first message, if it's long, still tells its sender the position and a rough time", async () => {
   const reader = machine();
   reader.ok(["create-agent", "Rio"]);
-  reader.ok(["settings", "screener_tell_after_ms", "0"]);
+  assert.match(atTerminal(reader, ["settings-set", "screener_tell_after_ms", "0"], "right").out, /next login/);
   reader.ok(["logout"]);
   reader.run(["login", "--server", url]);
   const readerId = (reader.ok(["agents"]) as { agents: { agent_id: string }[] }).agents[0]?.agent_id as string;
@@ -250,8 +250,8 @@ test("a worker crash delivers nothing, restarts, tells the operator, and can't h
   const { session } = await pair(a, "Eve", b, "Fay");
   // A real crash with no trigger in the code: the screening thread runs out of its memory limit on a big message.
   // Short messages still fit, which is what the limit is set to show.
-  b.ok(["settings", "screener_worker_memory_mb", String(CRASH_MEMORY_MB)]);
-  assert.equal(b.run(["settings", "screener_workers", "0"]).json["error"], "bad_setting");
+  assert.match(atTerminal(b, ["settings-set", "screener_worker_memory_mb", String(CRASH_MEMORY_MB)], "right").out, /next login/);
+  assert.match(atTerminal(b, ["settings-set", "screener_workers", "0"], "right").out, /bad_setting/);
   b.ok(["logout"]);
   b.run(["login", "--server", url]);
   await until("the daemon back", () => (b.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
@@ -317,7 +317,7 @@ test("only a person at a terminal can weaken screening, and the state shows", as
   const piped = b.run(args, "yes\n");
   assert.equal(piped.status, 1);
   assert.equal(piped.json["error"], "person_required", "a pipe isn't a person, whatever it writes");
-  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1" }), args, "right");
+  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1", CELLO_V2_HOME: b.home }), args, "right");
   assert.match(inAgentShell.out, /person_required/);
 
   const wrong = atTerminal(b, args, "000000");
@@ -349,7 +349,7 @@ test("only a person at a terminal can weaken screening, and the state shows", as
 
   // Moving the database and its key moves every rule and setting, and nothing else is needed.
   assert.match(atTerminal(b, args, "right").out, /"level":"off"/);
-  b.ok(["settings", "screener_tell_after_ms", "4321"]);
+  assert.match(atTerminal(b, ["settings-set", "screener_tell_after_ms", "4321"], "right").out, /next login/);
   b.ok(["logout"]);
   const moved = new Machine();
   mkdirSync(moved.home, { recursive: true });

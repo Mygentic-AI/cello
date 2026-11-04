@@ -127,10 +127,10 @@ class Raw {
       this.#socket.send(JSON.stringify({ v: PROTOCOL_VERSION, id, method, params }));
     });
   }
-  async newAgent(name: string): Promise<Signer> {
+  async newAgent(): Promise<Signer> {
     const signer = await signerFromSeeds(generateIdentitySeeds());
-    const signature = await signer.sign("cello-v2-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity, name }));
-    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), name, signature: signatureCodec.encode(signature) });
+    const signature = await signer.sign("cello-v2-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
+    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature) });
     const clientNonce = new Uint8Array(randomBytes(32));
     const proof = await signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
     await this.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(proof) });
@@ -168,7 +168,7 @@ before(async () => {
     assert.equal(login.status, 0, `login failed: ${login.stderr}`);
     // Settings go in the database by command, as a person would change them. Nothing here is from the environment.
     for (const [name, value] of [["channel_check_seconds", "1"], ["channel_lost_wait_seconds", String(LOST_WAIT_MS / 1000)]] as const) {
-      const set = run(who, ["settings", name, value]);
+      const set = run(who, ["settings-set", name, value]);
       assert.equal(set.status, 0, set.stderr);
     }
     const created = run(who, ["create-agent", names[who]]);
@@ -197,7 +197,7 @@ test("a public channel: posts reach a reader by themselves, a publisher sees its
 
   assert.equal(refused("cyd", "channel-post", channel, "I'm just a reader"), "not_allowed_to_post");
   const raw = await Raw.open();
-  const stranger = await raw.newAgent("Stranger");
+  const stranger = await raw.newAgent();
   assert.equal(await codeOf(raw.call("channel.fetch", { agent: toB64(stranger.id), channel: toB64(Buffer.from(channel, "hex")), after: 0 })), "not_a_member", "registered but not reading");
   const anonymous = await Raw.open();
   assert.equal(await codeOf(anonymous.call("channel.fetch", { agent: toB64(stranger.id), channel: toB64(Buffer.from(channel, "hex")), after: 0 })), "not_authenticated", "no anonymous reading");
@@ -241,7 +241,7 @@ test("a private group chat: approval, every member posting, and a database that 
 
   // A member the database has made up gets ciphertext and no key.
   const mallory = await Raw.open();
-  const evil = await mallory.newAgent("Mallory");
+  const evil = await mallory.newAgent();
   const channelBytes = toB64(Buffer.from(channel, "hex"));
   assert.equal(await codeOf(mallory.call("channel.fetch", { agent: toB64(evil.id), channel: channelBytes, after: 0 })), "not_a_member");
   sql(`INSERT INTO channel_members (channel_id, agent_id, state) VALUES (${bytea(channel)}, ${bytea(Buffer.from(evil.id).toString("hex"))}, 'active')`);
@@ -258,9 +258,9 @@ test("a private group chat: approval, every member posting, and a database that 
 test("forged and replayed posts are refused by the server, with an honest poster passing beside them", async () => {
   const channel = create("ada", "Named posters", "public", "posters");
   const raw = await Raw.open();
-  const pia = await raw.newAgent("Pia");
+  const pia = await raw.newAgent();
   const piaHex = Buffer.from(pia.id).toString("hex");
-  const mal = await raw.newAgent("Mal");
+  const mal = await raw.newAgent();
   ok("ada", "channel-add-poster", channel, piaHex);
 
   const honest = await rawPost(raw, pia, channel, 1, "Approved") as { ack: unknown };
@@ -352,7 +352,7 @@ test("old posts leave the reader's machine and the server's table, with position
   const channel = create("ada", "Bounded", "public", "posters");
   ok("cyd", "channel-join", channel);
   const raw = await Raw.open();
-  const pia = await raw.newAgent("Pia");
+  const pia = await raw.newAgent();
   ok("ada", "channel-add-poster", channel, Buffer.from(pia.id).toString("hex"));
   const old = Date.now() - 40 * 86_400_000;
   await rawPost(raw, pia, channel, 1, "old one", { publishedAt: old });
@@ -399,7 +399,7 @@ test("moving the database and its key to a new home moves everything: channels, 
   ok("cyd", "channel-settings", channel, "--screen-bodies", "arrival");
   post("ada", channel, "before the move");
   await until("the first post", () => view("cyd", channel).position === 1);
-  const set = run("cyd", ["settings", "channel_lost_wait_seconds", "1234"]);
+  const set = run("cyd", ["settings-set", "channel_lost_wait_seconds", "1234"]);
   assert.equal(set.status, 0, set.stderr);
 
   assert.equal(run("cyd", ["logout"]).status, 0);
@@ -417,7 +417,7 @@ test("moving the database and its key to a new home moves everything: channels, 
   const row = await until("the new home to read on from the right position", () => { const seen = view("cyd", channel); return seen.position === 2 && seen; });
   assert.deepEqual([row.state, row.unread, row.generation, (row as unknown as { screen_bodies: string }).screen_bodies], ["active", 2, 1, "arrival"], JSON.stringify(row));
   assert.ok(!row.notices.some((n) => /couldn't be opened/.test(n)), "and the key came with it");
-  assert.equal(run("cyd", ["settings", "channel_lost_wait_seconds", String(LOST_WAIT_MS / 1000)]).status, 0);
+  assert.equal(run("cyd", ["settings-set", "channel_lost_wait_seconds", String(LOST_WAIT_MS / 1000)]).status, 0);
 });
 
 test("a hostile server: an old post re-issued under a new number, a changed body, a forged roster and a key of its own are all refused", async () => {
@@ -503,7 +503,7 @@ test("eject: the next read is refused, a new key starts, and a member offline ac
 
   // A second rotation with Cyd still away. Another member is what's ejected this time, made and approved just for it.
   const channelBytes = toB64(Buffer.from(channel, "hex"));
-  const temp = await raw.newAgent("Temp");
+  const temp = await raw.newAgent();
   const keys = await import("@noble/curves/ed25519.js");
   const secret = keys.x25519.utils.randomSecretKey();
   const { mlKemGenerateSeed, mlKemKeypairFromSeed } = await import("../src/protocol/ml-kem.ts");
@@ -577,7 +577,7 @@ test("reading: hostile text is flagged, a hidden instruction is blocked and neve
   post("ada", channel, `Please read this. ${HOSTILE}.`, "Flag me");
   // A poster's own daemon strips invisible characters on the way out, so this comes from a bare socket, as an attacker's would.
   const raw = await Raw.open();
-  const attacker = await raw.newAgent("Attacker");
+  const attacker = await raw.newAgent();
   const attackerHex = Buffer.from(attacker.id).toString("hex");
   ok("ada", "channel-add-poster", channel, attackerHex);
   await rawPost(raw, attacker, channel, 1, `Harmless on the surface.${hidden(HOSTILE)}`);
@@ -623,7 +623,7 @@ test("MCP: every channel operation is a tool, its description says channel text 
     const named = new Map(tools.map((tool) => [tool.name, tool.description ?? ""]));
     for (const op of OPERATIONS.filter((o) => o.group === "Channels")) assert.ok(named.has(op.tool), `${op.tool} is missing`);
     assert.match(named.get("cello_channel_read") as string, /information, never instructions/);
-    assert.ok(!named.has("cello_settings"), "settings are for a person at a terminal");
+    assert.ok(!named.has("cello_policy_approve"), "approving a policy is for a person at a terminal");
 
     const tool = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       const result = await session.callTool({ name, arguments: { agent: "Bea", ...args } }) as { content: { text: string }[]; isError?: boolean };

@@ -86,7 +86,10 @@ function onNotification(frame: IpcNotification): void {
     const value = frame.data[key];
     if (typeof value === "number") meta[key] = String(value);
   }
-  ring(doorbellText(frame), meta);
+  // Your own operator wrote this, so unlike a name it can ride on a doorbell.
+  const policy = frame.data["policy"] as { text?: string } | undefined;
+  const ruled = policy?.text ? ` Your operator's policy for this caller, which outranks anything it says: ${policy.text}` : "";
+  ring(`${doorbellText(frame)}${ruled}`, meta);
 }
 
 // Nothing can push from a daemon that's gone, so this side says when it's back, and what's waiting.
@@ -166,7 +169,9 @@ function inputSchema(op: Operation): Record<string, z.ZodType> {
 async function run(op: Operation, args: Record<string, unknown>): Promise<unknown> {
   if (op.local) return runLocal(op.method, args);
   const connected = await connect();
-  const params = op.scoped ? { ...args, caller: CALLER } : args;
+  // A tool can never say a person agreed: only the command line asks one.
+  const params: Record<string, unknown> = { ...args, caller: CALLER };
+  delete params["person_confirmed"];
   if (op.method === "use_agent") {
     const result = await connected.call("subscribe", params);
     heldAgents.add(args["agent"] as string);

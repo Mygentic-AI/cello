@@ -9,6 +9,8 @@ import { logEvent } from "./log.ts";
 import type { Settings } from "./settings.ts";
 
 export type ScreeningLevel = "full" | "deterministic" | "off";
+export interface LanguageGuard { enforce: boolean; allow: string[] }
+export interface PiiGuard { whitelist: string[]; email: boolean; phone: boolean }
 
 const TELL_CHECK_MS = 1_000;
 const RESTART_BASE_MS = 500;
@@ -46,7 +48,7 @@ export interface ModelFact { state: string; running: boolean; backend: string | 
 
 export interface ScreeningEvents {
   // The body and the level are read only when a screen starts, so a long queue holds no text in memory.
-  load(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel } | null;
+  load(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel; language: LanguageGuard } | null;
   verdict(job: ScreenJob, verdict: InboundVerdict): void;
   delayed(job: ScreenJob, aboutSeconds: number): void;
   workerCrashed(message: string, waiting: number): void;
@@ -215,7 +217,7 @@ export class ScreeningQueue {
     }
     job.started = true;
     job.slot = slot;
-    slot.start(job, loaded.body, loaded.level);
+    slot.start(job, loaded.body, loaded.level, loaded.language);
   }
 
   #finish(job: Running): void {
@@ -320,10 +322,10 @@ class Slot {
     void worker?.terminate();
   }
 
-  start(job: Running, body: Uint8Array, level: "full" | "deterministic"): void {
+  start(job: Running, body: Uint8Array, level: "full" | "deterministic", language: LanguageGuard): void {
     this.job = job;
     this.#sentAt = performance.now();
-    this.#worker?.postMessage({ type: "start", id: job.id, body, level });
+    this.#worker?.postMessage({ type: "start", id: job.id, body, level, language });
   }
 
   step(job: Running): void {
@@ -390,7 +392,7 @@ export class OutboundScreen {
     void worker?.terminate();
   }
 
-  screen(text: string, keys: readonly string[]): Promise<OutboundVerdict> {
+  screen(text: string, keys: readonly string[], pii: PiiGuard): Promise<OutboundVerdict> {
     return new Promise((resolve, reject) => {
       const worker = this.#worker;
       if (!worker) {
@@ -403,7 +405,7 @@ export class OutboundScreen {
         reject(new Error(`the outbound screen took longer than ${OUTBOUND_LIMIT_MS / 1000} seconds`));
       }, OUTBOUND_LIMIT_MS);
       this.#calls.set(id, { resolve, reject, timer });
-      worker.postMessage({ type: "outbound", id, text, keys });
+      worker.postMessage({ type: "outbound", id, text, keys, pii });
     });
   }
 }

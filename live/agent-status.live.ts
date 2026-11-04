@@ -21,8 +21,11 @@ const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `status-${stamp}`);
 mkdirSync(evidence, { recursive: true });
 
-const A = { name: "cello-v2-status-a", port: 18800, url: "ws://127.0.0.1:18800/v1" };
-const B = { name: "cello-v2-status-b", port: 18801, url: "ws://127.0.0.1:18801/v1" };
+// A run beside another one sets its own names and ports. The first of the two ports is A's.
+const project = process.env["CELLO_STATUS_PROJECT"] ?? "cello-v2-status";
+const firstPort = Number(process.env["CELLO_STATUS_PORT"] ?? 18800);
+const A = { name: `${project}-a`, port: firstPort, url: `ws://127.0.0.1:${firstPort}/v1` };
+const B = { name: `${project}-b`, port: firstPort + 1, url: `ws://127.0.0.1:${firstPort + 1}/v1` };
 type Server = typeof A;
 const report: Record<string, unknown> = { started: stamp };
 const LONG_TEXT = "a long message on the second connection ".repeat(600);
@@ -187,7 +190,7 @@ class Raw {
   async register(): Promise<void> {
     const server = await this.#first;
     const identity = this.signer.publicIdentity;
-    await this.link.call("register", { identity: identityCodec.encode(identity), name: "Raw", signature: signatureCodec.encode(await this.signer.sign("cello-v2-register", registerBytes({ serverId: server.id, identity, name: "Raw" }))) });
+    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-v2-register", registerBytes({ serverId: server.id, identity }))) });
   }
   async #proof(server: ConnectedServer): Promise<{ clientNonce: string; signature: unknown }> {
     const clientNonce = new Uint8Array(randomBytes(32));
@@ -204,9 +207,8 @@ class Raw {
     const identity = this.signer.publicIdentity;
     return await this.link.call("visit", {
       identity: identityCodec.encode(identity),
-      name: "Raw",
       ...await this.#proof(server),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity, name: "Raw" }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity }))),
     }) as { standing: { status: string } };
   }
   async offer(calleeId: string): Promise<unknown> {
@@ -503,7 +505,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   // Her own signed suspend, by a person at her terminal, reaches both.
   const own = ann.atTerminal(["suspend", "--agent", "Ann", "--reason", "compromise"]);
   assert.match(own, /"status":"suspended"/);
-  assert.match(own, new RegExp(`"told":\\[[^\\]]*18800[^\\]]*18801|"told":\\[[^\\]]*18801[^\\]]*18800`), own);
+  assert.match(own, new RegExp(`"told":\\[[^\\]]*${A.port}[^\\]]*${B.port}|"told":\\[[^\\]]*${B.port}[^\\]]*${A.port}`), own);
   assert.deepEqual([statusOn(A, annAgent.id), statusOn(B, annAgent.id)], ["suspended", "suspended"]);
   assert.equal(bob.refused("send", across, "hello ann", "--over"), "conversation_stopped");
   const both = ann.statusLog().servers;

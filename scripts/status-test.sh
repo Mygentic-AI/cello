@@ -4,6 +4,7 @@
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
+project="${CELLO_STATUS_PROJECT:-cello-v2-status}"
 mkdir -p "$HOME/cello-v2-live-runs"
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from this repo's. In cello-server, run scripts/sync-protocol.sh and commit." >&2
@@ -21,7 +22,7 @@ cleanup() {
     esac
   done < "$pids"
   rm -f "$pids"
-  for name in cello-v2-status-a cello-v2-status-b; do
+  for name in "$project-a" "$project-b"; do
     "$server_dir/scripts/server.sh" down --name "$name" --delete-data >/dev/null 2>&1
   done
 }
@@ -37,11 +38,11 @@ until mkdir "$lock" 2>/dev/null; do
   sleep 5
 done
 locked=1
-for name in cello-v2-status-a cello-v2-status-b; do
+for name in "$project-a" "$project-b"; do
   (cd "$server_dir" && COMPOSE_PROJECT_NAME="$name" POSTGRES_PASSWORD=unused CELLO_APP_PASSWORD=unused docker compose build --quiet) || exit 1
 done
 rmdir "$lock"
 locked=
 
 cd "$here"
-CELLO_SERVER_DIR="$server_dir" CELLO_STATUS_PIDS="$pids" node --test --test-force-exit --test-timeout=420000 live/agent-status.live.ts
+CELLO_STATUS_PROJECT="$project" CELLO_SERVER_DIR="$server_dir" CELLO_STATUS_PIDS="$pids" node --test --test-force-exit --test-timeout=420000 live/agent-status.live.ts

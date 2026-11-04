@@ -64,7 +64,8 @@ export interface ChannelHost {
   ring(agentHex: string, bell: Doorbell): void;
   // Waits for its turn in the one screening queue. Always answers: a screen that keeps failing answers blocked.
   screen(agentHex: string, scope: string, position: number, senderHex: string, text: string): Promise<InboundVerdict>;
-  screenOutbound(agentHex: string, text: string): Promise<{ text: string; report: Record<string, unknown> }>;
+  // retry is the command a person runs to let a held value through.
+  screenOutbound(agentHex: string, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string; report: Record<string, unknown> }>;
 }
 
 type ScreenPart = "title" | "body";
@@ -468,11 +469,12 @@ export class Channels {
     return key;
   }
 
-  async post(agentHex: string, channelHex: string, text: string, title: string | undefined): Promise<unknown> {
+  async post(agentHex: string, channelHex: string, text: string, title: string | undefined, params: Record<string, unknown> = {}): Promise<unknown> {
     const channel = parseChannel(channelHex);
     // Outside the channel's queue, so a slow screen doesn't hold up what's arriving.
-    const screenedBody = await this.#host.screenOutbound(agentHex, text);
-    const screenedTitle = title === undefined ? undefined : await this.#host.screenOutbound(agentHex, title);
+    const retry = `cello-v2 channel-post ${channelHex} - --allow-flagged --agent ${agentHex}`;
+    const screenedBody = await this.#host.screenOutbound(agentHex, text, params, retry);
+    const screenedTitle = title === undefined ? undefined : await this.#host.screenOutbound(agentHex, title, params, retry);
     const report = { ...screenedTitle?.report, ...screenedBody.report };
     const bodyBytes = ENC.encode(screenedBody.text);
     const titleBytes = ENC.encode(screenedTitle?.text ?? "");
@@ -771,7 +773,7 @@ export class Channels {
     const title = open(checked.title);
     const body = open(checked.body);
     const own = equalBytes(fields.authorId, agent);
-    const base = { position: item.position, author_id: fields.authorId, author_name: item.author_name, author_seq: fields.authorSeq, generation: fields.generation, published_at: fields.publishedAt };
+    const base = { position: item.position, author_id: fields.authorId, author_name: null, author_seq: fields.authorSeq, generation: fields.generation, published_at: fields.publishedAt };
     if (title === null || body === null) {
       // Skipped and reported, so reading never stops for good.
       this.#db.insertPost(agent, channel, { ...base, title: null, body: null, state: "unopenable", title_verdict: "blocked", body_verdict: "blocked" });

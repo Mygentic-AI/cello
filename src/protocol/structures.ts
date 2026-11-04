@@ -9,7 +9,6 @@ export const PROTOCOL_VERSION = 1;
 const VERSION = u8(PROTOCOL_VERSION);
 const X25519_PUBLIC_KEY_BYTES = 32;
 const NONCE_BYTES = 32;
-const MAX_NAME_BYTES = 64;
 
 export const EntryKind = { message: 1, close: 2 } as const;
 export type EntryKind = (typeof EntryKind)[keyof typeof EntryKind];
@@ -104,16 +103,15 @@ export function deliveryAckBytes(d: DeliveryAckFields): Uint8Array {
   ]);
 }
 
+const MAX_NAME_BYTES = 64;
+
 export interface RegisterFields {
   serverId: Uint8Array;
   identity: PublicIdentity;
-  name: string;
 }
 
 export function registerBytes(r: RegisterFields): Uint8Array {
-  const name = new TextEncoder().encode(r.name);
-  if (name.length === 0 || name.length > MAX_NAME_BYTES) throw new RangeError(`a name must be 1 to ${MAX_NAME_BYTES} bytes`);
-  return encodeFields([VERSION, exact("server id", r.serverId, HASH_BYTES), r.identity.ed, r.identity.pq, name]);
+  return encodeFields([VERSION, exact("server id", r.serverId, HASH_BYTES), r.identity.ed, r.identity.pq]);
 }
 
 export interface AgentAuthFields {
@@ -176,6 +174,8 @@ export interface AcceptFields {
   x25519Public: Uint8Array;
   mlKemCiphertext: Uint8Array;
   sealedSalt: Uint8Array;
+  // What this agent calls itself, for the other party's eyes alone. The server holds no names.
+  sealedName: Uint8Array;
 }
 
 export function acceptBytes(a: AcceptFields): Uint8Array {
@@ -185,16 +185,30 @@ export function acceptBytes(a: AcceptFields): Uint8Array {
     exact("X25519 public key", a.x25519Public, X25519_PUBLIC_KEY_BYTES),
     exact("ML-KEM ciphertext", a.mlKemCiphertext, ML_KEM_CIPHERTEXT_BYTES),
     a.sealedSalt,
+    a.sealedName,
   ]);
+}
+
+// A callee's definite no. The reason is sealed to the caller's key from the offer, so the server learns only that it was refused,
+// which it could already tell from no answer. A reason could otherwise give away a tier.
+export interface RefuseFields {
+  offerHash: Uint8Array;
+  mlKemCiphertext: Uint8Array;
+  sealedReason: Uint8Array;
+}
+
+export function refuseBytes(r: RefuseFields): Uint8Array {
+  return encodeFields([VERSION, exact("offer hash", r.offerHash, HASH_BYTES), exact("ML-KEM ciphertext", r.mlKemCiphertext, ML_KEM_CIPHERTEXT_BYTES), r.sealedReason]);
 }
 
 export interface ConfirmFields {
   acceptHash: Uint8Array;
   sealedSalt: Uint8Array;
+  sealedName: Uint8Array;
 }
 
 export function confirmBytes(c: ConfirmFields): Uint8Array {
-  return encodeFields([VERSION, exact("accept hash", c.acceptHash, HASH_BYTES), c.sealedSalt]);
+  return encodeFields([VERSION, exact("accept hash", c.acceptHash, HASH_BYTES), c.sealedSalt, c.sealedName]);
 }
 
 // The server's statement that this session exists here, with these two parties, from this setup.

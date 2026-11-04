@@ -2,7 +2,7 @@
 // Nothing signed depends on this encoding, so it can change without touching a signature.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
 import { PROTOCOL_VERSION } from "./structures.ts";
-import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, SealCertificateFields, SealLogHeadFields, SealRequestFields, StatusStatementFields, StatusWitnessFields } from "./structures.ts";
+import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields, StatusStatementFields, StatusWitnessFields } from "./structures.ts";
 
 export { PROTOCOL_VERSION };
 
@@ -145,8 +145,9 @@ export const entryCodec = codec<Omit<EntryFields, "kind" | "mode"> & { kind: num
 export const ackCodec = codec<AckFields>({ serverId: "bytes", sessionId: "bytes", position: "int", entryHash: "bytes", root: "bytes", time: "int" });
 export const deliveryAckCodec = codec<DeliveryAckFields>({ sessionId: "bytes", readerId: "bytes", throughPosition: "int", entryHash: "bytes", root: "bytes", screenedThrough: "int" });
 export const offerCodec = codec<OfferFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", x25519Public: "bytes", mlKemPublic: "bytes", expiresAt: "int" });
-export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes" });
-export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes" });
+export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
+export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
+export const refuseCodec = codec<RefuseFields>({ offerHash: "bytes", mlKemCiphertext: "bytes", sealedReason: "bytes" });
 export const assignmentCodec = codec<AssignmentFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", confirmHash: "bytes", time: "int" });
 export const sealRequestCodec = codec<SealRequestFields>({ serverId: "bytes", sessionId: "bytes", sealerId: "bytes", throughPosition: "int", root: "bytes" });
 export const sealCertificateCodec = codec<SealCertificateFields>({
@@ -202,6 +203,7 @@ export const signedDeliveryAck = signedCodec(deliveryAckCodec);
 export const signedOffer = signedCodec(offerCodec);
 export const signedAccept = signedCodec(acceptCodec);
 export const signedConfirm = signedCodec(confirmCodec);
+export const signedRefuse = signedCodec(refuseCodec);
 export const signedAssignment = signedCodec(assignmentCodec);
 export const signedSealRequest = signedCodec(sealRequestCodec);
 export const signedSealCertificate = signedCodec(sealCertificateCodec);
@@ -215,10 +217,9 @@ export interface SessionOnWire {
   accept: WireSigned | null;
   confirm: WireSigned | null;
   assignment: WireSigned | null;
+  refusal: WireSigned | null;
   callerIdentity: Record<string, string | number>;
   calleeIdentity: Record<string, string | number>;
-  callerName: string;
-  calleeName: string;
   state: SessionState;
   tip: number;
   // One side can't take part for now. It says no more than that, because a counterparty is told only that the conversation has stopped.
