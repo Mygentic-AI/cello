@@ -2,7 +2,7 @@
 // Nothing signed depends on this encoding, so it can change without touching a signature.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
 import { PROTOCOL_VERSION } from "./structures.ts";
-import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields } from "./structures.ts";
+import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields, StatusStatementFields, StatusWitnessFields } from "./structures.ts";
 
 export { PROTOCOL_VERSION };
 
@@ -50,6 +50,12 @@ export const ERROR_CODES = [
   "federation_closed",
   "too_many_pending",
   "visitor_budget_spent",
+  "agent_suspended",
+  "agent_retired",
+  "agent_unavailable",
+  "conversation_stopped",
+  "status_not_allowed",
+  "status_stale",
   "internal_error",
 ] as const;
 
@@ -159,6 +165,8 @@ export const sealCertificateCodec = codec<SealCertificateFields>({
   deliveryAckHash: "bytes",
   time: "int",
 });
+export const statusStatementCodec = codec<StatusStatementFields>({ agentId: "bytes", status: "int", reason: "int", issuer: "int", issuerId: "bytes", issuedAt: "int" } as never) as Codec<StatusStatementFields>;
+export const statusWitnessCodec = codec<StatusWitnessFields>({ serverId: "bytes", agentId: "bytes", seq: "int", prevHash: "bytes", statementHash: "bytes", time: "int" });
 export const sealLogHeadCodec = codec<SealLogHeadFields>({ sealKeyId: "bytes", size: "int", root: "bytes", time: "int" });
 
 export interface Signed<T> {
@@ -200,6 +208,8 @@ export const signedAssignment = signedCodec(assignmentCodec);
 export const signedSealRequest = signedCodec(sealRequestCodec);
 export const signedSealCertificate = signedCodec(sealCertificateCodec);
 export const signedSealLogHead = signedCodec(sealLogHeadCodec);
+export const signedStatusStatement = signedCodec(statusStatementCodec);
+export const signedStatusWitness = signedCodec(statusWitnessCodec);
 
 // The state of one session as the server holds it. A daemon needs nothing else to catch up.
 export interface SessionOnWire {
@@ -212,11 +222,13 @@ export interface SessionOnWire {
   calleeIdentity: Record<string, string | number>;
   state: SessionState;
   tip: number;
+  // One side can't take part for now. It says no more than that, because a counterparty is told only that the conversation has stopped.
+  stopped: boolean;
 }
 
 export type SessionState = "offered" | "accepted" | "active" | "closed";
 
-export type PushKind = "session" | "entry" | "delivery" | "channel";
+export type PushKind = "session" | "entry" | "delivery" | "channel" | "status";
 
 export interface RequestFrame { v: number; id: number; method: string; params: unknown }
 export type ResponseFrame =

@@ -94,6 +94,32 @@ CREATE TABLE IF NOT EXISTS seal_wants (
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
 
+-- What a server last said about one of these agents. everywhere: it stops the agent on every server, because it was its own server's word or its own keys'.
+CREATE TABLE IF NOT EXISTS agent_status (
+  agent_id   BLOB NOT NULL REFERENCES agents(agent_id),
+  server_url TEXT NOT NULL,
+  status     TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'retired')),
+  reason     TEXT NOT NULL,
+  everywhere INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, server_url)
+);
+
+-- Signed status statements still to reach a server. Each stays until that server has answered.
+CREATE TABLE IF NOT EXISTS status_outbox (
+  agent_id   BLOB NOT NULL REFERENCES agents(agent_id),
+  server_url TEXT NOT NULL,
+  statement  TEXT NOT NULL,
+  PRIMARY KEY (agent_id, server_url, statement)
+);
+
+-- Conversations this agent has been told have stopped, so a restart neither repeats that nor loses it.
+CREATE TABLE IF NOT EXISTS stopped_sessions (
+  agent_id   BLOB NOT NULL,
+  session_id BLOB NOT NULL,
+  PRIMARY KEY (agent_id, session_id),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
 -- What a person chose for one sender (the subject is its agent id), or for a tier (the subject is its name), ranked below that.
 CREATE TABLE IF NOT EXISTS screening_rules (
   agent_id BLOB NOT NULL REFERENCES agents(agent_id),
@@ -167,6 +193,9 @@ export interface EntryRow {
   verdict_detail: string | null;
 }
 
+export interface AgentStatusRow { server_url: string; status: "active" | "suspended" | "retired"; reason: string; everywhere: number }
+
+export interface OutboxRow { agent_id: Uint8Array; server_url: string; statement: string }
 export type UnscreenedRow = Pick<EntryRow, "id" | "agent_id" | "session_id" | "position"> & { sender: Uint8Array; size: number };
 
 export interface NoticeRow { id: number; session_id: Uint8Array | null; text: string }
@@ -221,11 +250,48 @@ export class Store {
     this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
     // A database made before federation. Additive, so its conversations carry on, on their own server.
     this.#addColumn("sessions", "server_url", "TEXT");
+    this.#addColumn("agents", "removed", "INTEGER NOT NULL DEFAULT 0");
   }
 
   #addColumn(table: string, column: string, definition: string): void {
     const columns = this.#prep(`PRAGMA table_info(${table})`).all([]) as { name: string }[];
     if (!columns.some((c) => c.name === column)) this.#db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  statusRows(agentId: Uint8Array): AgentStatusRow[] {
+    return this.#prep("SELECT server_url, status, reason, everywhere FROM agent_status WHERE agent_id = ?").all([agentId]) as AgentStatusRow[];
+  }
+
+  setStatus(agentId: Uint8Array, row: AgentStatusRow): void {
+    this.#prep(`INSERT INTO agent_status (agent_id, server_url, status, reason, everywhere) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (agent_id, server_url) DO UPDATE SET status = excluded.status, reason = excluded.reason, everywhere = excluded.everywhere`).run([agentId, row.server_url, row.status, row.reason, row.everywhere]);
+  }
+
+  addToOutbox(agentId: Uint8Array, serverUrl: string, statement: string): void {
+    this.#prep("INSERT OR IGNORE INTO status_outbox (agent_id, server_url, statement) VALUES (?, ?, ?)").run([agentId, serverUrl, statement]);
+  }
+
+  outbox(serverUrl?: string): OutboxRow[] {
+    const columns = "SELECT agent_id, server_url, statement FROM status_outbox";
+    return (serverUrl === undefined ? this.#prep(columns).all([]) : this.#prep(`${columns} WHERE server_url = ?`).all([serverUrl])) as OutboxRow[];
+  }
+
+  removeFromOutbox(row: OutboxRow): void {
+    this.#prep("DELETE FROM status_outbox WHERE agent_id = ? AND server_url = ? AND statement = ?").run([row.agent_id, row.server_url, row.statement]);
+  }
+
+  // The row stays, with its keys and its history: a name is freed, and nothing is lost.
+  markRemoved(agentId: Uint8Array): void {
+    this.#prep("UPDATE agents SET removed = 1 WHERE agent_id = ?").run([agentId]);
+  }
+
+  isStopped(agentId: Uint8Array, sessionId: Uint8Array): boolean {
+    return this.#prep("SELECT 1 FROM stopped_sessions WHERE agent_id = ? AND session_id = ?").get([agentId, sessionId]) !== undefined;
+  }
+
+  setStopped(agentId: Uint8Array, sessionId: Uint8Array, stopped: boolean): void {
+    if (stopped) this.#prep("INSERT OR IGNORE INTO stopped_sessions (agent_id, session_id) VALUES (?, ?)").run([agentId, sessionId]);
+    else this.#prep("DELETE FROM stopped_sessions WHERE agent_id = ? AND session_id = ?").run([agentId, sessionId]);
   }
 
   // The driver's types want one exact byte-array type. Our bytes are all plain Uint8Array.
@@ -287,7 +353,7 @@ export class Store {
   }
 
   agents(): AgentRow[] {
-    return this.#prep("SELECT * FROM agents ORDER BY rowid").all([]) as unknown as AgentRow[];
+    return this.#prep("SELECT * FROM agents WHERE removed = 0 ORDER BY rowid").all([]) as unknown as AgentRow[];
   }
 
   insertSession(row: Pick<SessionRow, "agent_id" | "session_id" | "role" | "counterparty_id" | "counterparty_name" | "counterparty_keys" | "state" | "offer"> & SessionUpdate): void {

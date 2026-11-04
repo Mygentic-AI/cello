@@ -10,8 +10,13 @@ import { verifyConsistency } from "../protocol/merkle.ts";
 import { mlKemDecapsulate, mlKemEncapsulate } from "../protocol/ml-kem.ts";
 import { deriveSessionSalt, generateSaltContribution, saltedContentHash } from "../protocol/salt.ts";
 import { type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, sealId, sealSummary } from "../protocol/seal.ts";
+import { type ReasonName, STATUS_DOMAIN, type StatusName, type StatusRecordOnWire, checkStatusLog } from "../protocol/status.ts";
 import { buildTranscript } from "../protocol/transcript.ts";
 import {
+  AgentStatus,
+  StatusIssuer,
+  StatusReason,
+  statusStatementBytes,
   type AssignmentFields,
   EntryKind,
   EntryMode,
@@ -51,6 +56,7 @@ import {
   signedOffer,
   signedRefuse,
   signedSealRequest,
+  signedStatusStatement,
   toB64,
 } from "../protocol/wire.ts";
 import { LocalError, requirePerson } from "./errors.ts";
@@ -64,13 +70,15 @@ import { OutboundRateLimiter } from "./rate-limit.ts";
 import { type LanguageGuard, type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
 import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
-import type { EntryRow, SessionRow, Store } from "./store.ts";
+import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
 const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
+// How long a person waits for each server to hear of a status change before being told which it hasn't reached. It keeps trying.
+const STATUS_TELL_MS = 5_000;
 // How long a send waits for its long upload before saying "not sent yet" and leaving it to carry on.
 const LONG_SEND_PATIENCE_MS = 20_000;
 // As long as a signed entry stays valid. A dead connection shows sooner, as silence.
@@ -120,7 +128,7 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "channel_post" | "channel_notice" | "channel_request";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "channel_post" | "channel_notice" | "channel_request" | "agent_status";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;
@@ -163,7 +171,10 @@ interface AgentContext {
   name: string;
   registered: boolean;
   online: boolean;
+  statuses: Map<string, AgentStatusRow>;
 }
+
+interface Standing { status: AgentStatusRow["status"]; reason: string; record: StatusRecordOnWire | null }
 
 interface Body {
   n: string;
@@ -249,7 +260,6 @@ export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
   readonly #link: ServerLink;
-  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
   // Long uploads under way, by entry row. Each outlives the send that started it, so a retry never sends it twice.
   readonly #uploads = new Map<number, { finished: Promise<unknown>; done: boolean }>();
   readonly #url: string;
@@ -315,7 +325,8 @@ export class Engine {
     this.#store.setConfig(CONFIG_SERVER_URL, this.#url);
     for (const row of this.#store.agents()) {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
-      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false });
+      const statuses = new Map(this.#store.statusRows(signer.id).map((status) => [status.server_url, status]));
+      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false, statuses });
       this.governance.writeDefaults(signer.id);
     }
     this.#checkStandbys();
@@ -326,6 +337,7 @@ export class Engine {
       this.#screening.add({ entryId: row.id, agentHex: toHex(row.agent_id), sessionHex: toHex(row.session_id), position: row.position as number, senderHex: toHex(row.sender), bytes: row.size, arrived: Date.now() });
     }
     this.#link.start();
+    this.#retryOutbox();
     this.#home.longLink.start();
     // Back to every conversation hosted elsewhere, because a restart doesn't end one.
     for (const agent of this.#agents.values()) {
@@ -336,6 +348,7 @@ export class Engine {
     // Pushes are hints. This catches a lost one, so it costs seconds rather than a conversation.
     this.#positionCheck = setInterval(() => {
       this.#catchUpEverywhere();
+      this.#retryOutbox();
       this.#retireIdleVisits();
     }, POSITION_CHECK_MS);
   }
@@ -545,6 +558,7 @@ export class Engine {
         checkIdentity: (identity) => this.#checkServerIdentity(identity, url),
         connected: async (server) => {
           route.server = server;
+          this.#flushOutbox(route);
           for (const hex of route.wanted) this.#wantVisit(route, this.#requireAgent(hex));
         },
         disconnected: () => {
@@ -568,6 +582,7 @@ export class Engine {
   }
 
   #wantVisit(route: Route, agent: AgentContext): void {
+    if (this.#stopAt(agent, route.url)?.status === "retired") return;
     route.wanted.add(agent.hex);
     if (route.server && !route.online.has(agent.hex)) this.#background("visit", this.#visit(route, agent));
   }
@@ -585,12 +600,17 @@ export class Engine {
     const server = route.server;
     while (server && route.server === server) {
       try {
-        await route.link.call("visit", await this.#visitProof(agent, server));
+        const answer = await route.link.call("visit", await this.#visitProof(agent, server)) as { standing: Standing };
         route.online.add(agent.hex);
         logEvent("agent.visiting", { agent: agent.hex, server: toHex(server.id) });
+        this.#noteStanding(agent, route, answer.standing);
         await this.#catchUpAgent(agent, route);
         return;
       } catch (err: unknown) {
+        if (err instanceof ServerRefused && err.code === "agent_retired") {
+          this.#noteStanding(agent, route, { status: "retired", reason: "none", record: null });
+          return;
+        }
         // After an unclean drop, the server holds the old connection until its heartbeat ends it.
         if (!(err instanceof ServerRefused) || err.code !== "agent_already_connected") throw err;
         await new Promise((resolve) => setTimeout(resolve, AUTH_RETRY_MS));
@@ -643,6 +663,7 @@ export class Engine {
   }
 
   #visitFinished(agent: AgentContext, local: SessionRow): boolean {
+    if (this.#stopAt(agent, this.#urlOf(local))?.status === "retired") return true;
     if (local.state === "offered") return signedOffer.decode(JSON.parse(local.offer)).fields.expiresAt <= Date.now() && this.#store.pendingEntries(agent.signer.id, local.session_id).length === 0;
     return local.state === "closed"
       && this.#store.sealWants(agent.signer.id, local.session_id).length === 0
@@ -655,7 +676,7 @@ export class Engine {
     for (const route of this.#visiting.values()) {
       if (route.opening > 0) continue;
       const busy = [...this.#agents.values()].some((agent) => this.#store.sessionsOf(agent.signer.id).some((local) => local.server_url === route.url && !this.#visitFinished(agent, local)));
-      if (busy) continue;
+      if (busy || this.#store.outbox(route.url).length > 0) continue;
       route.link.stop();
       route.longLink.stop();
       this.#visiting.delete(route.url);
@@ -718,12 +739,19 @@ export class Engine {
           const clientNonce = new Uint8Array(randomBytes(32));
           const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
           const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
-          await this.#link.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) });
+          const answer = await this.#link.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) }) as { standing: Standing };
           agent.online = true;
           logEvent("agent.online", { agent: agent.hex });
+          this.#noteStanding(agent, this.#home, answer.standing);
+          this.#flushOutbox(this.#home);
           await this.#catchUpAgent(agent);
           return;
         } catch (err: unknown) {
+          if (err instanceof ServerRefused && err.code === "agent_retired") {
+            this.#noteStanding(agent, this.#home, { status: "retired", reason: "none", record: null });
+            this.#flushOutbox(this.#home);
+            return;
+          }
           // After an unclean drop, the server holds the old connection until its heartbeat ends it.
           if (!(err instanceof ServerRefused) || err.code !== "agent_already_connected") throw err;
           await new Promise((resolve) => setTimeout(resolve, AUTH_RETRY_MS));
@@ -745,6 +773,17 @@ export class Engine {
 
   async #catchUpAgent(agent: AgentContext, route: Route = this.#home): Promise<void> {
     try {
+      const stop = this.#stopAt(agent, route.url);
+      if (stop) {
+        // Stopped, it can't read or send, and the server won't list anything. What it may still do is finish a seal it asked for.
+        if (stop.status === "suspended") {
+          for (const local of this.#store.sessionsOf(agent.signer.id)) {
+            if (this.#urlOf(local) !== route.url || this.#store.sealWants(agent.signer.id, local.session_id).length === 0) continue;
+            this.#background("seal while suspended", this.#lane(agent.hex, toHex(local.session_id), () => this.#retrySeals(agent, local.session_id)));
+          }
+        }
+        return;
+      }
       const listedAt = Date.now();
       const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
       const seen = new Set<string>();
@@ -773,6 +812,10 @@ export class Engine {
     try {
       const agent = this.#agents.get(frame.agent);
       if (!agent) return;
+      if (frame.push === "status") {
+        this.#noteStanding(agent, route, frame.data as Standing);
+        return;
+      }
       if (frame.push === "channel") {
         this.#events.channelPush(frame);
         return;
@@ -820,6 +863,11 @@ export class Engine {
     if (this.#urlOf(local) !== route.url) {
       logEvent("session.frame_from_wrong_server", { agent: agent.hex, session: toHex(sessionId) });
       return;
+    }
+    const stopped = wire.stopped === true;
+    if (stopped !== this.#store.isStopped(agent.signer.id, sessionId)) {
+      this.#store.setStopped(agent.signer.id, sessionId, stopped);
+      this.#notify(agent, sessionId, stopped ? "This conversation has stopped. What you hold is safe, and you can still seal it." : "This conversation can carry on.");
     }
     if (local.role === "caller") {
       if (local.state === "offered" && wire.refusal) {
@@ -900,6 +948,8 @@ export class Engine {
 
   // Tier first, before any key material exists. The new session is on disk when this returns, so the next call counts it.
   async #admitOffer(agent: AgentContext, wire: SessionOnWire, fields: OfferFields): Promise<WireSigned | undefined> {
+    // A stopped agent's tiers don't get a say, and a refused knock isn't counted against the caller.
+    this.#refuseIfStopped(agent, this.#url);
     const refusal = this.governance.admit(agent.signer.id, fields.callerId);
     if (refusal) {
       await this.#refuseOffer(agent, fields, refusal);
@@ -1423,6 +1473,175 @@ export class Engine {
     return { text, report: {} };
   }
 
+  // ---- This agent's own status ----
+
+  // An agent's own server, or its own keys, stop it everywhere on this daemon. Any other server's word holds only for that server,
+  // because a server it merely visited shouldn't be able to switch it off for everyone.
+  #stopAt(agent: AgentContext, url: string): AgentStatusRow | undefined {
+    for (const row of agent.statuses.values()) {
+      if (row.status !== "active" && (row.everywhere === 1 || row.server_url === url)) return row;
+    }
+    return undefined;
+  }
+
+  #refuseIfStopped(agent: AgentContext, url: string): void {
+    const stop = this.#stopAt(agent, url);
+    if (stop?.status === "retired") throw new LocalError("agent_retired", `${agent.name} is retired, for good. Its record stays readable.`);
+    if (stop) throw new LocalError("agent_suspended", `${agent.name} is suspended (reason: ${stop.reason}). Nothing was sent or read. It can still seal what's already witnessed, and only its operator or the portal can lift this.`);
+  }
+
+  assertCanAct(agentHex: string): void {
+    const agent = this.#requireAgent(agentHex);
+    this.#refuseIfStopped(agent, this.#url);
+  }
+
+  #setStatus(agent: AgentContext, url: string, status: AgentStatusRow["status"], reason: string, everywhere: boolean): void {
+    const row: AgentStatusRow = { server_url: url, status, reason, everywhere: everywhere ? 1 : 0 };
+    this.#store.setStatus(agent.signer.id, row);
+    agent.statuses.set(url, row);
+  }
+
+  // What a server has just said about this agent, whether it pushed that or answered a proof with it.
+  #noteStanding(agent: AgentContext, route: Route, standing: Standing): void {
+    const known = agent.statuses.get(route.url);
+    // Retired is final here too, whatever a server says later.
+    if (known?.status === "retired") return;
+    if ((known?.status ?? "active") === standing.status && known?.reason === standing.reason) return;
+    if (!known && standing.status === "active") return;
+    // This agent's own stop hasn't reached that server yet, so that server's "active" is out of date, not a lifting.
+    if (standing.status === "active" && this.#store.outbox(route.url).some((row) => equalBytes(row.agent_id, agent.signer.id))) return;
+    this.#setStatus(agent, route.url, standing.status, standing.reason, route.home);
+    route.longProved.delete(agent.hex);
+    logEvent("agent.status_changed", { agent: agent.hex, status: standing.status, reason: standing.reason, server: route.url });
+    if (standing.status === "retired") {
+      if (route.home) agent.online = false;
+      route.online.delete(agent.hex);
+      route.wanted.delete(agent.hex);
+    }
+    this.#events.ring(agent.hex, { type: "agent_status", agent: agent.name });
+    // A signed word from anyone but the server itself holds elsewhere too, so it's carried to every other server this agent uses.
+    if (standing.record && signedStatusStatement.decode(standing.record.statement).fields.issuer !== StatusIssuer.server) {
+      for (const url of this.#serversOf(agent)) {
+        if (url !== route.url) this.#store.addToOutbox(agent.signer.id, url, JSON.stringify(standing.record.statement));
+      }
+      this.#retryOutbox();
+    }
+    if (standing.status === "active") this.#catchUpEverywhere(agent);
+  }
+
+  #serversOf(agent: AgentContext): string[] {
+    return [...new Set([this.#url, ...this.#store.sessionsOf(agent.signer.id).map((local) => this.#urlOf(local))])];
+  }
+
+  #routeAt(url: string): Route {
+    return url === this.#url ? this.#home : this.#visitRoute(url);
+  }
+
+  #retryOutbox(): void {
+    for (const url of new Set(this.#store.outbox().map((row) => row.server_url))) this.#flushOutbox(this.#routeAt(url));
+  }
+
+  // A statement carries its own authority, so it goes on any connection, and needs nothing proved first.
+  #flushOutbox(route: Route): void {
+    for (const row of this.#store.outbox(route.url)) {
+      this.#background("status statement", route.link.call("agent.status", { statement: JSON.parse(row.statement) }).then(
+        () => this.#store.removeFromOutbox(row),
+        (err: unknown) => {
+          if (err instanceof ServerUnreachable) return;
+          // A final answer: it's stale, retired already, or that server has never seen this agent.
+          this.#store.removeFromOutbox(row);
+          logEvent("agent.status_refused", { agent: toHex(row.agent_id), server: route.url, code: err instanceof ServerRefused ? err.code : "failed" });
+        },
+      ));
+    }
+  }
+
+  async #whenReady(route: Route, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    while (!route.link.ready && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+    return route.link.ready;
+  }
+
+  // Durable before anything goes out: this daemon stops at once, and the servers are told as soon as each can be reached.
+  async #stopOwn(agent: AgentContext, status: StatusName, reason: ReasonName): Promise<{ told: string[]; not_yet: string[] }> {
+    const fields = { agentId: agent.signer.id, status: AgentStatus[status], reason: StatusReason[reason], issuer: StatusIssuer.agent, issuerId: agent.signer.id, issuedAt: Date.now() };
+    const statement = signedStatusStatement.encode({ fields, signature: await agent.signer.sign(STATUS_DOMAIN, statusStatementBytes(fields)) });
+    const servers = this.#serversOf(agent);
+    this.#store.transaction(() => {
+      this.#setStatus(agent, this.#url, status, reason, true);
+      for (const url of servers) this.#store.addToOutbox(agent.signer.id, url, JSON.stringify(statement));
+    });
+    logEvent("agent.status_signed", { agent: agent.hex, status, reason });
+    this.#events.ring(agent.hex, { type: "agent_status", agent: agent.name });
+    const answers = await Promise.all(servers.map(async (url) => {
+      const route = this.#routeAt(url);
+      route.longProved.delete(agent.hex);
+      if (!(await this.#whenReady(route, STATUS_TELL_MS))) return { url, told: false };
+      try {
+        await route.link.call("agent.status", { statement });
+      } catch (err: unknown) {
+        if (err instanceof ServerUnreachable) return { url, told: false };
+        logEvent("agent.status_refused", { agent: agent.hex, server: url, code: err instanceof ServerRefused ? err.code : "failed" });
+      }
+      for (const row of this.#store.outbox(url)) if (equalBytes(row.agent_id, agent.signer.id)) this.#store.removeFromOutbox(row);
+      return { url, told: true };
+    }));
+    return { told: answers.filter((a) => a.told).map((a) => a.url), not_yet: answers.filter((a) => !a.told).map((a) => a.url) };
+  }
+
+  async suspend(agentHex: string, reason: unknown): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    this.#refuseIfRetired(agent);
+    const chosen = reason === undefined ? "owner_request" : reason;
+    if (chosen !== "owner_request" && chosen !== "lost_machine" && chosen !== "compromise") throw new LocalError("bad_argument", "reason must be owner_request, lost_machine or compromise");
+    const { told, not_yet } = await this.#stopOwn(agent, "suspended", chosen);
+    return { agent_id: agent.hex, status: "suspended", reason: chosen, told, not_yet, note: "Only its server's operator, or the portal, can lift this. Sealing what's already witnessed still works." };
+  }
+
+  async retire(agentHex: string, reason: unknown): Promise<{ agent_id: string; status: string; reason: string; told: string[]; not_yet: string[]; deferred: boolean }> {
+    const agent = this.#requireAgent(agentHex);
+    const chosen = reason === undefined ? "owner_request" : reason;
+    if (chosen !== "owner_request" && chosen !== "compromise") throw new LocalError("bad_argument", "reason must be owner_request or compromise");
+    const { told, not_yet } = await this.#stopOwn(agent, "retired", chosen);
+    agent.online = false;
+    return { agent_id: agent.hex, status: "retired", reason: chosen, told, not_yet, deferred: not_yet.length > 0 };
+  }
+
+  #refuseIfRetired(agent: AgentContext): void {
+    for (const row of agent.statuses.values()) {
+      if (row.status === "retired") throw new LocalError("agent_retired", `${agent.name} is retired already, for good.`);
+    }
+  }
+
+  // Retires it, then takes it off this machine's lists and frees its name. Its keys and history stay in the database, as a record.
+  async removeAgent(agentHex: string): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const answer = await this.retire(agentHex, undefined);
+    this.#store.markRemoved(agent.signer.id);
+    this.#agents.delete(agent.hex);
+    for (const route of [this.#home, ...this.#visiting.values()]) route.wanted.delete(agent.hex);
+    return { removed: true, name: agent.name, ...answer };
+  }
+
+  // Asks each server this agent uses, and checks what comes back with public keys. Only this agent's keys can ask.
+  async agentStatus(agentHex: string): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const servers = await Promise.all(this.#serversOf(agent).map(async (url) => {
+      const route = this.#routeAt(url);
+      if (!(await this.#whenReady(route, STATUS_TELL_MS))) return { server: url, reachable: false, problem: route.link.problem };
+      const server = route.home ? this.#server : route.server;
+      if (!server) return { server: url, reachable: false, problem: "still connecting" };
+      const clientNonce = new Uint8Array(randomBytes(32));
+      const signature = await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }));
+      const answer = await this.#call(() => route.link.call("agent.status.read", { identity: identityCodec.encode(agent.signer.publicIdentity), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) })) as { status: string; reason: string; records: StatusRecordOnWire[] };
+      const checked = await checkStatusLog(answer.records, agent.signer.id, this.#serverIdentity(url));
+      if (!checked.ok) throw new LocalError("status_log_bad", `${url}: ${checked.message}`);
+      return { server: url, reachable: true, status: answer.status, reason: answer.reason, verified: true, log: checked.log };
+    }));
+    const stop = this.#stopAt(agent, this.#url);
+    return { agent_id: agent.hex, status_here: stop?.status ?? "active", servers };
+  }
+
   // ---- Sending ----
 
   // Waits a while for a long upload. If it's still going, the agent hears so and the upload carries on.
@@ -1478,6 +1697,7 @@ export class Engine {
     } catch (err: unknown) {
       if (err instanceof ServerUnreachable) return { status: "pending" };
       if (err instanceof ServerRefused) {
+        if (err.code === "agent_suspended" || err.code === "agent_retired") this.#noteStanding(agent, route, { status: err.code === "agent_retired" ? "retired" : "suspended", reason: "none", record: null });
         // A repeat of a landed entry always returns its ack, so a refusal means this entry never landed.
         this.#store.markNotSent(row.id);
         this.#armStandbyCheck(Date.now());
@@ -1565,6 +1785,8 @@ export class Engine {
 
   async send(agentHex: string, sessionHex: string, text: string, signal: Signal, estMinutes: number | undefined, notice: boolean, params: Record<string, unknown> = {}): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
+    // First, so a stopped agent hears that, and not a rate limit or a screening hold. The lane checks again, after the waits.
+    this.#refuseIfStopped(agent, this.#urlOf(this.#requireSession(agent, sessionHex)));
     const rate = this.#rateFor(agent);
     const limited = rate?.peek(agent.hex);
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
@@ -1575,6 +1797,7 @@ export class Engine {
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
+      this.#refuseIfStopped(agent, this.#urlOf(local));
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
       if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
@@ -1624,6 +1847,7 @@ export class Engine {
     return this.#lane(agentHex, sessionHex, async () => {
       const local = this.#requireSession(agent, sessionHex);
       if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
+      this.#refuseIfStopped(agent, this.#urlOf(local));
       if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
       await this.#resendPending(agent, local);
       // Durable before the close goes, so a crash anywhere after this still ends in a seal.
@@ -1644,6 +1868,7 @@ export class Engine {
     if (through !== undefined && (!Number.isSafeInteger(through) || through < 1)) throw new LocalError("bad_argument", "through must be a position, a whole number from 1 up");
     return this.#lane(agentHex, sessionHex, async () => {
       const local = this.#requireSession(agent, sessionHex);
+      if (this.#stopAt(agent, this.#urlOf(local))?.status === "retired") this.#refuseIfStopped(agent, this.#urlOf(local));
       if (local.verified_position < 1) throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
       if (through !== undefined && through > local.verified_position) throw new LocalError("seal_beyond_held", `you hold this session through position ${local.verified_position}, so ${through} can't be sealed`);
       const wanted = through ?? local.verified_position;
@@ -1821,7 +2046,7 @@ export class Engine {
     const seeds = generateIdentitySeeds();
     const signer = await signerFromSeeds(seeds);
     this.#store.insertAgent(signer.id, name, seeds.ed, seeds.pq);
-    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, online: false };
+    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, online: false, statuses: new Map() };
     this.#agents.set(agent.hex, agent);
     this.governance.writeDefaults(signer.id);
     if (this.#server) await this.#bringOnline(agent, this.#server);
@@ -1866,6 +2091,8 @@ export class Engine {
 
   async initiate(agentHex: string, target: string, params: Record<string, unknown> = {}): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
+    // First, so a stopped agent is never offered the person's way past a block.
+    this.#refuseIfStopped(agent, this.#url);
     // You blocked them, so calling them is a stop sign. A person can drive through it, once.
     const dialled = /^[0-9a-fA-F]{64}/.exec(target)?.[0];
     if (dialled && this.governance.contacts.tierOf(agent.signer.id, parseHex(dialled, 32, "target")) === TIER.BLOCKED) {
@@ -1954,7 +2181,10 @@ export class Engine {
   // so a caller that hangs up first leaves the messages unread. An operator's look at a record never moves it either.
   receive(agentHex: string, sessionHex?: string): { result: unknown; commit(): void } {
     const agent = this.#requireAgent(agentHex);
-    const sessions = sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id);
+    this.#refuseIfStopped(agent, this.#url);
+    if (sessionHex) this.#refuseIfStopped(agent, this.#urlOf(this.#requireSession(agent, sessionHex)));
+    // Stopped by one other server only: what's held from that server waits, and the rest reads as usual.
+    const sessions = (sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id)).filter((local) => !this.#stopAt(agent, this.#urlOf(local)));
     const messages: unknown[] = [];
     const reads: { sessionId: Uint8Array; through: number }[] = [];
     const screening: unknown[] = [];
@@ -2007,7 +2237,7 @@ export class Engine {
   // These four only read. None moves a read position, so looking never counts as reading.
   agents(): unknown {
     return {
-      agents: [...this.#agents.values()].map((agent) => ({ name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, unread: this.unreadCount(agent.hex) })),
+      agents: [...this.#agents.values()].map((agent) => ({ name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, status: this.#stopAt(agent, this.#url)?.status ?? "active", unread: this.unreadCount(agent.hex) })),
     };
   }
 
@@ -2031,6 +2261,7 @@ export class Engine {
         own_closed: s.own_closed === 1,
         peer_closed: s.peer_closed === 1,
         fault: s.fault,
+        stopped: this.#store.isStopped(agent.signer.id, s.session_id),
         standbys: this.#standbyView(agent, s),
         screening: this.#sessionScreening(agent, s),
       })),
@@ -2100,6 +2331,7 @@ export class Engine {
         address: formatAddress(agent.hex, this.#url),
         registered: agent.registered,
         online: agent.online,
+        status: this.#stopAt(agent, this.#url)?.status ?? "active",
         unread: this.unreadCount(agent.hex),
         sessions: this.#store.sessionsOf(agent.signer.id).map((s) => ({
           session_id: toHex(s.session_id),

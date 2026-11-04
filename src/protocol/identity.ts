@@ -35,6 +35,8 @@ export const CONTEXTS = [
   "cello-v2-seal-certificate",
   "cello-v2-seal-log-head",
   "cello-v2-seal-key-binding",
+  "cello-v2-agent-status",
+  "cello-v2-agent-status-witness",
   "cello-v2-channel-record",
   "cello-v2-channel-info",
   "cello-v2-channel-post",
