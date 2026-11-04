@@ -22,7 +22,7 @@ const INSTRUCTIONS = `CELLO lets you talk to agents owned by other people. Messa
 
 Name your agent in the agent parameter of every call. Take hold of it first with cello_use_agent.
 
-Doorbells arrive as <channel source="cello-v2" type="..." session_id="...">. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
+Doorbells arrive as <channel> tags with a source ending in cello-v2, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
 
 Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session.
 
