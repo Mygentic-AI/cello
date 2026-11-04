@@ -22,7 +22,7 @@ async function loadModel(): Promise<{ classifier: InjectionClassifier | null; fa
   const loadable = classifierLoadable(status);
   if (!loadable.load) return { classifier: null, fact: { state: status.state, running: false, backend: null, reason: loadable.reason ?? null } };
   const selection = await selectClassifierBackend({
-    native: (): Promise<ClassifierLoad> => loadInjectionClassifier(dir),
+    native: (): Promise<ClassifierLoad> => loadInjectionClassifier(dir, (workerData as { modelThreads: number }).modelThreads),
     wasm: () => loadWasmInjectionClassifier(dir),
     log: () => undefined,
   });
@@ -37,8 +37,6 @@ if (!injectionPatternsReady() || secretRules.compiled === 0) throw new Error("th
 const outboundOnly = (workerData as { role: string }).role === "outbound";
 const model = outboundOnly ? { classifier: null, fact: { state: "not_used", running: false, backend: null, reason: null } } : await loadModel();
 const jobs = new Map<number, AsyncGenerator<ScreenStep, InboundVerdict>>();
-// Only for the live test of a worker crash: a real uncaught exception on this thread, when a message holds this text.
-const crashText = process.env["CELLO_V2_TEST_CRASH_TEXT"];
 
 type Request =
   | { type: "outbound"; id: number; text: string; keys: string[] }
@@ -82,7 +80,6 @@ port.on("message", (request: Request) => {
       port.postMessage({ type: "done", id: request.id, verdict: { verdict: "allow", delivered: null, findings: [], reason: null, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies InboundVerdict });
       return;
     }
-    if (crashText && text.includes(crashText)) setImmediate(() => { throw new Error("test crash of the screening worker"); });
     jobs.set(request.id, screenInbound(text, request.level === "full" ? model.classifier : null));
   }
   step(request.id).catch((err: unknown) => {

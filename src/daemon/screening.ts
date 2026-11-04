@@ -6,25 +6,17 @@ import { Worker } from "node:worker_threads";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import type { OutboundVerdict } from "../screener/outbound.ts";
 import { logEvent } from "./log.ts";
+import type { Settings } from "./settings.ts";
 
 export type ScreeningLevel = "full" | "deterministic" | "off";
 
-// Up to this size a message might be short, so it's measured straight away. Longer ones go to the long lane unmeasured:
-// measuring costs a whole tokenizer run, and getting one wrong only delays that one message.
-const MEASURE_MAX_BYTES = 16_000;
-const SHORT_MAX_WINDOWS = 1;
-const TELL_AFTER_MS = 3_000;
 const TELL_CHECK_MS = 1_000;
-const MAX_ATTEMPTS = 3;
 const RESTART_BASE_MS = 500;
 const RESTART_MAX_MS = 30_000;
 const OUTBOUND_LIMIT_MS = 30_000;
 // Steps in a screen besides model windows: the sanitizer, one for each scan variant, and the verdict.
 const FIXED_STEPS = 24;
 const WINDOW_BYTES_GUESS = 8_000;
-// One worker today. A pool would mean several of these slots: each costs about 1 GB with the model, and sharing one model
-// session between them gave no speedup (1.01x), so a pool waits for a clean measurement.
-const WORKER_COUNT = 1;
 
 export interface ScreenJob {
   entryId: number;
@@ -40,6 +32,8 @@ interface Running extends ScreenJob {
   id: number;
   lane: "short" | "long";
   started: boolean;
+  // A screen in progress lives in one thread, so it stays with that thread.
+  slot: Slot | undefined;
   steps: number;
   windows: number | null;
   attempts: number;
@@ -54,6 +48,7 @@ export interface ScreeningEvents {
   verdict(job: ScreenJob, verdict: InboundVerdict): void;
   delayed(job: ScreenJob, aboutSeconds: number): void;
   workerCrashed(message: string, waiting: number): void;
+  modelChecked(model: ModelFact): void;
 }
 
 const workerUrl = (): URL => new URL(`../screener/worker${extname(new URL(import.meta.url).pathname)}`, import.meta.url);
@@ -67,6 +62,7 @@ export class ScreeningQueue {
   // Whose turn is next, per lane. Keyed by the sender's id, because a limit per session is one a stranger opens more sessions to escape.
   readonly #lastSender: Record<"short" | "long", string> = { short: "", long: "" };
   readonly #slots: Slot[] = [];
+  readonly settings: Settings;
   #nextId = 1;
   #tellTimer: NodeJS.Timeout | undefined;
   #msPerStep = 5;
@@ -75,9 +71,16 @@ export class ScreeningQueue {
   lastCrash: string | null = null;
   model: ModelFact | null = null;
 
-  constructor(events: ScreeningEvents) {
+  constructor(events: ScreeningEvents, settings: Settings) {
     this.#events = events;
-    for (let i = 0; i < WORKER_COUNT; i++) this.#slots.push(new Slot(this));
+    this.settings = settings;
+    // One thread by default. More are a setting, and only the owner of a machine can say what it can afford.
+    for (let i = 0; i < settings.screener_workers; i++) this.#slots.push(new Slot(this));
+  }
+
+  onModel(model: ModelFact): void {
+    this.model = model;
+    this.#events.modelChecked(model);
   }
 
   start(): void {
@@ -100,7 +103,8 @@ export class ScreeningQueue {
     const key = job.agentHex + job.sessionHex;
     const queue = this.#sessions.get(key) ?? [];
     if (queue.some((queued) => queued.entryId === job.entryId)) return;
-    queue.push({ ...job, id: this.#nextId++, lane: job.bytes <= MEASURE_MAX_BYTES ? "short" : "long", started: false, steps: 0, windows: null, attempts: 0, told: false });
+    // Measuring costs a whole tokenizer run, so only what might be short gets it. A wrong guess only delays that one message.
+    queue.push({ ...job, id: this.#nextId++, lane: job.bytes <= this.settings.screener_measure_max_bytes ? "short" : "long", started: false, slot: undefined, steps: 0, windows: null, attempts: 0, told: false });
     this.#sessions.set(key, queue);
     this.pump();
   }
@@ -147,18 +151,18 @@ export class ScreeningQueue {
     const now = Date.now();
     for (const queue of this.#sessions.values()) {
       const head = queue[0];
-      if (!head || head.told || now - head.arrived < TELL_AFTER_MS) continue;
+      if (!head || head.told || now - head.arrived < this.settings.screener_tell_after_ms) continue;
       head.told = true;
       this.#events.delayed(head, this.#estimateSeconds(head));
     }
   }
 
   // The next conversation head in this lane, taking turns across senders.
-  #pick(lane: "short" | "long"): Running | undefined {
+  #pick(lane: "short" | "long", slot: Slot): Running | undefined {
     const bySender = new Map<string, Running>();
     for (const queue of this.#sessions.values()) {
       const head = queue[0];
-      if (!head || head.lane !== lane || bySender.has(head.senderHex) || this.#slots.some((slot) => slot.job === head)) continue;
+      if (!head || head.lane !== lane || bySender.has(head.senderHex) || !this.#free(head, slot)) continue;
       bySender.set(head.senderHex, head);
     }
     if (bySender.size === 0) return undefined;
@@ -168,10 +172,14 @@ export class ScreeningQueue {
     return bySender.get(next);
   }
 
-  #longInProgress(): Running | undefined {
+  #free(job: Running, slot: Slot): boolean {
+    return !this.#slots.some((other) => other.job === job) && (!job.started || job.slot === slot);
+  }
+
+  #longInProgress(slot: Slot): Running | undefined {
     for (const queue of this.#sessions.values()) {
       const head = queue[0];
-      if (head?.lane === "long" && head.started) return head;
+      if (head?.lane === "long" && head.started && this.#free(head, slot)) return head;
     }
     return undefined;
   }
@@ -181,9 +189,8 @@ export class ScreeningQueue {
     if (this.#stopped) return;
     for (const slot of this.#slots) {
       if (!slot.ready || slot.job) continue;
-      const job = this.#pick("short") ?? this.#longInProgress() ?? this.#pick("long");
-      if (!job) return;
-      this.#run(slot, job);
+      const job = this.#pick("short", slot) ?? this.#longInProgress(slot) ?? this.#pick("long", slot);
+      if (job) this.#run(slot, job);
     }
   }
 
@@ -205,6 +212,7 @@ export class ScreeningQueue {
       return;
     }
     job.started = true;
+    job.slot = slot;
     slot.start(job, loaded.body, loaded.level);
   }
 
@@ -222,7 +230,7 @@ export class ScreeningQueue {
     this.#msPerStep = this.#msPerStep * 0.9 + ms * 0.1;
     if (measured !== undefined) {
       job.windows = measured;
-      job.lane = measured <= SHORT_MAX_WINDOWS ? "short" : "long";
+      job.lane = measured <= this.settings.screener_short_max_windows ? "short" : "long";
     }
     this.pump();
   }
@@ -237,13 +245,13 @@ export class ScreeningQueue {
     // A message that stops the screen every time stays undelivered, and mustn't hold up its conversation for good.
     this.#finish(job);
     logEvent("screening.gave_up", { agent: job.agentHex, session: job.sessionHex, position: job.position, message });
-    this.#events.verdict(job, { verdict: "blocked", delivered: null, findings: [], reason: `the screen failed on it ${MAX_ATTEMPTS} times, so it wasn't delivered`, score: null, ran: NOT_SCREENED });
+    this.#events.verdict(job, { verdict: "blocked", delivered: null, findings: [], reason: `the screen failed on it ${this.settings.screener_max_attempts} times, so it wasn't delivered`, score: null, ran: NOT_SCREENED });
   }
 
   onFailed(job: Running, message: string): void {
     job.started = false;
     job.attempts++;
-    if (job.attempts >= MAX_ATTEMPTS) this.#giveUp(job, message);
+    if (job.attempts >= this.settings.screener_max_attempts) this.#giveUp(job, message);
     this.pump();
   }
 
@@ -252,10 +260,11 @@ export class ScreeningQueue {
     this.restarts++;
     this.lastCrash = message;
     logEvent("screening.worker_crashed", { message, restarts: this.restarts });
-    for (const queue of this.#sessions.values()) for (const queued of queue) queued.started = false;
+    // Only what lived in this thread starts over. Another thread's screens carry on.
+    for (const queue of this.#sessions.values()) for (const queued of queue) if (queued.slot === slot) queued.started = false;
     if (job) {
       job.attempts++;
-      if (job.attempts >= MAX_ATTEMPTS) this.#giveUp(job, message);
+      if (job.attempts >= this.settings.screener_max_attempts) this.#giveUp(job, message);
     }
     const counts = this.pending();
     this.#events.workerCrashed(message, counts.short + counts.long);
@@ -283,7 +292,8 @@ class Slot {
   }
 
   spawn(): void {
-    const worker = new Worker(workerUrl(), { workerData: { role: "inbound" } });
+    const { screener_model_threads: modelThreads, screener_worker_memory_mb: memory } = this.#queue.settings;
+    const worker = new Worker(workerUrl(), { workerData: { role: "inbound", modelThreads }, resourceLimits: { maxOldGenerationSizeMb: memory } });
     this.#worker = worker;
     this.ready = false;
     this.job = undefined;
@@ -322,7 +332,7 @@ class Slot {
 
   #onReply(reply: WorkerReply): void {
     if (reply.type === "ready") {
-      this.#queue.model = reply.model;
+      this.#queue.onModel(reply.model);
       this.ready = true;
       logEvent("screening.worker_ready", { model: reply.model.state, running: reply.model.running, backend: reply.model.backend });
       this.#queue.pump();

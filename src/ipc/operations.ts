@@ -75,6 +75,19 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     ],
   },
   {
+    command: "settings",
+    group: "Setup",
+    summary: "For a person: see or change this daemon's settings, kept in its database.",
+    scoped: false,
+    acts: false,
+    personOnly: true,
+    description: "For a person, and never available as a tool. Lists this daemon's settings, or changes one if you give its name and value. They live in the encrypted database, so moving the database and its key moves them. A change takes effect at the next login.",
+    params: [
+      { name: "name", kind: "string", positional: true, description: "The setting to change. Leave out to list them all." },
+      { name: "value", kind: "string", positional: true, description: "Its new value, a whole number." },
+    ],
+  },
+  {
     command: "agents",
     group: "Agents",
     summary: "List your agents, and whether each one is online.",

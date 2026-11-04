@@ -321,7 +321,9 @@ async function screenerCommand(args: string[]): Promise<void> {
   if (!(await runtimeAvailable())) {
     process.stdout.write(`Installing the runtime into ${screenerRuntimeDir()}\n`);
     mkdirSync(screenerRuntimeDir(), { recursive: true });
-    const npm = spawnSync("npm", ["install", "--prefix", screenerRuntimeDir(), "--no-audit", "--no-fund", "--foreground-scripts", "--allow-scripts=onnxruntime-node,protobufjs", SCREENER_RUNTIME_MODULE], { stdio: "inherit" });
+    // Its own folder, because Node's ESM resolver doesn't look in npm's global root. The native model runtime needs its install script.
+    writeFileSync(join(screenerRuntimeDir(), ".npmrc"), "allow-scripts=onnxruntime-node,protobufjs\n");
+    const npm = spawnSync("npm", ["install", "--no-audit", "--no-fund", SCREENER_RUNTIME_MODULE], { stdio: "inherit", cwd: screenerRuntimeDir() });
     if (npm.status !== 0) fail(`${JSON.stringify({ error: "runtime_install_failed", message: `npm install failed with status ${npm.status ?? "none"}, so the model can't run. Try again.` })}\n`, EXIT_REFUSED);
   }
   const after = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
@@ -379,7 +381,7 @@ async function main(): Promise<void> {
     if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
     return;
   }
-  if (op.personOnly) await confirmPerson(op, params);
+  if (op.command === "screening") await confirmPerson(op, params);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   const answer = op.method === "export_transcript"

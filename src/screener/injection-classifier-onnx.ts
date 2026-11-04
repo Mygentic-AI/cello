@@ -25,8 +25,6 @@ export interface InjectionClassifier {
   classify(text: string): Promise<{ injectionProbability: number; label?: string }>;
 }
 
-// Four threads with no idle spinning used 19 CPU-seconds rather than 37 on one 30 KB message, for 6.2 s rather than 5.3 s.
-const MODEL_THREADS = 4;
 const RUNTIME_MODULE = "@huggingface/transformers";
 
 export interface ClassifierLoad {
@@ -39,15 +37,14 @@ type PipelineFactory = (task: string, model: string, opts?: Record<string, unkno
 
 export async function loadInjectionClassifier(
   modelDir: string,
-  importImpl?: (specifier: string) => Promise<unknown>,
+  modelThreads: number,
 ): Promise<ClassifierLoad> {
   if (!(await isModelInstalled(modelDir))) {
     return {
       classifier: null,
       reason:
         `no model at ${modelDir} — semantic injection screening is OFF. Install it with ` +
-        `'cello-v2 screener install' (about 241 MB), or set CELLO_V2_SCREENER_MODEL_DIR to a directory ` +
-        `that already holds the model files`,
+        `'cello-v2 screener install' (about 241 MB)`,
     };
   }
 
@@ -56,7 +53,7 @@ export async function loadInjectionClassifier(
 
   let mod: unknown;
   try {
-    const doImport = importImpl ?? ((s: string) => import(/* @vite-ignore */ s));
+    const doImport = (s: string): Promise<unknown> => import(/* @vite-ignore */ s);
     mod = await doImport(runtimeSpecifier);
   } catch (err) {
     return {
@@ -78,7 +75,7 @@ export async function loadInjectionClassifier(
 
   let pipe: Pipe;
   try {
-    pipe = await factory("text-classification", join(modelDir), { local_files_only: true, session_options: { intraOpNumThreads: Math.min(MODEL_THREADS, availableParallelism()), extra: { session: { intra_op: { allow_spinning: "0" } } } } });
+    pipe = await factory("text-classification", join(modelDir), { local_files_only: true, session_options: { intraOpNumThreads: Math.min(modelThreads, availableParallelism()), extra: { session: { intra_op: { allow_spinning: "0" } } } } });
   } catch (err) {
     return {
       classifier: null,

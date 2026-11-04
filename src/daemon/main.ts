@@ -224,6 +224,8 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     // Not in the tool table's MCP half: only the command line reaches these, after it has asked a person.
     case "screening":
       return engine.setScreeningRule(engine.resolveAgent(text(params, "agent")), text(params, "sender"), params["level"]);
+    case "settings":
+      return engine.settings(params["name"], params["value"]);
     case "screener_reload":
       return engine.reloadScreener();
     case "shutdown":

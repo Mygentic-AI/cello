@@ -51,7 +51,8 @@ import {
 } from "../protocol/wire.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
-import { OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
+import { type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
+import { type Settings, SettingError, changeSetting, listSettings, loadSettings } from "./settings.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 
@@ -74,10 +75,9 @@ const STANDBY_CHECK_MAX_MS = 60_000;
 const LATEST_DATE_MS = 8.64e15;
 // How long a run of verdicts is left to settle before the sender is told how far screening has got.
 const SCREENED_ACK_DELAY_MS = 1_000;
-// How many of your own messages a reader can be behind on screening before your daemon waits a little before sending the next.
-const SENDER_BACKLOG_GAP = 8;
-const SENDER_BACKLOG_WAIT_MS = 10_000;
 const SENDER_BACKLOG_CHECK_MS = 250;
+const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
+const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 export const SCREENING_LEVELS: readonly ScreeningLevel[] = ["full", "deterministic", "off"];
@@ -208,21 +208,25 @@ export class Engine {
   #positionCheck: NodeJS.Timeout | undefined;
   #standbyCheck: NodeJS.Timeout | undefined;
   #standbyCheckAt = 0;
+  readonly #settings: Settings;
   readonly #screening: ScreeningQueue;
   readonly #outbound = new OutboundScreen();
   readonly #ackTimers = new Map<string, NodeJS.Timeout>();
   #lastCrashTold = 0;
+  #modelMissingTold = false;
 
   constructor(store: Store, url: string, events: EngineEvents) {
     this.#store = store;
     this.#events = events;
     this.#url = url;
+    this.#settings = loadSettings(store);
     this.#screening = new ScreeningQueue({
       load: (job) => this.#loadForScreen(job),
       verdict: (job, verdict) => this.#onVerdict(job, verdict),
       delayed: (job, aboutSeconds) => this.#onScreenDelayed(job, aboutSeconds),
       workerCrashed: (message, waiting) => this.#onWorkerCrashed(message, waiting),
-    });
+      modelChecked: (model) => this.#onModelChecked(model),
+    }, this.#settings);
     this.#link = new ServerLink(url, {
       checkIdentity: (identity) => this.#checkServerIdentity(identity),
       connected: async (server) => {
@@ -321,6 +325,18 @@ export class Engine {
     }));
   }
 
+  // A database can move to a machine without the model. That's said plainly, once per start, rather than quietly running less.
+  #onModelChecked(model: ModelFact): void {
+    if (model.running) {
+      this.#store.setConfig(CONFIG_MODEL_EVER_RAN, "1");
+      return;
+    }
+    if (this.#store.getConfig(CONFIG_MODEL_EVER_RAN) !== "1" || this.#modelMissingTold) return;
+    this.#modelMissingTold = true;
+    logEvent("screening.model_missing", { state: model.state, reason: model.reason });
+    for (const agent of this.#agents.values()) this.#notify(agent, null, MODEL_MISSING);
+  }
+
   #onWorkerCrashed(message: string, waiting: number): void {
     const now = Date.now();
     if (now - this.#lastCrashTold < WORKER_CRASH_TELL_EVERY_MS) return;
@@ -354,12 +370,27 @@ export class Engine {
 
   screeningFacts(): unknown {
     const model = this.#screening.model;
+    const missing = model !== null && !model.running && this.#store.getConfig(CONFIG_MODEL_EVER_RAN) === "1";
     return {
       deterministic: { running: model !== null, rules: model ? "sanitizing, variants and patterns" : "starting" },
-      model: model ?? { state: "starting", running: false, backend: null, reason: null },
+      model: { ...(model ?? { state: "starting", running: false, backend: null, reason: null }), ...(missing ? { needs_installing: MODEL_MISSING } : {}) },
       worker: { restarts: this.#screening.restarts, last_crash: this.#screening.lastCrash },
       queue: this.#screening.pending(),
     };
+  }
+
+  // Read at the daemon's start, so a change takes effect at the next login.
+  settings(name: unknown, value: unknown): unknown {
+    if (name === undefined) return { settings: listSettings(this.#store) };
+    if (typeof name !== "string" || typeof value !== "string") throw new LocalError("bad_argument", "to change a setting, name it and give its value");
+    try {
+      changeSetting(this.#store, name, value);
+    } catch (err: unknown) {
+      if (err instanceof SettingError) throw new LocalError("bad_setting", err.message);
+      throw err;
+    }
+    logEvent("settings.changed", { name, value });
+    return { settings: listSettings(this.#store), note: "This takes effect at the next login." };
   }
 
   reloadScreener(): unknown {
@@ -757,9 +788,9 @@ export class Engine {
     }
   }
 
-  #notify(agent: AgentContext, sessionId: Uint8Array, text: string): void {
+  #notify(agent: AgentContext, sessionId: Uint8Array | null, text: string): void {
     this.#store.addNotice(agent.signer.id, sessionId, text);
-    this.#events.ring(agent.hex, { type: "notice", agent: agent.name, session_id: toHex(sessionId) });
+    this.#events.ring(agent.hex, { type: "notice", agent: agent.name, ...(sessionId ? { session_id: toHex(sessionId) } : {}) });
   }
 
   // Doesn't stop the conversation for good: it's rechecked at every catch-up, so a bad deploy thaws by itself.
@@ -993,9 +1024,10 @@ export class Engine {
       const local = this.#store.session(agent.signer.id, sessionId);
       return local ? this.#store.countOwnAfter(agent.signer.id, sessionId, local.peer_screened_through) : 0;
     };
-    if (gap() <= SENDER_BACKLOG_GAP) return {};
+    const { sender_backlog_gap: allowed, sender_backlog_wait_ms: limit } = this.#settings;
+    if (gap() <= allowed) return {};
     const started = Date.now();
-    while (gap() > SENDER_BACKLOG_GAP && Date.now() - started < SENDER_BACKLOG_WAIT_MS) {
+    while (gap() > allowed && Date.now() - started < limit) {
       await new Promise((resolve) => setTimeout(resolve, SENDER_BACKLOG_CHECK_MS));
     }
     const behind = gap();

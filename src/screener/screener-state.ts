@@ -7,13 +7,13 @@ import { sha256File } from "./model-installer.ts";
 import { celloHome } from "../daemon/paths.ts";
 
 export function screenerModelDir(): string {
-  return process.env["CELLO_V2_SCREENER_MODEL_DIR"] || join(celloHome(), "screener", SCREENER_MODEL.revision);
+  return join(celloHome(), "screener", SCREENER_MODEL.revision);
 }
 
 export const SCREENER_RUNTIME_MODULE = "@huggingface/transformers";
 
 export function screenerRuntimeDir(): string {
-  return process.env["CELLO_V2_SCREENER_RUNTIME_DIR"] || join(celloHome(), "screener-runtime");
+  return join(celloHome(), "screener-runtime");
 }
 
 export function resolveScreenerRuntime(): string | null {
