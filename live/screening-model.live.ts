@@ -99,6 +99,7 @@ test("with the model running, a long screen doesn't stall the main thread, and a
 
   // A database restored on a machine without the model says so, plainly, and keeps working on the deterministic rules.
   cello(reader, ["logout"]);
+  homes.splice(homes.indexOf(reader), 1);
   const restored = mkdtempSync(join(tmpdir(), "cello-v2-model-"));
   mkdirSync(restored, { recursive: true });
   copyFileSync(join(reader, "cello.db"), join(restored, "cello.db"));

@@ -653,7 +653,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   await until("both online", () => [nedHome, oraHome].every((inHome) => (okIn(inHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online)));
   const ned = (...args: string[]): Record<string, unknown> => okIn(nedHome, [...args, "--agent", "Ned"]);
   const ora = (...args: string[]): Record<string, unknown> => okIn(oraHome, [...args, "--agent", "Ora"]);
-  const unreadBy = (read: (...args: string[]) => Record<string, unknown>): number => (read("inbox") as { waiting: { unread: number }[] }).waiting.reduce((sum, w) => sum + w.unread, 0);
+  const unreadBy = (read: (...args: string[]) => Record<string, unknown>): number => (read("inbox") as { waiting: { ready: number }[] }).waiting.reduce((sum, w) => sum + w.ready, 0);
   const session = ned("initiate-session", oraAgent["agent_id"] as string)["session_id"] as string;
   const hexSession = `\\x${session}`;
   const nextOut = (): string => join(scratch, `transcript-${nextFile++}.json`);

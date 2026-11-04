@@ -142,7 +142,7 @@ test("a fresh install says what's really running, hostile text is caught in a ta
 
   // A changed screening number breaks the counterparty's signature.
   const tampered = JSON.parse(readFileSync(file, "utf8")) as { deliveryAck: { fields: { screenedThrough: number } } };
-  tampered.deliveryAck.fields.screenedThrough = 0;
+  tampered.deliveryAck.fields.screenedThrough += 1;
   writeFileSync(file, JSON.stringify(tampered));
   assert.equal(a.run(["verify-seal", file, "--seal-key", seal.seal_key]).json["ok"], false);
 });
@@ -215,6 +215,33 @@ test("a queue of long messages: nobody overtakes, the reply gate holds, stop get
   writeFileSync(join(a.home, "measured.json"), JSON.stringify({ shortMs, stallDuring }));
   process.stderr.write(`second conversation's short message: ${shortMs} ms. Longest main-thread stall while queued: ${stallDuring} ms (bar ${STALL_BAR_MS}).\n`);
   assert.ok(aId);
+});
+
+test("a session's very first message, if it's long, still tells its sender the position and a rough time", async () => {
+  const reader = machine();
+  reader.ok(["create-agent", "Rio"]);
+  reader.ok(["settings", "screener_tell_after_ms", "0"]);
+  reader.ok(["logout"]);
+  reader.run(["login", "--server", url]);
+  const readerId = (reader.ok(["agents"]) as { agents: { agent_id: string }[] }).agents[0]?.agent_id as string;
+  const busy = machine();
+  const first = machine();
+  busy.ok(["create-agent", "Bo"]);
+  first.ok(["create-agent", "Flo"]);
+  for (const m of [reader, busy, first]) await until("online", () => (m.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
+  const busySession = busy.ok(["initiate-session", readerId, "--agent", "Bo"])["session_id"] as string;
+  const firstSession = first.ok(["initiate-session", readerId, "--agent", "Flo"])["session_id"] as string;
+  for (let i = 1; i <= 3; i++) busy.ok(["send", busySession, "-", "--over", "--agent", "Bo"], big(`busy${i}`));
+  assert.equal(first.ok(["send", firstSession, "-", "--over", "--agent", "Flo"], big("first"))["position"], 1);
+  const told = await until("the first sender to be told", () => (first.ok(["receive", "--agent", "Flo"]) as unknown as Read).notices.find((n) => /still screening position 1, for about \d+ more seconds/.test(n.text)));
+  assert.ok(told);
+  // The time isn't in what's signed, so a seal holds only how far screening had got.
+  await until("the message read", () => (reader.ok(["receive", "--session-id", firstSession, "--agent", "Rio"]) as unknown as Read).messages[0]);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const seal = first.ok(["seal", firstSession, "--agent", "Flo"]) as { seal_id: string };
+  const record = first.ok(["export-seal", seal.seal_id, "--agent", "Flo"]) as { deliveryAck: { fields: Record<string, unknown> } };
+  assert.equal(record.deliveryAck.fields["screenedThrough"], 1);
+  assert.ok(!("screeningEtaSeconds" in record.deliveryAck.fields));
 });
 
 test("a worker crash delivers nothing, restarts, tells the operator, and can't hold a conversation up for good", async () => {

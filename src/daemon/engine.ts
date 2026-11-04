@@ -30,6 +30,7 @@ import {
   structureHash,
 } from "../protocol/structures.ts";
 import {
+  LONG_CIPHERTEXT_BYTES,
   MAX_CIPHERTEXT_BYTES,
   type PushFrame,
   type SessionOnWire,
@@ -64,6 +65,11 @@ const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
 const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
+// How long a send waits for its long upload before saying "not sent yet" and leaving it to carry on.
+const LONG_SEND_PATIENCE_MS = 20_000;
+// As long as a signed entry stays valid. A dead connection shows sooner, as silence.
+const LONG_CALL_TIMEOUT_MS = SEND_WINDOW_MS;
+const STILL_UPLOADING = Symbol("still uploading");
 // One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
 const MAX_REPLY_BYTES = 8_000_000;
 const CONFIG_SERVER_URL = "server_url";
@@ -183,7 +189,7 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 type AttemptOutcome =
   | { status: "landed"; position: number }
-  | { status: "pending" }
+  | { status: "pending"; uploading?: true }
   | { status: "refused"; code: string; message: string };
 
 export interface EngineEvents {
@@ -198,6 +204,12 @@ export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
   readonly #link: ServerLink;
+  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
+  readonly #longLink: ServerLink;
+  #longServer: ConnectedServer | undefined;
+  readonly #longProved = new Set<string>();
+  // Long uploads under way, by entry row. Each outlives the send that started it, so a retry never sends it twice.
+  readonly #uploads = new Map<number, { finished: Promise<unknown>; done: boolean }>();
   readonly #url: string;
   readonly #agents = new Map<string, AgentContext>();
   readonly #lanes = new Map<string, Promise<unknown>>();
@@ -247,6 +259,16 @@ export class Engine {
       },
       push: (frame) => this.#onPush(frame),
     });
+    this.#longLink = new ServerLink(url, {
+      checkIdentity: (identity) => this.#checkServerIdentity(identity),
+      connected: async (server) => {
+        this.#longServer = server;
+        this.#longProved.clear();
+      },
+      disconnected: () => { this.#longServer = undefined; },
+      // The server only ever pushes on the connection an agent came online on.
+      push: () => undefined,
+    }, "server_long");
   }
 
   async start(): Promise<void> {
@@ -266,6 +288,7 @@ export class Engine {
       this.#screening.add({ entryId: row.id, agentHex: toHex(row.agent_id), sessionHex: toHex(row.session_id), position: row.position as number, senderHex: toHex(row.sender), bytes: row.size, arrived: Date.now() });
     }
     this.#link.start();
+    this.#longLink.start();
     // Pushes are hints. This catches a lost one, so it costs seconds rather than a conversation.
     this.#positionCheck = setInterval(() => {
       for (const agent of this.#agents.values()) if (agent.online) void this.#catchUpAgent(agent);
@@ -279,6 +302,21 @@ export class Engine {
     this.#screening.stop();
     this.#outbound.stop();
     this.#link.stop();
+    this.#longLink.stop();
+  }
+
+  // Each call still names its agent. Proof is per agent and per connection, so an agent proves itself here the first time it needs to.
+  async #longCall(agent: AgentContext, method: string, params: unknown): Promise<unknown> {
+    const server = this.#longServer;
+    if (!server) throw new ServerUnreachable(this.#longLink.problem ?? "the connection for long messages isn't up");
+    if (!this.#longProved.has(agent.hex)) {
+      const clientNonce = new Uint8Array(randomBytes(32));
+      const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
+      const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+      await this.#longLink.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature), long: true }, LONG_CALL_TIMEOUT_MS);
+      if (this.#longServer === server) this.#longProved.add(agent.hex);
+    }
+    return this.#longLink.call(method, params, LONG_CALL_TIMEOUT_MS);
   }
 
   // ---- Screening. A verdict goes on the entry, and it's the only thing that makes a message deliverable. ----
@@ -498,9 +536,9 @@ export class Engine {
         return;
       }
       if (frame.push === "delivery") {
-        const wire = (frame.data as { deliveryAck: WireSigned }).deliveryAck;
+        const { deliveryAck: wire, screeningEtaSeconds } = frame.data as { deliveryAck: WireSigned; screeningEtaSeconds: unknown };
         const sessionHex = toHex(signedDeliveryAck.decode(wire, "deliveryAck").fields.sessionId);
-        this.#background("delivery push", this.#lane(agent.hex, sessionHex, () => this.#onPeerDeliveryAck(agent, wire)));
+        this.#background("delivery push", this.#lane(agent.hex, sessionHex, () => this.#onPeerDeliveryAck(agent, wire, screeningEtaSeconds)));
         return;
       }
       const item = frame.data as WitnessedOnWire;
@@ -709,7 +747,8 @@ export class Engine {
     if (!local || (local.state !== "active" && local.state !== "closed")) return;
     const position = signedAck.decode(item.ack).fields.position;
     const verifier = this.#verifier(agent, local);
-    if (position === verifier.position + 1 && (await this.#ingest(agent, local, item))) {
+    // A long message's push carries no text, so #settle fetches it.
+    if (item.ciphertext !== null && position === verifier.position + 1 && (await this.#ingest(agent, local, item))) {
       await this.#deliver(agent, this.#store.session(agent.signer.id, sessionId) as SessionRow);
       return;
     }
@@ -721,9 +760,12 @@ export class Engine {
     const sessionId = start.session_id;
     await this.#resendPending(agent, start);
     let local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+    let long = false;
     for (;;) {
       const before = this.#verifier(agent, local).position;
-      const result = await this.#link.call("entry.fetch", { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: before }) as { items: WitnessedOnWire[]; tip: number };
+      const params = { agent: toB64(agent.signer.id), sessionId: toB64(sessionId), after: before };
+      const result = await (long ? this.#longCall(agent, "entry.fetch", { ...params, long }) : this.#link.call("entry.fetch", params)) as { items: WitnessedOnWire[]; tip: number; longNext: boolean };
+      long = result.longNext;
       for (const item of result.items) {
         local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
         if (!(await this.#ingest(agent, local, item))) return;
@@ -731,6 +773,7 @@ export class Engine {
       local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
       const after = this.#verifier(agent, local).position;
       if (after >= result.tip) break;
+      if (long) continue;
       // A server that claims more but gives nothing new would otherwise keep this lane fetching forever.
       if (after === before) {
         this.#hold(agent, local, "server_sent_nothing_new", before + 1);
@@ -991,14 +1034,15 @@ export class Engine {
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened, screeningEtaSeconds: etaSeconds };
+    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
-    await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
+    // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
+    await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
     this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through, acked_screened: screened });
   }
 
   // How far the reader has screened what it holds. This is only ever used to tell and to pace, so a false one costs a delay.
-  async #onPeerDeliveryAck(agent: AgentContext, wire: WireSigned): Promise<void> {
+  async #onPeerDeliveryAck(agent: AgentContext, wire: WireSigned, etaSeconds: unknown): Promise<void> {
     const signed = signedDeliveryAck.decode(wire, "deliveryAck");
     const { fields } = signed;
     const local = this.#store.session(agent.signer.id, fields.sessionId);
@@ -1006,9 +1050,10 @@ export class Engine {
     if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-delivery-ack", deliveryAckBytes(fields), signed.signature))) return;
     if (fields.screenedThrough > local.peer_screened_through) this.#store.updateSession(agent.signer.id, local.session_id, { peer_screened_through: fields.screenedThrough });
     const position = fields.screenedThrough + 1;
-    if (fields.screeningEtaSeconds > 0 && position > local.peer_eta_told) {
+    // Nothing signs the time, so it's only ever a number in a notice, and only a whole one gets that far.
+    if (Number.isSafeInteger(etaSeconds) && (etaSeconds as number) > 0 && position > local.peer_eta_told) {
       this.#store.updateSession(agent.signer.id, local.session_id, { peer_eta_told: position });
-      this.#notify(agent, local.session_id, `The other side is still screening position ${position}, for about ${fields.screeningEtaSeconds} more seconds. Its machine has the message, and its agent hasn't been shown it yet.`);
+      this.#notify(agent, local.session_id, `The other side is still screening position ${position}, for about ${etaSeconds as number} more seconds. Its machine has the message, and its agent hasn't been shown it yet.`);
     }
   }
 
@@ -1058,14 +1103,53 @@ export class Engine {
 
   // ---- Sending ----
 
+  // Waits a while for a long upload. If it's still going, the agent hears so and the upload carries on.
+  // When it finishes, the ordinary resend picks up its answer and sends whatever waited behind it.
+  #upload(agent: AgentContext, local: SessionRow, row: EntryRow, params: unknown): Promise<unknown> {
+    const upload = { finished: this.#longCall(agent, "entry.append", params), done: false };
+    this.#uploads.set(row.id, upload);
+    const sessionHex = toHex(local.session_id);
+    upload.finished.then(
+      () => {
+        upload.done = true;
+        this.#background("long upload finished", this.#lane(agent.hex, sessionHex, async () => {
+          if (this.#uploads.has(row.id)) await this.#settle(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow);
+        }));
+      },
+      () => { this.#uploads.delete(row.id); },
+    );
+    return this.#withinPatience(upload.finished);
+  }
+
+  async #withinPatience(finished: Promise<unknown>): Promise<unknown> {
+    let timer: NodeJS.Timeout | undefined;
+    const patience = new Promise<typeof STILL_UPLOADING>((resolve) => { timer = setTimeout(() => resolve(STILL_UPLOADING), LONG_SEND_PATIENCE_MS); });
+    try {
+      return await Promise.race([finished, patience]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async #attempt(agent: AgentContext, local: SessionRow, row: EntryRow): Promise<AttemptOutcome> {
+    // Whatever is signed after a long message waits for it: it would be refused for arriving first, as the connections don't keep order between them.
+    if (this.#uploads.size > 0) {
+      const first = this.#store.pendingEntries(agent.signer.id, local.session_id)[0];
+      const earlier = first && first.id !== row.id ? this.#uploads.get(first.id) : undefined;
+      if (earlier) return { status: "pending", uploading: true };
+    }
     let result: { ack: WireSigned };
     try {
-      result = await this.#link.call("entry.append", {
-        agent: toB64(agent.signer.id),
-        entry: JSON.parse(row.entry),
-        ciphertext: toB64(row.ciphertext as Uint8Array),
-      }) as { ack: WireSigned };
+      const params = { agent: toB64(agent.signer.id), entry: JSON.parse(row.entry), ciphertext: toB64(row.ciphertext as Uint8Array) };
+      const underWay = this.#uploads.get(row.id);
+      if (underWay && !underWay.done) return { status: "pending", uploading: true };
+      let answer: unknown;
+      if (underWay) answer = await underWay.finished;
+      else if ((row.ciphertext as Uint8Array).length > LONG_CIPHERTEXT_BYTES) answer = await this.#upload(agent, local, row, params);
+      else answer = await this.#link.call("entry.append", params);
+      if (answer === STILL_UPLOADING) return { status: "pending", uploading: true };
+      this.#uploads.delete(row.id);
+      result = answer as { ack: WireSigned };
     } catch (err: unknown) {
       if (err instanceof ServerUnreachable) return { status: "pending" };
       if (err instanceof ServerRefused) {
@@ -1201,6 +1285,7 @@ export class Engine {
       if (outcome.position > this.#verifier(agent, fresh).position) await this.#settle(agent, fresh);
       return { sent: true, position: outcome.position };
     }
+    if (outcome.status === "pending" && outcome.uploading) return { sent: false, status: "not_sent_yet", message: "A long message is still uploading on a slow connection. Your message is saved, and it goes by itself. You'll get a notice." };
     if (outcome.status === "pending") return { sent: false, status: "not_sent_yet", message: "The server can't be reached. Your message is saved, and it goes when the server is back. You'll get a notice." };
     if (outcome.code === "not_current") {
       await this.#settle(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow);
