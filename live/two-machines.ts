@@ -376,16 +376,16 @@ async function worker(caller: string): Promise<void> {
           // No daemon ever started.
         }
         if (command["keepHome"] !== true) rmSync(home, { recursive: true, force: true });
-        say({ id: command["id"], ok: true, result: { log, home } });
+        say({ order: command["order"], ok: true, result: { log, home } });
         setTimeout(() => process.exit(0), 200);
       })();
       return;
     }
-    const trace = (what: string): void => { process.stderr.write(`${new Date().toISOString()} ${String(command["id"])} ${String(command["cmd"])} ${what}\n`); };
+    const trace = (what: string): void => { process.stderr.write(`${new Date().toISOString()} ${String(command["order"])} ${String(command["cmd"])} ${what}\n`); };
     trace("start");
     handle(command).then(
-      (result) => { trace("done"); say({ id: command["id"], ok: true, result }); },
-      (err: unknown) => { trace(`failed: ${err instanceof Error ? err.message : String(err)}`); say({ id: command["id"], ok: false, error: err instanceof Error ? err.message : String(err) }); },
+      (result) => { trace("done"); say({ order: command["order"], ok: true, result }); },
+      (err: unknown) => { trace(`failed: ${err instanceof Error ? err.message : String(err)}`); say({ order: command["order"], ok: false, error: err instanceof Error ? err.message : String(err) }); },
     );
   });
   // The orders stopped, so this run is over: nothing of it should keep running on this machine.
@@ -408,9 +408,9 @@ class Side {
     this.#child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     createInterface({ input: this.#child.stdout as NodeJS.ReadableStream }).on("line", (line) => {
       if (!line.startsWith(WIRE_PREFIX)) return;
-      const frame = JSON.parse(line.slice(WIRE_PREFIX.length)) as { id: number; ok: boolean; result: unknown; error: string };
-      const waiter = this.#waiting.get(frame.id);
-      this.#waiting.delete(frame.id);
+      const frame = JSON.parse(line.slice(WIRE_PREFIX.length)) as { order: number; ok: boolean; result: unknown; error: string };
+      const waiter = this.#waiting.get(frame.order);
+      this.#waiting.delete(frame.order);
       if (frame.ok) waiter?.resolve(frame.result);
       else waiter?.reject(new Error(`${name}: ${frame.error}`));
     });
@@ -431,7 +431,7 @@ class Side {
         return;
       }
       this.#waiting.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      this.#child.stdin?.write(`${JSON.stringify({ id, cmd, ...args })}\n`);
+      this.#child.stdin?.write(`${JSON.stringify({ order: id, cmd, ...args })}\n`);
     });
   }
 }
