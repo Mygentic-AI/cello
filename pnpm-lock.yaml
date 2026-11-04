@@ -20,6 +20,9 @@ importers:
       '@signalapp/sqlcipher':
         specifier: latest
         version: 4.1.0
+      re2-wasm:
+        specifier: latest
+        version: 1.0.2
       ws:
         specifier: latest
         version: 8.22.1
@@ -681,6 +684,10 @@ packages:
   raw-body@3.0.2:
     resolution: {integrity: sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA==}
     engines: {node: '>= 0.10'}
+
+  re2-wasm@1.0.2:
+    resolution: {integrity: sha512-VXUdgSiUrE/WZXn6gUIVVIsg0+Hp6VPZPOaHCay+OuFKy6u/8ktmeNEf+U5qSA8jzGGFsg8jrDNu1BeHpz2pJA==}
+    engines: {node: '>=10'}
 
   require-from-string@2.0.2:
     resolution: {integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==}
@@ -1502,6 +1509,8 @@ snapshots:
       http-errors: 2.0.1
       iconv-lite: 0.7.3
       unpipe: 1.0.0
+
+  re2-wasm@1.0.2: {}
 
   require-from-string@2.0.2: {}
 
