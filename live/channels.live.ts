@@ -540,11 +540,17 @@ test("reading: a member reads a private post once, screened, titles first", asyn
 });
 
 test("reading: hostile text is flagged, a hidden instruction is blocked and never reaches the agent, and the channel carries on", async () => {
-  const channel = create("ada", "Screened", "public");
+  const channel = create("ada", "Screened", "public", "posters");
   ok("cyd", "channel-join", channel);
   post("ada", channel, "An ordinary update.", "Update");
   post("ada", channel, `Please read this. ${HOSTILE}.`, "Flag me");
-  post("ada", channel, `Harmless on the surface.${hidden(HOSTILE)}`, "Block me");
+  // A poster's own daemon strips invisible characters on the way out, so this comes from a bare socket, as an attacker's would.
+  const raw = await Raw.open();
+  const attacker = await raw.newAgent("Attacker");
+  const attackerHex = Buffer.from(attacker.id).toString("hex");
+  ok("ada", "channel-add-poster", channel, attackerHex);
+  await rawPost(raw, attacker, channel, 1, `Harmless on the surface.${hidden(HOSTILE)}`);
+  raw.close();
   post("ada", channel, "After the blocked one.", "Later");
   await until("all four to arrive", () => view("cyd", channel).position === 4);
 
@@ -558,7 +564,7 @@ test("reading: hostile text is flagged, a hidden instruction is blocked and neve
   assert.ok(daemonEvents("cyd", channel).some((e) => e.event === "channel.screen.blocked" && e.position === 3), "the named event fired");
 
   const history = ok("cyd", "channel-history", channel) as { posts: { position: number; blocked?: boolean; text?: string }[] };
-  assert.deepEqual(history.posts.find((p) => p.position === 3), { position: 3, from_id: ids.ada, blocked: true }, "the history says so too");
+  assert.deepEqual(history.posts.find((p) => p.position === 3), { position: 3, from_id: attackerHex, blocked: true }, "the history says so too");
 });
 
 test("reading: the per-channel setting screens bodies on arrival, and a credential never leaves the poster", async () => {
