@@ -28,6 +28,8 @@ export interface ScreenJob {
   senderHex: string;
   bytes: number;
   arrived: number;
+  // A channel's title or body, which has no entry to read back. sessionHex then names the channel and the part.
+  channelText?: { bytes: Uint8Array; done(verdict: InboundVerdict): void };
 }
 
 interface Running extends ScreenJob {

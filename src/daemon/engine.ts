@@ -56,6 +56,7 @@ import {
 import { LocalError, requirePerson } from "./errors.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
+import type { ChannelHost } from "./channels.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
@@ -119,13 +120,14 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "channel_post" | "channel_notice" | "channel_request";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;
   agent: string;
   session_id?: string;
   from_id?: string;
+  channel_id?: string;
   position?: number;
   about_seconds?: number;
 }
@@ -216,6 +218,7 @@ type AttemptOutcome =
 
 export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
+  channelPush(frame: PushFrame): void;
 }
 
 // A way to a server. The home route is the server this daemon logged in to, where its agents live and can be called.
@@ -263,6 +266,8 @@ export class Engine {
   readonly #settings: Settings;
   readonly #screening: ScreeningQueue;
   readonly #outbound = new OutboundScreen();
+  // Below zero, so a channel's job can't share an id with an entry's.
+  #nextChannelJob = 0;
   readonly #ackTimers = new Map<string, NodeJS.Timeout>();
   readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
   readonly #refusals = new Map<string, string>();
@@ -384,6 +389,12 @@ export class Engine {
   // ---- Screening. A verdict goes on the entry, and it's the only thing that makes a message deliverable. ----
 
   #loadForScreen(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel; language: LanguageGuard } | null {
+    if (job.channelText) {
+      const reader = this.#agents.get(job.agentHex);
+      if (!reader) return null;
+      const guards = this.governance.guards;
+      return { body: job.channelText.bytes, level: this.governance.screeningRule(reader.signer.id, job.senderHex).level, language: { enforce: guards.value<boolean>(reader.signer.id, "language_enforce"), allow: guards.value<string[]>(reader.signer.id, "language_allow") } };
+    }
     const body = this.#store.bodyOf(job.entryId);
     const agent = this.#agents.get(job.agentHex);
     if (!body || !agent) return null;
@@ -393,6 +404,10 @@ export class Engine {
 
   // The doorbell comes after the write, so anyone it wakes finds the message there.
   #onVerdict(job: ScreenJob, verdict: InboundVerdict): void {
+    if (job.channelText) {
+      job.channelText.done(verdict);
+      return;
+    }
     const agent = this.#agents.get(job.agentHex);
     if (!agent) return;
     const sessionId = parseHex(job.sessionHex, 16, "session id");
@@ -410,6 +425,8 @@ export class Engine {
   }
 
   #onScreenDelayed(job: ScreenJob, aboutSeconds: number): void {
+    // A channel has no sender waiting on this reader, and its reader is told by channel_read.
+    if (job.channelText) return;
     const agent = this.#agents.get(job.agentHex);
     if (!agent) return;
     logEvent("screening.delayed", { agent: job.agentHex, session: job.sessionHex, position: job.position, about_seconds: aboutSeconds });
@@ -756,6 +773,10 @@ export class Engine {
     try {
       const agent = this.#agents.get(frame.agent);
       if (!agent) return;
+      if (frame.push === "channel") {
+        this.#events.channelPush(frame);
+        return;
+      }
       if (frame.push === "session") {
         const wire = frame.data as SessionOnWire;
         const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
@@ -1805,6 +1826,30 @@ export class Engine {
     if (this.#server) await this.#bringOnline(agent, this.#server);
     const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
     return { name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
+  }
+
+  // What channels.ts needs from here. It shares an agent's keys and the server link, and nothing about any conversation.
+  channelHost(): ChannelHost {
+    return {
+      signer: (agentHex) => this.#requireAgent(agentHex).signer,
+      agents: () => [...this.#agents.keys()],
+      online: (agentHex) => this.#agents.get(agentHex)?.online === true,
+      call: (method, params) => this.#link.call(method, params),
+      callLong: (agentHex, method, params) => this.#longCall(this.#requireAgent(agentHex), this.#home, method, params),
+      serverIdentity: () => this.#serverIdentity(),
+      ring: (agentHex, bell) => this.#events.ring(agentHex, bell),
+      // Channels share the one screening queue, so a channel takes turns with conversations by sender.
+      screen: (agentHex, scope, position, senderHex, text) => new Promise((resolve) => {
+        this.#nextChannelJob -= 1;
+        // The worker reads the shape a message body has. Anything else, it takes as text nobody can read and passes unscanned.
+        const bytes = new TextEncoder().encode(JSON.stringify({ text }));
+        this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
+      }),
+      screenOutbound: async (agentHex, text) => {
+        const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, {});
+        return screened;
+      },
+    };
   }
 
   resolveAgent(nameOrId: string): string {

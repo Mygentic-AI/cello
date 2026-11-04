@@ -242,7 +242,8 @@ export class Governance {
     const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts."].some((prefix) => name.startsWith(prefix));
     if (!isAgentKey) {
       if (clear) throw new LocalError("bad_argument", "a daemon setting has no --clear: set the value you want");
-      requirePerson(params, `This changes the daemon's own setting ${name} to ${value as string}.`, command);
+      // Tuning, not a guard, so any shell of the owner's can do it. It just isn't an agent's tool.
+      if (params["caller"] !== "cli") throw new LocalError("person_required", `A daemon setting is changed from the owner's own shell. Nothing changed. Relay this to your operator: ${command}`);
       try {
         changeSetting(this.#store, name, value as string);
       } catch (err: unknown) {
