@@ -56,7 +56,7 @@ import {
   signedStatusStatement,
   toB64,
 } from "../protocol/wire.ts";
-import { formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
+import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
@@ -178,6 +178,10 @@ interface Route {
   url: string;
   home: boolean;
   link: ServerLink;
+  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
+  longLink: ServerLink;
+  longServer: ConnectedServer | undefined;
+  longProved: Set<string>;
   server: ConnectedServer | undefined;
   // On a visit: the agents that have a conversation here, and those that have proved their keys on this connection.
   wanted: Set<string>;
@@ -199,6 +203,7 @@ export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
   readonly #link: ServerLink;
+  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
   // Long uploads under way, by entry row. Each outlives the send that started it, so a retry never sends it twice.
   readonly #uploads = new Map<number, { finished: Promise<unknown>; done: boolean }>();
   readonly #url: string;
@@ -229,7 +234,7 @@ export class Engine {
       },
       push: (frame) => this.#onPush(frame, this.#home),
     });
-    this.#home = { url, home: true, link: this.#link, server: undefined, wanted: new Set(), online: new Set(), visits: new Map(), opening: 0, longLink: this.#longLinkTo(url, () => this.#home), longServer: undefined, longProved: new Set() };
+    this.#home = { url, home: true, link: this.#link, longLink: this.#longLinkTo(url, () => this.#home), longServer: undefined, longProved: new Set(), server: undefined, wanted: new Set(), online: new Set(), visits: new Map(), opening: 0 };
   }
 
   async start(): Promise<void> {
@@ -263,20 +268,11 @@ export class Engine {
     clearInterval(this.#positionCheck);
     clearTimeout(this.#standbyCheck);
     this.#link.stop();
-    for (const route of this.#visiting.values()) route.link.stop();
     this.#home.longLink.stop();
-    for (const route of this.#visiting.values()) route.longLink.stop();
-  }
-
-  // Each call still names its agent. Proof is per agent and per connection, so an agent proves itself here the first time it needs to.
-  async #longCall(agent: AgentContext, route: Route, method: string, params: unknown): Promise<unknown> {
-    const server = route.longServer;
-    if (!server) throw new ServerUnreachable(route.longLink.problem ?? "the connection for long messages isn't up");
-    if (!route.longProved.has(agent.hex)) {
-      await route.longLink.call(route.home ? "auth" : "visit", { ...await this.#proof(agent, server, route.home), long: true }, LONG_CALL_TIMEOUT_MS);
-      if (route.longServer === server) route.longProved.add(agent.hex);
+    for (const route of this.#visiting.values()) {
+      route.link.stop();
+      route.longLink.stop();
     }
-    return route.longLink.call(method, params, LONG_CALL_TIMEOUT_MS);
   }
 
   #longLinkTo(url: string, route: () => Route): ServerLink {
@@ -292,13 +288,35 @@ export class Engine {
     }, "server_long");
   }
 
-  async #proof(agent: AgentContext, server: ConnectedServer, home: boolean): Promise<Record<string, unknown>> {
+  // Each call still names its agent. Proof is per agent and per connection, so an agent proves itself here the first time it needs to.
+  // It goes to the server hosting the conversation, which on a visit isn't this daemon's own.
+  async #longCall(agent: AgentContext, route: Route, method: string, params: unknown): Promise<unknown> {
+    const server = route.longServer;
+    if (!server) throw new ServerUnreachable(route.longLink.problem ?? "the connection for long messages isn't up");
+    if (!route.longProved.has(agent.hex)) {
+      if (route.home) {
+        const clientNonce = new Uint8Array(randomBytes(32));
+        const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
+        const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+        await route.longLink.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature), long: true }, LONG_CALL_TIMEOUT_MS);
+      } else {
+        await route.longLink.call("visit", { ...await this.#visitProof(agent, server), long: true }, LONG_CALL_TIMEOUT_MS);
+      }
+      if (route.longServer === server) route.longProved.add(agent.hex);
+    }
+    return route.longLink.call(method, params, LONG_CALL_TIMEOUT_MS);
+  }
+
+  async #visitProof(agent: AgentContext, server: ConnectedServer): Promise<Record<string, unknown>> {
     const identity = agent.signer.publicIdentity;
     const clientNonce = new Uint8Array(randomBytes(32));
-    const signature = signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce })));
-    if (home) return { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature };
-    const nameSignature = signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity, name: agent.name })));
-    return { identity: identityCodec.encode(identity), name: agent.name, clientNonce: toB64(clientNonce), nameSignature, signature };
+    return {
+      identity: identityCodec.encode(identity),
+      name: agent.name,
+      clientNonce: toB64(clientNonce),
+      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity, name: agent.name }))),
+      signature: signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
+    };
   }
 
   // ---- Servers other than this daemon's own ----
@@ -322,6 +340,9 @@ export class Engine {
       online: new Set(),
       visits: new Map(),
       opening: 0,
+      longLink: this.#longLinkTo(url, () => route),
+      longServer: undefined,
+      longProved: new Set(),
       link: new ServerLink(url, {
         checkIdentity: (identity) => this.#checkServerIdentity(identity, url),
         connected: async (server) => {
@@ -371,7 +392,7 @@ export class Engine {
     const server = route.server;
     while (server && route.server === server) {
       try {
-        const answer = await route.link.call("visit", await this.#proof(agent, server, false)) as { standing: Standing };
+        const answer = await route.link.call("visit", await this.#visitProof(agent, server)) as { standing: Standing };
         route.online.add(agent.hex);
         logEvent("agent.visiting", { agent: agent.hex, server: toHex(server.id) });
         this.#noteStanding(agent, route, answer.standing);
@@ -1639,7 +1660,7 @@ export class Engine {
     try {
       address = parseAddress(target);
     } catch (err: unknown) {
-      throw new LocalError("bad_argument", err instanceof Error ? err.message : String(err));
+      throw new LocalError(err instanceof PlainTextServer ? err.code : "bad_argument", err instanceof Error ? err.message : String(err));
     }
     const targetId = parseHex(address.id, 32, "target");
     if (equalBytes(targetId, agent.signer.id)) throw new LocalError("bad_argument", "an agent can't start a session with itself");

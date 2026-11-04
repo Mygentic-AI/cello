@@ -3,8 +3,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { connect, createServer } from "node:net";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { type ConnectedServer, ServerLink, ServerRefused } from "../src/daemon/link.ts";
@@ -32,9 +33,37 @@ function say(line: string): void {
   process.stdout.write(`[${new Date().toISOString().slice(11, 19)}] ${line}\n`);
 }
 
+const built = new Set<string>();
+const heavyLock = join(homedir(), "cello-v2-live-runs", ".heavy-lock");
+
+// Builds running at once have overloaded this machine, so a build holds the lock, and the test itself doesn't. The script frees it if this run is killed mid-build.
+function holdingBuildLock<T>(work: () => T): T {
+  const deadline = Date.now() + 15 * 60_000;
+  for (;;) {
+    try {
+      mkdirSync(heavyLock);
+      break;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (Date.now() > deadline) throw new Error(`another track has held ${heavyLock} for 15 minutes, so this server wasn't built`);
+      spawnSync("sleep", ["5"]);
+    }
+  }
+  if (pidsFile) writeFileSync(`${pidsFile}.locked`, "");
+  try {
+    return work();
+  } finally {
+    rmdirSync(heavyLock);
+    if (pidsFile) rmSync(`${pidsFile}.locked`, { force: true });
+  }
+}
+
+// Only the first start of each server builds. A restart with new settings reuses its image.
 function up(server: Server, env: Record<string, string> = {}): { server: string; seal_key: string; federation: string } {
   saveLogs(server);
-  const output = execFileSync(join(serverDir, "scripts/server.sh"), ["up", "--name", server.name, "--port", String(server.port)], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  const start = (extra: string[]): string => execFileSync(join(serverDir, "scripts/server.sh"), ["up", "--name", server.name, "--port", String(server.port), ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  const output = built.has(server.name) ? start(["--no-build"]) : holdingBuildLock(() => start([]));
+  built.add(server.name);
   return JSON.parse(output.trim().split("\n").at(-1) as string) as { server: string; seal_key: string; federation: string };
 }
 
@@ -118,10 +147,12 @@ function side(name: string, home: Server) {
     unread: () => (must(["status"]) as unknown as Status).agents[0]?.unread ?? 0,
     read: () => must(["receive", "--agent", name]) as { messages: { text?: string; signal?: string; closed_their_side?: boolean }[] },
     // The ports this daemon really has connections to: the operating system's answer, not the daemon's.
-    ports: () => {
+    connections: () => {
       const listed = spawnSync("lsof", ["-nP", "-a", "-p", String(self.status().pid), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"], { encoding: "utf8" }).stdout;
-      return [...new Set([...listed.matchAll(/->[^:\n]+:(\d+)/g)].map((m) => Number(m[1])))].sort();
+      return [...listed.matchAll(/->[^:\n]+:(\d+)/g)].map((m) => Number(m[1]));
     },
+    ports: () => [...new Set(self.connections())].sort(),
+    connectionsTo: (port: number) => self.connections().filter((p) => p === port).length,
   };
   everyone.push(self);
   return self;
@@ -360,7 +391,52 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.deepEqual([annBack.state, annBack.seal.sealed], ["closed", true]);
   assert.equal(reader.must(["verify-seal", saved("back.json", ann.act("export-seal", annBack.seal.seal_id)), "--seal-key", healthA.seal_key])["ok"], true);
   assert.deepEqual([bob.act("verify-session", backSession)["ok"], ann.act("verify-session", backSession)["ok"]], [true, true]);
+  await gets(bob);
+  assert.equal(bob.read().messages[0]?.closed_their_side, true);
   say("Bob called back, hosted on Ann's server, and it sealed");
+
+  // ---- Long messages take a second connection, which on a visit has to go to the hosting server, both ways. ----
+  const longFromAnn = `long from ann: ${"the figure stands ".repeat(1200)}`;
+  const longFromBob = `long from bob: ${"understood and noted ".repeat(1200)}`;
+  const longSession = ann.act("initiate-session", bobAgent.address)["session_id"] as string;
+  assert.equal(ann.act("send", longSession, longFromAnn, "--over")["sent"], true);
+  await gets(bob);
+  assert.deepEqual(textsRead(bob.read()), [longFromAnn], "a message over 8 KB crossed to the hosting server and arrived whole");
+  assert.equal(bob.act("send", longSession, longFromBob, "--over")["sent"], true);
+  await gets(ann);
+  assert.deepEqual(textsRead(ann.read()), [longFromBob], "and the visitor fetched one from there");
+  assert.ok(ann.connectionsTo(18401) >= 2, `the visitor's long messages have their own connection to the hosting server: ${ann.connectionsTo(18401)}`);
+  const longClosed = ann.act("close-session", longSession) as { seal: { sealed: boolean } };
+  assert.equal(longClosed.seal.sealed, true);
+  await gets(bob);
+  bob.read();
+  assert.equal((bob.act("close-session", longSession) as { state: string }).state, "closed");
+  await gets(ann);
+  ann.read();
+  assert.deepEqual([ann.act("verify-session", longSession)["ok"], bob.act("verify-session", longSession)["ok"]], [true, true]);
+  say("messages over 8 KB crossed servers both ways on the visitor's second connection");
+
+  // ---- The lure: someone hands over an address on a plain-text server elsewhere. Nothing is contacted, and nothing is pinned. ----
+  const lanAddress = Object.values(networkInterfaces()).flat().find((nic) => nic?.family === "IPv4" && !nic.internal)?.address;
+  assert.ok(lanAddress, "this machine needs a network address for the lure to be real");
+  let lured = 0;
+  const lure = createServer((socket) => {
+    lured++;
+    socket.destroy();
+  });
+  await new Promise<void>((resolve) => lure.listen(18405, "0.0.0.0", resolve));
+  const lureUrl = `ws://${lanAddress}:18405/v1`;
+  // The control: this listener really is reachable at that address, so no contact below means the daemon chose not to.
+  await new Promise<void>((resolve, reject) => connect(18405, lanAddress).once("close", () => resolve()).once("error", reject));
+  await until("the control connection to arrive", () => lured === 1);
+  lured = 0;
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@${lureUrl}`), "plain_text_server");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@ws://evil.example:18405/v1`), "plain_text_server");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  assert.equal(lured, 0, "the daemon connected to the plain-text host");
+  assert.ok(!ann.status().visiting.some((v) => v.server === lureUrl), "it isn't even trying in the background");
+  await new Promise((resolve) => lure.close(resolve));
+  say("a plain-text address on another machine was refused by name, with no connection made");
 
   // A visit ends with its conversations.
   await until("the finished visits to end", () => ann.status().visiting.length === 0 && bob.status().visiting.length === 0, 500);
@@ -413,8 +489,25 @@ test("an agent on one server talks to an agent on another, and neither server le
   late.link.stop();
   say("the per-recipient cap and the shared budget both refused by name");
 
-  // One setting closes federation. The server's own agents go on as before.
+  // What a stranger's calls leave behind goes after the time limit: a call that came to nothing, then the caller. A real conversation stays.
+  const strangerId = Buffer.from(late.signer.id).toString("hex");
+  const pesterId = Buffer.from(pester.signer.id).toString("hex");
+  const visitorRows = (id: string): string => sql(B, `SELECT count(*) FROM agents WHERE agent_id = '\\x${id}' AND NOT resident`);
+  assert.equal(visitorRows(pesterId), "1", "the pester's row exists, so its removal can mean something");
+  const longAgo = "now() - interval '40 days'";
+  sql(B, `UPDATE sessions SET expires_at = ${longAgo}, created_at = ${longAgo} WHERE from_visitor AND tip = 0`);
+  sql(B, `UPDATE agents SET created_at = ${longAgo} WHERE NOT resident`);
+  const sessionsKept = sql(B, "SELECT count(*) FROM sessions WHERE from_visitor AND tip > 0");
+  assert.notEqual(sessionsKept, "0");
+
+  // One setting closes federation. The server's own agents go on as before. The restart also runs the pruning.
   const closedHealth = up(B, { CELLO_FEDERATION: "closed" });
+  await until("the unanswered calls to be pruned", () => sql(B, "SELECT count(*) FROM sessions WHERE from_visitor AND tip = 0") === "0");
+  assert.equal(visitorRows(pesterId), "0", "a caller with nothing left here is gone");
+  assert.equal(visitorRows(strangerId), "0", "and one that was refused never had a row");
+  assert.equal(sql(B, "SELECT count(*) FROM sessions WHERE from_visitor AND tip > 0"), sessionsKept, "conversations with messages are untouched");
+  assert.equal(visitorRows(annAgent.id), "1", "and so is Ann, who has one");
+  assert.match(sql(B, "SELECT has_table_privilege('cello_app', 'agents', 'DELETE')::text"), /false/, "the service still can't delete a row itself");
   assert.equal(closedHealth.federation, "closed");
   await until("Bob and Cara back", () => bob.status().agents.every((a) => a.online) && cara.status().agents.every((a) => a.online), 600);
   assert.equal(ann.refused("initiate-session", bobAgent.address), "federation_closed");
@@ -429,7 +522,7 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.match(logsB, /agent\.visiting/);
   assert.match(logsA, /session\.active/);
   assert.match(logsA, /agent\.visiting/);
-  const allLines = [...lines, ...backLines];
+  const allLines = [...lines, ...backLines, longFromAnn, longFromBob, longFromAnn.slice(0, 200), longFromBob.slice(0, 200)];
   // The only addresses a container here can see are its network's gateway and this machine's.
   const gateways = [A, B].map((server) => docker("network", "inspect", `${server.name}_default`, "--format", "{{(index .IPAM.Config 0).Gateway}}").trim());
   assert.ok(gateways.every((gateway) => /^\d+\.\d+\.\d+\.\d+$/.test(gateway)), `the gateways must be real addresses: ${gateways.join()}`);
