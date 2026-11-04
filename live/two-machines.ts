@@ -433,7 +433,7 @@ class Side {
 
   call<T = Json>(cmd: string, args: Json = {}): Promise<T> {
     const id = this.#next++;
-    return new Promise((resolve, reject) => {
+    const answer = new Promise<T>((resolve, reject) => {
       if (this.#closed) {
         reject(new Error(`${this.name}: the link to this side closed`));
         return;
@@ -441,6 +441,9 @@ class Side {
       this.#waiting.set(id, { resolve: resolve as (value: unknown) => void, reject });
       this.#child.stdin?.write(`${JSON.stringify({ order: id, cmd, ...args })}\n`);
     });
+    // A phase that fails can leave an order nobody is awaiting any more. Its failure mustn't end the whole run.
+    answer.catch(() => undefined);
+    return answer;
   }
 }
 
@@ -770,7 +773,9 @@ async function orchestrate(): Promise<void> {
 
     const typical = (side: string, size: string): number => {
       const row = (conversations[size] as Record<string, { send_command_ms: { median: number } }> | undefined)?.[side === "mac" ? "mac to vm" : "vm to mac"];
-      return row?.send_command_ms.median ?? 1500;
+      // When this run skipped that size, the median measured by the last full run, so the kill still lands inside a send.
+      const lastMeasured: Record<string, number> = { "mac short": 830, "vm short": 300, "mac 100 KB": 900, "vm 100 KB": 690 };
+      return row?.send_command_ms.median ?? (lastMeasured[`${side} ${size}`] as number);
     };
     results["kills"] = {};
     for (const [victim, peer] of (Number(args.kills) > 0 ? [[mac, vm], [vm, mac]] : []) as [Side, Side][]) {
