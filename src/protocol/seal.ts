@@ -217,6 +217,12 @@ export function describeSeal(record: SealRecord): Record<string, string> {
   };
 }
 
+// A time inside a signed record comes from outside, and a number too large for a date shouldn't crash the reader.
+export function readableTime(time: number): string | null {
+  const date = new Date(time);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 export function sealSummary(record: SealRecord): Record<string, unknown> {
   const cert = record.certificate.fields;
   return {
@@ -231,7 +237,7 @@ export function sealSummary(record: SealRecord): Record<string, unknown> {
     tip_when_sealed: cert.tip,
     partial: cert.throughPosition < cert.tip,
     session_closed: cert.closed === 1,
-    sealed_at: new Date(cert.time).toISOString(),
+    sealed_at: readableTime(cert.time),
     log_index: record.log.index,
     log_size: record.log.head.fields.size,
   };

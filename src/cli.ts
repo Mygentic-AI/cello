@@ -4,12 +4,12 @@ import "./require-node.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
-import { verifySeal } from "./verify-seal.ts";
+import { exportTranscript, runLocal } from "./local-operations.ts";
 
 // Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
 // Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
@@ -262,14 +262,17 @@ async function main(): Promise<void> {
   }
   const params = parse(op, args);
   if (op.local) {
-    const checked = await verifySeal(params);
+    const checked = await runLocal(op.method, params);
     process.stdout.write(`${JSON.stringify(checked, null, 2)}\n`);
     if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
     return;
   }
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
-  const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean; agent_id?: string };
+  const answer = op.method === "export_transcript"
+    ? exportTranscript({ ...params, out: resolve(params["out"] as string) }, (fields) => client.call(op.method, fields))
+    : client.call(op.method, params, waited);
+  const result = await answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   // The id, never the name: a name is a label, and it could later mean a different agent.

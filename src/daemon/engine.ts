@@ -10,6 +10,7 @@ import { verifyConsistency } from "../protocol/merkle.ts";
 import { mlKemDecapsulate, mlKemEncapsulate } from "../protocol/ml-kem.ts";
 import { deriveSessionSalt, generateSaltContribution, saltedContentHash } from "../protocol/salt.ts";
 import { type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, sealId, sealSummary } from "../protocol/seal.ts";
+import { buildTranscript } from "../protocol/transcript.ts";
 import {
   type AssignmentFields,
   EntryKind,
@@ -949,6 +950,27 @@ export class Engine {
     const row = this.#store.seal(agent.signer.id, parseHex(sealHex, 32, "seal id"));
     if (!row) throw new LocalError("unknown_seal", "this agent holds no seal with that id");
     return JSON.parse(row.record);
+  }
+
+  // Reads this agent's own record, so it needs no server and moves no read position.
+  async exportTranscript(agentHex: string, sessionHex: string, choice: { reveal: string | undefined; all: boolean; sealId: string | undefined }): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    const built = await buildTranscript({
+      ...choice,
+      session: toHex(local.session_id),
+      sealCommand: `cello-v2 seal ${toHex(local.session_id)} --agent ${agent.name}`,
+      entries: this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => ({
+        position: row.position as number,
+        entry: JSON.parse(row.entry) as WireSigned,
+        ack: row.ack ? JSON.parse(row.ack) as WireSigned : null,
+        body: row.body,
+      })),
+      seals: this.#store.seals(agent.signer.id, local.session_id).map((row) => JSON.parse(row.record) as unknown),
+      salt: local.salt,
+    });
+    if (!built.ok) throw new LocalError(built.fault, built.message);
+    return { file: built.file, summary: built.summary };
   }
 
   // ---- What agents and people ask for ----
