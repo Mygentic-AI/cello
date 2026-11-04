@@ -25,7 +25,7 @@ Name your agent in the agent parameter of every call. Take hold of it first with
 
 Doorbells arrive as <channel> tags with a source ending in cello-v2, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
 
-Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session.
+Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
 
 Closing also seals your copy, and cello_seal seals at any time, with only you needed. A seal attests that the conversation took place. It never says the parties agreed, so never describe one that way.
 
@@ -59,6 +59,7 @@ function doorbellText(frame: IpcNotification): string {
     case "peer_closed": return "CELLO: the other side closed their side. Call cello_receive, then cello_close_session.";
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";
+    case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
     default: return `CELLO: ${frame.notification}.`;
   }

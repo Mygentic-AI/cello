@@ -158,6 +158,19 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   await two.bell("message");
   await two.tool("cello_receive");
 
+  // A standby past its time rings both sides, in fixed words.
+  await two.tool("cello_send", { session_id: sessionId, text: "back in a moment", signal: "standby", est_minutes: 0.02 });
+  await one.bell("message");
+  await one.tool("cello_receive");
+  for (const side of [one, two]) {
+    const late = await side.bell("standby_overdue");
+    assert.equal(late.meta["session_id"], sessionId);
+    assert.match(late.content, /past its time.*Call cello_receive/);
+    assert.doesNotMatch(JSON.stringify(late), /back in a moment/);
+  }
+  assert.match(JSON.stringify(await one.tool("cello_receive")), /said it would follow up by now/);
+  assert.match(JSON.stringify(await two.tool("cello_receive")), /You said you'd follow up by now/);
+
   await two.tool("cello_close_session", { session_id: sessionId });
   await one.bell("peer_closed");
   await one.tool("cello_receive");
