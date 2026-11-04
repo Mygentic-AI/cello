@@ -313,8 +313,8 @@ async function run(): Promise<void> {
       await until("both sides to close", CONVERSATION_LIMIT_MS, () => session("Alpha")?.state === "closed" && session("Beta")?.state === "closed");
       say("both sides closed");
       const sessionId = session("Alpha")?.session_id as string;
-      const a = JSON.parse(cli("verify", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
-      const b = JSON.parse(cli("verify", sessionId, "--agent", "Beta")) as { ok: boolean; root: string };
+      const a = JSON.parse(cli("verify-session", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
+      const b = JSON.parse(cli("verify-session", sessionId, "--agent", "Beta")) as { ok: boolean; root: string };
       assert.ok(a.ok && b.ok && a.root === b.root, "each record must check out, and the two must agree");
       report["chain"] = { position: a.position, root: a.root, alpha_ok: a.ok, beta_ok: b.ok };
       say(`the chain checks out on both sides, through position ${a.position}, and the roots match`);
@@ -362,8 +362,8 @@ async function run(): Promise<void> {
   say("both sides closed");
 
   const sessionId = session("Alpha")?.session_id as string;
-  const reportA = JSON.parse(cli("verify", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
-  const reportB = JSON.parse(cli("verify", sessionId, "--agent", "Beta")) as { ok: boolean; position: number; root: string };
+  const reportA = JSON.parse(cli("verify-session", sessionId, "--agent", "Alpha")) as { ok: boolean; position: number; root: string };
+  const reportB = JSON.parse(cli("verify-session", sessionId, "--agent", "Beta")) as { ok: boolean; position: number; root: string };
   assert.ok(reportA.ok && reportB.ok, "each side's own record must check out");
   assert.equal(reportA.root, reportB.root, "the two records must agree");
   report["chain"] = { position: reportA.position, root: reportA.root, alpha_ok: reportA.ok, beta_ok: reportB.ok };

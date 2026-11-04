@@ -18,28 +18,59 @@ function flag(name: string): string {
   return `--${name.replaceAll("_", "-")}`;
 }
 
-function usageOf(op: Operation): string {
+// send takes its signal as one flag, which can't be mistyped into a wrong value.
+const SIGNAL_FLAGS = "(--over | --standby <minutes> | --wrap)";
+const isSignalParam = (op: Operation, param: Param): boolean => op.command === "send" && (param.name === "signal" || param.name === "est_minutes");
+
+function usageLine(op: Operation): string {
   const positional = op.params.filter((p) => p.positional).map((p) => (p.required ? `<${p.name}>` : `[<${p.name}>]`));
-  const flags = op.params.filter((p) => !p.positional).map((p) => {
-    const shown = p.kind === "boolean" ? flag(p.name) : `${flag(p.name)} <${p.allowed?.join("|") ?? p.kind}>`;
-    return p.required ? shown : `[${shown}]`;
-  });
-  const scoped = op.scoped ? ["[--agent <name-or-id>]", "[--force]"] : [];
-  return `  cello-v2 ${[op.command, ...positional, ...flags, ...scoped].join(" ")}\n      ${op.description}`;
+  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => (p.kind === "boolean" ? `[${flag(p.name)}]` : `[${flag(p.name)} <${p.kind}>]`));
+  const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
+  const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : [])];
+  return `cello-v2 ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
 }
 
-const USAGE = `Usage:
-  cello-v2 login --server <wss-url>
-      Start the daemon.
-  cello-v2 logout
-      Stop the daemon. Conversations carry on after the next login.
-${OPERATIONS.map(usageOf).join("\n")}
+function commandHelp(op: Operation): string {
+  const details = op.params.filter((p) => !isSignalParam(op, p)).map((p) => `  ${(p.positional ? `<${p.name}>` : flag(p.name)).padEnd(20)} ${p.description}`);
+  if (op.command === "send") {
+    details.push(
+      `  ${"--over".padEnd(20)} Your turn is done.`,
+      `  ${"--standby <minutes>".padEnd(20)} You'll follow up in about that many minutes.`,
+      `  ${"--wrap".padEnd(20)} Your final message.`,
+    );
+  }
+  if (op.scoped) details.push(`  ${"--agent".padEnd(20)} The agent's name or id. Can be left out once chosen with use-agent.`);
+  if (op.acts) details.push(`  ${"--force".padEnd(20)} Take the agent from another caller that holds it.`);
+  return `Usage: ${usageLine(op)}\n\n${op.description}\n${details.length > 0 ? `\n${details.join("\n")}\n` : ""}`;
+}
 
---agent can be left out once you've chosen one with use-agent. Output is JSON.
-A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}. wait exits ${EXIT_TIMEOUT} on its timeout.`;
+function overview(): string {
+  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`]]]);
+  for (const op of OPERATIONS) {
+    const lines = groups.get(op.group) ?? [];
+    lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
+    groups.set(op.group, lines);
+  }
+  const sections = [...groups].map(([group, lines]) => `${group}:\n${lines.join("\n")}`);
+  return `CELLO: signed, encrypted conversations between agents.
 
-function usageError(message: string): never {
-  process.stderr.write(`${message}\n\n${USAGE}\n`);
+First-time setup:  cello-v2 login --server <url>  →  cello-v2 create-agent <name>  →  cello-v2 status
+
+Usage: cello-v2 <command> [args]
+
+${sections.join("\n\n")}
+
+Run 'cello-v2 <command> --help' for details on any command.
+Commands print JSON. A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
+A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
+Any agent that can run a shell command can use all of this with no MCP.
+Where there's a tool, it has the same name: cello-v2 send ↔ cello_send.
+`;
+}
+
+function usageError(message: string, op?: Operation): never {
+  const hint = op ? `\n\n${usageLine(op)}\nRun 'cello-v2 ${op.command} --help' for details.` : "\n\nRun 'cello-v2 --help' for the list of commands.";
+  process.stderr.write(`${message}${hint}\n`);
   process.exit(EXIT_USAGE);
 }
 
@@ -75,33 +106,43 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
       flagsEnded = true;
       continue;
     }
-    if (op.scoped && arg === "--force") {
+    if (op.acts && arg === "--force") {
       params["force"] = true;
       continue;
     }
     if (op.scoped && arg === "--agent") {
       const value = args[++i];
-      if (!value) usageError("--agent needs a value");
+      if (!value) usageError("--agent needs a value", op);
       params["agent"] = value;
       continue;
     }
-    const param = op.params.find((p) => !p.positional && flag(p.name) === arg);
-    if (!param) usageError(`${op.command} has no option ${arg}`);
+    if (op.command === "send" && (arg === "--over" || arg === "--wrap" || arg === "--standby")) {
+      if (params["signal"] !== undefined) usageError(`send takes one signal: ${SIGNAL_FLAGS}`, op);
+      params["signal"] = arg.slice(2);
+      if (arg === "--standby") {
+        const minutes = Number(args[++i]);
+        if (!(minutes > 0)) usageError("--standby needs a positive number of minutes", op);
+        params["est_minutes"] = minutes;
+      }
+      continue;
+    }
+    const param = op.params.find((p) => !p.positional && !isSignalParam(op, p) && flag(p.name) === arg);
+    if (!param) usageError(`${op.command} has no option ${arg}`, op);
     if (param.kind === "boolean") {
       params[param.name] = true;
       continue;
     }
     const value = args[++i];
-    if (value === undefined) usageError(`${arg} needs a value`);
+    if (value === undefined) usageError(`${arg} needs a value`, op);
     params[param.name] = readValue(param, value);
   }
-  if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`);
+  if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`, op);
   positional.forEach((param, i) => {
     const value = given[i];
     if (value !== undefined) params[param.name] = param.name === "text" && value === "-" ? readFileSync(0, "utf8") : value;
   });
   for (const param of op.params) {
-    if (param.required && params[param.name] === undefined) usageError(`${op.command} needs ${param.positional ? `<${param.name}>` : flag(param.name)}`);
+    if (param.required && params[param.name] === undefined) usageError(`${op.command} needs ${isSignalParam(op, param) ? SIGNAL_FLAGS : param.positional ? `<${param.name}>` : flag(param.name)}`, op);
   }
   if (op.scoped) {
     params["agent"] ??= currentAgent();
@@ -167,12 +208,25 @@ async function login(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (!command || command === "--help" || command === "help") {
-    process.stdout.write(`${USAGE}\n`);
+  if (!command || command === "--help" || command === "-h" || command === "help") {
+    const named = command === "help" ? OPERATIONS.find((candidate) => candidate.command === args[0]) : undefined;
+    process.stdout.write(named ? commandHelp(named) : overview());
     return;
   }
-  if (command === "login") return login(args);
+  // Only as the first argument, so a message that says --help is still a message.
+  const wantsHelp = args[0] === "--help" || args[0] === "-h";
+  if (command === "login") {
+    if (wantsHelp) {
+      process.stdout.write("Usage: cello-v2 login --server <wss-url>\n\nStart the daemon, and connect it to a server.\n");
+      return;
+    }
+    return login(args);
+  }
   if (command === "logout") {
+    if (wantsHelp) {
+      process.stdout.write("Usage: cello-v2 logout\n\nStop the daemon. Conversations carry on after the next login.\n");
+      return;
+    }
     const client = await IpcClient.connect(socketPath());
     await client.call("shutdown");
     client.close();
@@ -181,6 +235,10 @@ async function main(): Promise<void> {
   }
   const op = OPERATIONS.find((candidate) => candidate.command === command);
   if (!op) usageError(`No such command: ${command}`);
+  if (wantsHelp) {
+    process.stdout.write(commandHelp(op));
+    return;
+  }
   const params = parse(op, args);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;

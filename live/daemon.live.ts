@@ -220,8 +220,8 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal(sql(`SELECT count(*) FROM entries WHERE session_id = '\\x${sessionId}'`), "9");
 
   // Each side's own record checks out with public keys only, and the two agree.
-  const reportA = JSON.parse(daemon.cli("verify", sessionId, "--agent", "Alice")) as { ok: boolean; position: number; root: string };
-  const reportB = JSON.parse(daemon.cli("verify", sessionId, "--agent", "Bob")) as { ok: boolean; position: number; root: string };
+  const reportA = JSON.parse(daemon.cli("verify-session", sessionId, "--agent", "Alice")) as { ok: boolean; position: number; root: string };
+  const reportB = JSON.parse(daemon.cli("verify-session", sessionId, "--agent", "Bob")) as { ok: boolean; position: number; root: string };
   assert.deepEqual([reportA.ok, reportA.position], [true, 9]);
   assert.deepEqual([reportB.ok, reportB.position], [true, 9]);
   assert.equal(reportA.root, reportB.root);

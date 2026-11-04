@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { IpcClient } from "../src/ipc/client.ts";
+import { OPERATIONS } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
@@ -56,18 +57,29 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   ok(["use-agent", "--agent", "Gail"]);
   assert.deepEqual(ok(["receive"]), { messages: [], notices: [] }, "use-agent is remembered for later commands");
 
-  const started = ok(["initiate", hugo["agent_id"] as string, "--agent", "Gail"]);
+  const started = ok(["initiate-session", hugo["agent_id"] as string, "--agent", "Gail"]);
   assert.equal(started["state"], "active");
   const session = started["session_id"] as string;
 
   // A mistyped option or a missing signal is refused rather than guessed at.
   assert.equal(cello(["send", session, "x", "--agent", "Gail"]).status, 2);
-  assert.equal(cello(["send", session, "x", "--signal", "maybe", "--agent", "Gail"]).status, 2);
-  assert.equal(cello(["send", session, "x", "--signal", "over", "--agnet", "Gail"]).status, 2);
-  assert.equal(cello(["send", session, "x", "--signal", "standby", "--agent", "Gail"]).json["error"], "missing_est_minutes");
+  assert.equal(cello(["send", session, "x", "--over", "--wrap", "--agent", "Gail"]).status, 2);
+  assert.equal(cello(["send", session, "x", "--over", "--agnet", "Gail"]).status, 2);
+  assert.equal(cello(["send", session, "x", "--standby", "--agent", "Gail"]).status, 2);
+
+  // Help: one line per command at the top, and details per command, with no agent or daemon needed for either.
+  const overview = cello(["-h"]);
+  assert.equal(overview.status, 0);
+  for (const op of OPERATIONS) {
+    assert.ok(overview.stdout.includes(`  ${op.command}`), `${op.command} is missing from the help`);
+    const own = cello([op.command, "--help"]);
+    assert.equal(own.status, 0);
+    assert.match(own.stdout, new RegExp(`^Usage: cello-v2 ${op.command}`));
+  }
+  assert.ok(overview.stdout.split("\n").every((line) => line.length <= 120), "the list stays short");
 
   // over, from standard input, with a text that starts with dashes.
-  assert.deepEqual(ok(["send", session, "-", "--signal", "over", "--agent", "Gail"], "--hello from a pipe"), { sent: true, position: 1 });
+  assert.deepEqual(ok(["send", session, "-", "--over", "--agent", "Gail"], "--hello from a pipe"), { sent: true, position: 1 });
 
   // wait is how an agent with no doorbell learns something arrived.
   const woke = ok(["wait", "--agent", "Hugo", "--timeout-seconds", "20"]);
@@ -80,10 +92,10 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   assert.deepEqual([quiet.status, quiet.json["event"]], [3, "timeout"]);
 
   // standby, with its time.
-  ok(["send", session, "looking into it", "--signal", "standby", "--est-minutes", "2", "--agent", "Hugo"]);
-  const blind = cello(["send", session, "a blind reply", "--signal", "over", "--agent", "Gail"]);
+  ok(["send", session, "looking into it", "--standby", "2", "--agent", "Hugo"]);
+  const blind = cello(["send", session, "a blind reply", "--over", "--agent", "Gail"]);
   await until("the message to reach Gail", () => (ok(["status"]) as { agents: { name: string; unread: number }[] }).agents.find((a) => a.name === "Gail")?.unread === 1);
-  const refused = blind.status === 1 ? blind : cello(["send", session, "a blind reply", "--signal", "over", "--agent", "Gail"]);
+  const refused = blind.status === 1 ? blind : cello(["send", session, "a blind reply", "--over", "--agent", "Gail"]);
   assert.equal(refused.json["error"], "session_not_current");
   const standby = ok(["receive", "--agent", "Gail"]) as { messages: { text: string; signal: string; est_minutes: number }[] };
   assert.deepEqual(standby.messages.map((m) => [m.text, m.signal, m.est_minutes]), [["looking into it", "standby", 2]]);
@@ -94,21 +106,21 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   assert.equal(cello(["status"]).json["error"], "daemon_not_running");
   ok(["login", "--server", url]);
   await until("both agents back online", () => (ok(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online));
-  assert.deepEqual(ok(["send", session, "still with you", "--signal", "over", "--agent", "Gail"]), { sent: true, position: 3 });
+  assert.deepEqual(ok(["send", session, "still with you", "--over", "--agent", "Gail"]), { sent: true, position: 3 });
   ok(["wait", "--agent", "Hugo", "--timeout-seconds", "20"]);
   assert.deepEqual((ok(["receive", "--agent", "Hugo"]) as { messages: { text: string }[] }).messages.map((m) => m.text), ["still with you"]);
 
   // wrap, then a close from each side.
-  ok(["send", session, "that's all from me", "--signal", "wrap", "--agent", "Hugo"]);
+  ok(["send", session, "that's all from me", "--wrap", "--agent", "Hugo"]);
   ok(["wait", "--agent", "Gail", "--timeout-seconds", "20"]);
   assert.deepEqual((ok(["receive", "--agent", "Gail"]) as { messages: { signal: string }[] }).messages.map((m) => m.signal), ["wrap"]);
-  assert.equal(ok(["close", session, "--agent", "Gail"])["closed"], true);
+  assert.equal(ok(["close-session", session, "--agent", "Gail"])["closed"], true);
   ok(["wait", "--agent", "Hugo", "--timeout-seconds", "20"]);
   assert.deepEqual((ok(["receive", "--agent", "Hugo"]) as { messages: { closed_their_side: boolean }[] }).messages.map((m) => m.closed_their_side), [true]);
-  assert.equal(ok(["close", session, "--agent", "Hugo"])["state"], "closed");
+  assert.equal(ok(["close-session", session, "--agent", "Hugo"])["state"], "closed");
 
-  const reportG = ok(["verify", session, "--agent", "Gail"]);
-  const reportH = ok(["verify", session, "--agent", "Hugo"]);
+  const reportG = ok(["verify-session", session, "--agent", "Gail"]);
+  const reportH = ok(["verify-session", session, "--agent", "Hugo"]);
   assert.deepEqual([reportG["ok"], reportG["position"]], [true, 6]);
   assert.equal(reportG["root"], reportH["root"]);
   assert.doesNotMatch(readFileSync(join(home, "daemon.log"), "utf8"), /still with you/);
@@ -125,20 +137,20 @@ test("the holder is a caller: the command line is refused an agent a session hol
   const refused = cello(["receive", "--agent", "Iris"]);
   assert.deepEqual([refused.status, refused.json["error"]], [1, "agent_held"]);
   assert.match(refused.json["message"] as string, /another session holds Iris/);
-  assert.equal(cello(["verify", "00000000000000000000000000000000", "--agent", "Iris"]).json["error"], "unknown_session", "reading a record isn't refused for being held");
+  assert.equal(cello(["verify-session", "00000000000000000000000000000000", "--agent", "Iris"]).json["error"], "unknown_session", "reading a record isn't refused for being held");
 
   assert.deepEqual(ok(["receive", "--agent", "Iris", "--force"]), { messages: [], notices: [] });
   await until("the displaced session to be told", () => bells.includes("agent_displaced"));
   await assert.rejects(session.call("receive", { agent: "Iris", caller: "some-session" }), { code: "agent_held" });
 
   // Letting go hands it back with no force, and a session's hold ends when it can no longer be reached.
-  ok(["stop-using", "--agent", "Iris"]);
+  ok(["stop-using-agent", "--agent", "Iris"]);
   await session.call("subscribe", { agent: "Iris", caller: "some-session" });
   session.close();
   await until("the hold to end with the session", () => cello(["receive", "--agent", "Iris"]).status === 0);
 
   // A session that dies while waiting must not leave the agent locked, even having selected it twice.
-  ok(["stop-using", "--agent", "Iris"]);
+  ok(["stop-using-agent", "--agent", "Iris"]);
   const crashing = await IpcClient.connect(join(home, "daemon.sock"));
   await crashing.call("subscribe", { agent: "Iris", caller: "crashing-session" });
   await crashing.call("subscribe", { agent: "Iris", caller: "crashing-session" });
