@@ -290,7 +290,7 @@ test("only a person at a terminal can weaken screening, and the state shows", as
   const piped = b.run(args, "yes\n");
   assert.equal(piped.status, 1);
   assert.equal(piped.json["error"], "person_required", "a pipe isn't a person, whatever it writes");
-  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1" }), args, "right");
+  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1", CELLO_V2_HOME: b.home }), args, "right");
   assert.match(inAgentShell.out, /person_required/);
 
   const wrong = atTerminal(b, args, "000000");
@@ -322,7 +322,7 @@ test("only a person at a terminal can weaken screening, and the state shows", as
 
   // Moving the database and its key moves every rule and setting, and nothing else is needed.
   assert.match(atTerminal(b, args, "right").out, /"level":"off"/);
-  b.ok(["settings", "screener_tell_after_ms", "4321"]);
+  assert.match(atTerminal(b, ["settings-set", "screener_tell_after_ms", "4321"], "right").out, /next login/);
   b.ok(["logout"]);
   const moved = new Machine();
   mkdirSync(moved.home, { recursive: true });

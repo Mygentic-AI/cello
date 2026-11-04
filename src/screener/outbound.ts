@@ -1,13 +1,16 @@
 // The screen on the way out: credentials are redacted, hijack artifacts stop the message, and invisible characters and
 // data-carrying image links are removed. It never runs the model. Rewritten from cello-client's screen/outbound.ts.
+import { OutboundPIIScreener } from "../daemon/pii.ts";
 import { screenOutboundExfil } from "./exfil.ts";
 import { redactSecrets } from "./secrets.ts";
 
 export interface OutboundVerdict {
-  disposition: "allow" | "redact" | "block";
+  disposition: "allow" | "redact" | "block" | "hold";
   text: string;
   categories: string[];
   reason: string | null;
+  // What a guard holds back until someone agrees, and the agent can rewrite without it. Its own words, going back to it alone.
+  held?: { category: string; value: string }[];
 }
 
 const PLACEHOLDER_PREFIX = "CELLOPUBKEY";
@@ -49,7 +52,7 @@ export function protectKnownKeys(text: string, keys: readonly string[]): { text:
   return { text: protectedText, restore };
 }
 
-export function screenOutbound(input: string, knownKeys: readonly string[]): OutboundVerdict {
+export function screenOutbound(input: string, knownKeys: readonly string[], pii: { whitelist: string[]; email: boolean; phone: boolean } = { whitelist: [], email: false, phone: false }): OutboundVerdict {
   const protection = protectKnownKeys(input, knownKeys);
   const secrets = redactSecrets(protection.text);
   const categories = secrets.findings.map((f) => `secret:${f.ruleId}`);
@@ -58,6 +61,10 @@ export function screenOutbound(input: string, knownKeys: readonly string[]): Out
     return { disposition: "block", text: input, categories: exfil.events.map((e) => e.category), reason: exfil.events[0]?.reason ?? "the outbound screen blocked this message" };
   }
   categories.push(...exfil.events.map((e) => e.category));
+  const personal = new OutboundPIIScreener({ whitelist: pii.whitelist, checkEmail: pii.email, checkPhone: pii.phone }).screen(new TextEncoder().encode(exfil.text), "");
+  if (personal.disposition === "warn") {
+    return { disposition: "hold", text: protection.restore(exfil.text), categories, reason: null, held: personal.events.map((e) => ({ category: e.category, value: e.value })) };
+  }
   if (categories.length === 0) return { disposition: "allow", text: input, categories, reason: null };
   return { disposition: "redact", text: protection.restore(exfil.text), categories, reason: null };
 }

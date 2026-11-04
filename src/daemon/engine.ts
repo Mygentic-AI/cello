@@ -49,14 +49,17 @@ import {
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
+import { LocalError, requirePerson } from "./errors.ts";
+import { Governance } from "./governance.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
-import { type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
-import { type Settings, SettingError, changeSetting, listSettings, loadSettings } from "./settings.ts";
+import { OutboundRateLimiter } from "./rate-limit.ts";
+import { type LanguageGuard, type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
+import { type Settings, loadSettings } from "./settings.ts";
+import { tierName } from "./tiers.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 
-const OFFER_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
 const POSITION_CHECK_MS = 30_000;
@@ -80,22 +83,18 @@ const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
 const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
-export const SCREENING_LEVELS: readonly ScreeningLevel[] = ["full", "deterministic", "off"];
+const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
+
+export { LocalError };
 
 export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
-export class LocalError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "LocalError";
-    this.code = code;
-  }
-}
-
 export interface Doorbell {
   type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed";
+  // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
+  policy?: unknown;
+  policy_error?: string;
   agent: string;
   session_id?: string;
   from_id?: string;
@@ -212,6 +211,8 @@ export class Engine {
   readonly #screening: ScreeningQueue;
   readonly #outbound = new OutboundScreen();
   readonly #ackTimers = new Map<string, NodeJS.Timeout>();
+  readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
+  readonly governance: Governance;
   #lastCrashTold = 0;
   #modelMissingTold = false;
 
@@ -220,6 +221,13 @@ export class Engine {
     this.#events = events;
     this.#url = url;
     this.#settings = loadSettings(store);
+    this.governance = new Governance(store, {
+      notify: (agentId, text) => {
+        const agent = this.#agents.get(toHex(agentId));
+        if (agent) this.#notify(agent, null, text);
+      },
+      isLocalAgent: (id) => this.#agents.has(toHex(id)),
+    });
     this.#screening = new ScreeningQueue({
       load: (job) => this.#loadForScreen(job),
       verdict: (job, verdict) => this.#onVerdict(job, verdict),
@@ -248,6 +256,7 @@ export class Engine {
     for (const row of this.#store.agents()) {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
       this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false });
+      this.governance.writeDefaults(signer.id);
     }
     this.#checkStandbys();
     this.#screening.start();
@@ -274,25 +283,12 @@ export class Engine {
 
   // ---- Screening. A verdict goes on the entry, and it's the only thing that makes a message deliverable. ----
 
-  // The rule for this sender outranks the rule for its tier, which outranks the default. v2 has no tiers yet, so that step
-  // finds nothing. Tiers slot in here, in #tierOf, and nothing else changes.
-  #screeningRule(agentId: Uint8Array, senderHex: string): { level: ScreeningLevel; from: "agent_rule" | "tier_rule" | "default" } {
-    const own = this.#store.screeningRule(agentId, "sender", senderHex) as ScreeningLevel | undefined;
-    if (own) return { level: own, from: "agent_rule" };
-    const tier = this.#tierOf();
-    const byTier = tier === undefined ? undefined : this.#store.screeningRule(agentId, "tier", tier) as ScreeningLevel | undefined;
-    return byTier ? { level: byTier, from: "tier_rule" } : { level: "full", from: "default" };
-  }
-
-  #tierOf(): string | undefined {
-    return undefined;
-  }
-
-  #loadForScreen(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel } | null {
+  #loadForScreen(job: ScreenJob): { body: Uint8Array; level: ScreeningLevel; language: LanguageGuard } | null {
     const body = this.#store.bodyOf(job.entryId);
     const agent = this.#agents.get(job.agentHex);
     if (!body || !agent) return null;
-    return { body, level: this.#screeningRule(agent.signer.id, job.senderHex).level };
+    const language = { enforce: this.governance.guards.value<boolean>(agent.signer.id, "language_enforce"), allow: this.governance.guards.value<string[]>(agent.signer.id, "language_allow") };
+    return { body, level: this.governance.screeningRule(agent.signer.id, job.senderHex).level, language };
   }
 
   // The doorbell comes after the write, so anyone it wakes finds the message there.
@@ -379,20 +375,6 @@ export class Engine {
     };
   }
 
-  // Read at the daemon's start, so a change takes effect at the next login.
-  settings(name: unknown, value: unknown): unknown {
-    if (name === undefined) return { settings: listSettings(this.#store) };
-    if (typeof name !== "string" || typeof value !== "string") throw new LocalError("bad_argument", "to change a setting, name it and give its value");
-    try {
-      changeSetting(this.#store, name, value);
-    } catch (err: unknown) {
-      if (err instanceof SettingError) throw new LocalError("bad_setting", err.message);
-      throw err;
-    }
-    logEvent("settings.changed", { name, value });
-    return { settings: listSettings(this.#store), note: "This takes effect at the next login." };
-  }
-
   reloadScreener(): unknown {
     this.#screening.reload();
     return { reloaded: true };
@@ -400,25 +382,11 @@ export class Engine {
 
   // Which screeners really run on what this sender writes, right now.
   #sessionScreening(agent: AgentContext, local: SessionRow): Record<string, unknown> {
-    const rule = this.#screeningRule(agent.signer.id, toHex(local.counterparty_id));
+    const rule = this.governance.screeningRule(agent.signer.id, toHex(local.counterparty_id));
     const modelRunning = this.#screening.model?.running === true;
     const screeners = rule.level === "off" ? [] : rule.level === "full" && modelRunning ? ["deterministic", "model"] : ["deterministic"];
     const waiting = this.#screening.waiting(agent.hex, toHex(local.session_id));
     return { level: rule.level, from: rule.from, screeners, ...(waiting ? { waiting_on: waiting } : {}) };
-  }
-
-  setScreeningRule(agentHex: string, sender: string, level: unknown): unknown {
-    const agent = this.#requireAgent(agentHex);
-    const senderId = parseHex(sender, 32, "sender");
-    if (!SCREENING_LEVELS.includes(level as ScreeningLevel)) throw new LocalError("bad_argument", `level must be one of ${SCREENING_LEVELS.join(", ")}`);
-    const senderHex = toHex(senderId);
-    const before = this.#screeningRule(agent.signer.id, senderHex).level;
-    this.#store.setScreeningRule(agent.signer.id, senderHex, level as string);
-    logEvent("screening.rule_changed", { agent: agent.hex, sender: senderHex, from: before, to: level });
-    const text = `The screening rule for messages from ${senderHex} changed from ${before} to ${level as string}, by a person at this machine's terminal. If that wasn't you, run: cello-v2 screening ${senderHex} --level full --agent ${agent.hex}`;
-    this.#store.addNotice(agent.signer.id, null, text);
-    this.#events.ring(agent.hex, { type: "notice", agent: agent.name });
-    return { agent_id: agent.hex, sender: senderHex, level, was: before };
   }
 
   #checkServerIdentity(identity: PublicIdentity): string | null {
@@ -701,10 +669,13 @@ export class Engine {
       confirm: JSON.stringify(wireConfirm),
       assignment: JSON.stringify(wireAssignment),
       salt,
+      last_activity_at: assignment.fields.time,
     });
     const sessionHex = toHex(local.session_id);
+    const peerHex = toHex(local.counterparty_id);
     logEvent("session.active", { agent: agent.hex, session: sessionHex });
-    this.#events.ring(agent.hex, { type: "session_started", agent: agent.name, session_id: sessionHex, from_id: toHex(local.counterparty_id) });
+    const admission = local.role === "callee" ? this.governance.admissionFor(agent.signer.id, peerHex, this.governance.contacts.tierOf(agent.signer.id, local.counterparty_id)) : {};
+    this.#events.ring(agent.hex, { type: "session_started", agent: agent.name, session_id: sessionHex, from_id: peerHex, ...admission });
     this.#activation.get(agent.hex + sessionHex)?.();
   }
 
@@ -802,6 +773,23 @@ export class Engine {
     this.#notify(agent, local.session_id, `This session is holding at position ${position}, because something from the server didn't check out (${reason}). Nothing is lost, and it rechecks by itself.`);
   }
 
+  // The running total for one conversation, read against whatever tier the sender is at now, so blocking stops it at once.
+  // Known and above start again after a quiet spell, so a long conversation doesn't simply stop. A stranger's never does.
+  #countBytes(agent: AgentContext, local: SessionRow, size: number, at: number): { total: number; told: number; withheld: boolean; tellNow: boolean; limit: number; resets: boolean } {
+    const limits = this.governance.reach.limitsFor(agent.signer.id, this.governance.contacts.tierOf(agent.signer.id, local.counterparty_id));
+    const resets = limits.bytes_reset_minutes > 0;
+    const restart = resets && local.last_activity_at > 0 && at - local.last_activity_at >= limits.bytes_reset_minutes * 60_000;
+    const total = (restart ? 0 : local.bytes_received) + size;
+    const withheld = total > limits.max_bytes;
+    const alreadyTold = !restart && local.bytes_told === 1;
+    return { total, told: alreadyTold || withheld ? 1 : 0, withheld, tellNow: withheld && !alreadyTold, limit: limits.max_bytes, resets };
+  }
+
+  // Your own name for it wins, and a name it gave itself says so.
+  #who(agent: AgentContext, local: SessionRow): string {
+    return this.governance.contacts.who(agent.signer.id, local.counterparty_id, toHex(local.counterparty_id), local.counterparty_name || null).who;
+  }
+
   async #ingest(agent: AgentContext, local: SessionRow, item: WitnessedOnWire): Promise<boolean> {
     let witnessed: WitnessedEntry;
     let entry: Signed<EntryFields>;
@@ -850,6 +838,7 @@ export class Engine {
     const ownClosed = local.own_closed === 1 || (closing && fromMe);
     const peerClosed = local.peer_closed === 1 || (closing && !fromMe);
     const nowClosed = ownClosed && peerClosed;
+    const counted = !fromMe && !closing ? this.#countBytes(agent, local, (body as Uint8Array).length, witnessed.ack.time) : undefined;
     try {
       this.#store.transaction(() => {
         if (fromMe) {
@@ -867,8 +856,11 @@ export class Engine {
             ack: JSON.stringify(item.ack),
             body: body as Uint8Array,
           });
+          if (counted?.withheld) this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: BYTE_LIMIT_REASON, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies VerdictDetail));
         }
         this.#store.updateSession(agent.signer.id, local.session_id, {
+          ...(counted ? { bytes_received: counted.total, bytes_told: counted.told } : {}),
+          last_activity_at: witnessed.ack.time,
           verified_position: position,
           own_closed: ownClosed ? 1 : 0,
           peer_closed: peerClosed ? 1 : 0,
@@ -883,8 +875,10 @@ export class Engine {
 
     const sessionHex = toHex(local.session_id);
     const bell = { agent: agent.name, session_id: sessionHex, from_id: toHex(local.counterparty_id) };
+    // Told once, and it rings no doorbell per message, so a flood past the limit can't keep waking anyone or cost a screen.
+    if (counted?.tellNow) this.#notify(agent, local.session_id, `This conversation has passed its limit of ${counted.limit} bytes, so what it sends from now on isn't delivered. ${counted.resets ? "The count starts again after a quiet spell." : "The count doesn't reset at this tier."} The other side isn't told. Either side can start a new conversation.`);
     // Stored, but not deliverable until it has a verdict. Its doorbell rings then, from #onVerdict.
-    if (!fromMe) {
+    if (!fromMe && !counted?.withheld) {
       const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
       this.#screening.add({ entryId, agentHex: agent.hex, sessionHex, position, senderHex: toHex(local.counterparty_id), bytes: (body as Uint8Array).length, arrived: Date.now() });
     }
@@ -1036,15 +1030,28 @@ export class Engine {
   }
 
   // Credentials and hijack artifacts stop here, before anything is signed, on a thread that never runs the model.
-  async #screenOutbound(agent: AgentContext, text: string): Promise<{ text: string; report: Record<string, unknown> }> {
+  async #screenOutbound(agent: AgentContext, text: string, params: Record<string, unknown>): Promise<{ text: string; report: Record<string, unknown> }> {
     const keys = [...this.#agents.keys(), ...this.#store.sessionsOf(agent.signer.id).map((s) => toHex(s.counterparty_id))];
+    const guards = this.governance.guards;
+    const pii = { whitelist: guards.value<string[]>(agent.signer.id, "pii_whitelist"), email: guards.value<boolean>(agent.signer.id, "pii_check_email"), phone: guards.value<boolean>(agent.signer.id, "pii_check_phone") };
     let verdict;
     try {
-      verdict = await this.#outbound.screen(text, keys);
+      verdict = await this.#outbound.screen(text, keys, pii);
     } catch (err: unknown) {
       throw new LocalError("screener_unavailable", `The outbound screen didn't run, so nothing was sent: ${err instanceof Error ? err.message : String(err)}. It restarts by itself, so try again.`);
     }
     if (verdict.disposition === "block") throw new LocalError("blocked_by_screening", `Nothing was sent: ${verdict.reason as string}. Categories: ${verdict.categories.join(", ")}.`);
+    if (verdict.disposition === "hold") {
+      const held = (verdict.held ?? []).map((h) => `${h.category.replace("pii:", "")} ${h.value}`).join(", ");
+      if (params["allow_flagged"] !== true) {
+        throw new LocalError("held_by_guard", `Nothing was sent, because it looks like personal data: ${held}. Say it without that, or have it let through with allow_flagged, which needs a person unless autonomous_override is on.`);
+      }
+      if (!guards.value<boolean>(agent.signer.id, "autonomous_override")) {
+        requirePerson(params, `This sends personal data from ${agent.hex}: ${held}.`, `cello-v2 send ${params["session_id"] as string} - --allow-flagged --over --agent ${agent.hex}`);
+      }
+      logEvent("guard.held_value_sent", { agent: agent.hex, categories: (verdict.held ?? []).map((h) => h.category), by_a_person: params["person_confirmed"] === true });
+      return { text: verdict.text, report: { let_through: (verdict.held ?? []).map((h) => h.category) } };
+    }
     if (verdict.disposition === "redact") return { text: verdict.text, report: { redacted: verdict.categories, message: "Parts of your message were replaced before sending: the text that went out isn't exactly what you wrote." } };
     return { text, report: {} };
   }
@@ -1086,8 +1093,8 @@ export class Engine {
     if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", `this message is ${bodyBytes.length} bytes, over the limit of about 1 MB`);
 
     const verifier = this.#verifier(agent, local);
-    const unread = this.#store.unreadBounds(agent.signer.id, local.session_id, local.read_position);
-    const readPosition = unread ? unread.first - 1 : verifier.position;
+    const firstUnread = this.#store.firstUnreadToAnswer(agent.signer.id, local.session_id, local.read_position);
+    const readPosition = firstUnread !== undefined ? firstUnread - 1 : verifier.position;
     const readRoot = verifier.rootAt(readPosition);
     if (!readRoot) throw new Error(`no root is held for position ${readPosition}`);
 
@@ -1135,11 +1142,26 @@ export class Engine {
   }
 
   // Returns an outcome rather than throwing for anything the agent can act on.
-  async send(agentHex: string, sessionHex: string, text: string, signal: Signal, estMinutes: number | undefined, notice: boolean): Promise<unknown> {
+  // The outbound cap, read fresh each send so a change holds from the next message. A slot is only used by a send that goes.
+  #rateFor(agent: AgentContext): OutboundRateLimiter | undefined {
+    const max = this.governance.guards.value<number>(agent.signer.id, "rate_max_per_window");
+    const window = this.governance.guards.value<number>(agent.signer.id, "rate_window_ms");
+    if (max === 0) return undefined;
+    const held = this.#rates.get(agent.hex);
+    if (held?.max === max && held.window === window) return held.limiter;
+    const limiter = new OutboundRateLimiter({ maxPerWindow: max, windowMs: window });
+    this.#rates.set(agent.hex, { max, window, limiter });
+    return limiter;
+  }
+
+  async send(agentHex: string, sessionHex: string, text: string, signal: Signal, estMinutes: number | undefined, notice: boolean, params: Record<string, unknown> = {}): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
+    const rate = this.#rateFor(agent);
+    const limited = rate?.peek(agent.hex);
+    if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text);
+    const screened = await this.#screenOutbound(agent, text, { ...params, session_id: sessionHex });
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
@@ -1164,6 +1186,11 @@ export class Engine {
       }
       const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: screened.text, signal, est_minutes: estMinutes ?? null };
       const outcome = await this.#append(agent, local, EntryKind.message, notice ? EntryMode.notice : EntryMode.reply, body);
+      if (outcome.status === "landed") {
+        rate?.record(agent.hex);
+        // Answering a call is a reply. Talking in a session you called only becomes one once they've spoken.
+        if (local.role === "callee" || this.#store.lastPeerEntry(agent.signer.id, local.session_id)) this.governance.engaged(agent.signer.id, local.counterparty_id, "replied");
+      }
       return { ...(await this.#reportSend(agent, local, outcome) as object), ...screened.report, ...paced };
     });
   }
@@ -1384,6 +1411,7 @@ export class Engine {
     this.#store.insertAgent(signer.id, name, seeds.ed, seeds.pq);
     const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, online: false };
     this.#agents.set(agent.hex, agent);
+    this.governance.writeDefaults(signer.id);
     if (this.#server) await this.#bringOnline(agent, this.#server);
     const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
     return { name, agent_id: agent.hex, registered: agent.registered, online: agent.online, ...note };
@@ -1419,7 +1447,7 @@ export class Engine {
       calleeId: targetId,
       x25519Public: own.publicKey,
       mlKemPublic: own.mlKemPublic,
-      expiresAt: Date.now() + OFFER_LIFETIME_MS,
+      expiresAt: Date.now() + this.#settings.offer_lifetime_minutes * 60_000,
     };
     const signature = await agent.signer.sign("cello-v2-session-offer", offerBytes(fields));
     const offer = signedOffer.encode({ fields, signature });
@@ -1439,6 +1467,7 @@ export class Engine {
       });
       await this.#call(() => this.#link.call("session.offer", { agent: toB64(agent.signer.id), offer }));
     });
+    this.governance.engaged(agent.signer.id, targetId, "initiated");
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([activated, new Promise((resolve) => { timer = setTimeout(resolve, INITIATE_WAIT_MS); })]);
     clearTimeout(timer);
@@ -1465,6 +1494,7 @@ export class Engine {
     const messages: unknown[] = [];
     const reads: { sessionId: Uint8Array; through: number }[] = [];
     const screening: unknown[] = [];
+    const policies: unknown[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
     for (const local of sessions) {
@@ -1480,19 +1510,23 @@ export class Engine {
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
         messages.push({
           session_id: toHex(local.session_id),
-          from: local.counterparty_name,
+          from: this.#who(agent, local),
           from_id: toHex(local.counterparty_id),
           position: row.position,
           ...shownMessage(row, closing),
         });
       }
-      if (unread.length > 0) reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
+      if (unread.length > 0) {
+        reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
+        const conduct = this.governance.conductFor(agent.signer.id, toHex(local.session_id), toHex(local.counterparty_id), this.governance.contacts.tierOf(agent.signer.id, local.counterparty_id), unread.length);
+        if (Object.keys(conduct).length > 0) policies.push({ session_id: toHex(local.session_id), ...conduct });
+      }
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
     }
     const notices = this.#store.notices(agent.signer.id);
     return {
-      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -1519,8 +1553,13 @@ export class Engine {
     return {
       sessions: rows.map((s) => ({
         session_id: toHex(s.session_id),
-        with: s.counterparty_name,
+        with: this.#who(agent, s),
         with_id: toHex(s.counterparty_id),
+        tier: tierName(this.governance.contacts.tierOf(agent.signer.id, s.counterparty_id)),
+        ...(this.#agents.has(toHex(s.counterparty_id)) ? { same_daemon: true } : {}),
+        bytes_received: s.bytes_received,
+        byte_limit: this.governance.reach.limitsFor(agent.signer.id, this.governance.contacts.tierOf(agent.signer.id, s.counterparty_id)).max_bytes,
+        ...(s.role === "callee" ? this.governance.admissionFor(agent.signer.id, toHex(s.counterparty_id), this.governance.contacts.tierOf(agent.signer.id, s.counterparty_id)) : {}),
         state: s.state,
         position: s.verified_position,
         unread: this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position),

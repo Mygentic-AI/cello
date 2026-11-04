@@ -14,6 +14,7 @@ export const SETTINGS = {
   screener_max_attempts: { default: 3, min: 1, max: 100, description: "How many times a screen can fail on one message before that message is refused, so it can't hold its conversation up for good." },
   sender_backlog_gap: { default: 8, min: 1, max: 100_000, description: "How many of your messages a reader can be behind on screening before your daemon waits before sending the next." },
   sender_backlog_wait_ms: { default: 10_000, min: 0, max: 600_000, description: "The longest one send waits for a reader to catch up. Then it goes anyway, and says so." },
+  offer_lifetime_minutes: { default: 10_080, min: 1, max: 525_600, description: "How long a call waits for an answer before it expires." },
 } as const satisfies Record<string, Setting>;
 
 export type SettingName = keyof typeof SETTINGS;

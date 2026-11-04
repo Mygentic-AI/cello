@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS seal_wants (
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
 
--- What a person chose for one sender. The subject is the sender's agent id. A tier rule would be scope 'tier', ranked below this.
+-- What a person chose for one sender (the subject is its agent id), or for a tier (the subject is its name), ranked below that.
 CREATE TABLE IF NOT EXISTS screening_rules (
   agent_id BLOB NOT NULL REFERENCES agents(agent_id),
   scope    TEXT NOT NULL CHECK (scope IN ('sender', 'tier')),
@@ -101,15 +101,6 @@ CREATE TABLE IF NOT EXISTS screening_rules (
   level    TEXT NOT NULL CHECK (level IN ('full', 'deterministic', 'off')),
   set_at   INTEGER NOT NULL,
   PRIMARY KEY (agent_id, scope, subject)
-);
-
--- Every change, so a weakening shows afterwards, whoever made it.
-CREATE TABLE IF NOT EXISTS screening_changes (
-  id       INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id BLOB NOT NULL REFERENCES agents(agent_id),
-  subject  TEXT NOT NULL,
-  level    TEXT NOT NULL,
-  at       INTEGER NOT NULL
 );
 
 -- A standby whose lateness has been told, so a restart can neither repeat that nor lose it. Its position names the promise.
@@ -150,6 +141,11 @@ export interface SessionRow {
   acked_screened: number;
   peer_screened_through: number;
   peer_eta_told: number;
+  // What this conversation has sent us since its count last started. Withheld messages count too.
+  bytes_received: number;
+  bytes_told: number;
+  // The server's time on the last entry from either side, so quiet is measured the same after any downtime.
+  last_activity_at: number;
 }
 
 export interface EntryRow {
@@ -213,6 +209,10 @@ export class Store {
     this.#addColumn("sessions", "acked_screened", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "peer_screened_through", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "peer_eta_told", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "bytes_received", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "bytes_told", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "last_activity_at", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("entries", "withheld", "INTEGER NOT NULL DEFAULT 0");
     this.#db.exec("CREATE INDEX IF NOT EXISTS entries_unscreened ON entries(agent_id, session_id, position) WHERE state = 'received' AND verdict IS NULL");
   }
 
@@ -228,6 +228,16 @@ export class Store {
 
   close(): void {
     this.#db.close();
+  }
+
+  exec(sql: string): void {
+    this.#db.exec(sql);
+  }
+
+  // For the modules that keep their own tables here: contacts, reach, guards and policies.
+  prepare(sql: string): { run(...params: unknown[]): unknown; get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[] } {
+    const statement = this.#prep(sql);
+    return { run: (...params) => statement.run(params), get: (...params) => statement.get(params), all: (...params) => statement.all(params) };
   }
 
   transaction<T>(work: () => T): T {
@@ -328,8 +338,17 @@ export class Store {
 
   // The rest of these leave the message bodies on disk. They run for every message, and the reads are synchronous,
   // so loading a long history here stops every other agent on this daemon until it's done.
+  // A message withheld for being past the byte limit isn't unread: there's nothing to read, and it must not stop a reply.
   unreadCount(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number {
-    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { c: number }).c;
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND withheld = 0 AND position > ?").get([agentId, sessionId, readPosition]) as { c: number }).c;
+  }
+
+  firstUnreadToAnswer(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number | undefined {
+    return (this.#prep("SELECT min(position) AS first FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND withheld = 0 AND position > ?").get([agentId, sessionId, readPosition]) as { first: number | null }).first ?? undefined;
+  }
+
+  markWithheld(id: number, detail: string): void {
+    this.#prep("UPDATE entries SET withheld = 1, verdict = 'blocked', verdict_detail = ? WHERE id = ?").run([detail, id]);
   }
 
   firstUnscreened(agentId: Uint8Array, sessionId: Uint8Array): number | undefined {
@@ -338,7 +357,7 @@ export class Store {
 
   deliverableCount(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number {
     const stop = this.firstUnscreened(agentId, sessionId) ?? Number.MAX_SAFE_INTEGER;
-    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position < ?").get([agentId, sessionId, readPosition, stop]) as { c: number }).c;
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND withheld = 0 AND position > ? AND position < ?").get([agentId, sessionId, readPosition, stop]) as { c: number }).c;
   }
 
   // Sizes and ids only: a queue can be long, and this runs on the thread every agent shares.
@@ -370,16 +389,8 @@ export class Store {
     return (this.#prep("SELECT level FROM screening_rules WHERE agent_id = ? AND scope = ? AND subject = ?").get([agentId, scope, subject]) as { level: string } | undefined)?.level;
   }
 
-  setScreeningRule(agentId: Uint8Array, subject: string, level: string): void {
-    const now = Date.now();
-    this.transaction(() => {
-      this.#prep("INSERT INTO screening_rules (agent_id, scope, subject, level, set_at) VALUES (?, 'sender', ?, ?, ?) ON CONFLICT (agent_id, scope, subject) DO UPDATE SET level = excluded.level, set_at = excluded.set_at").run([agentId, subject, level, now]);
-      this.#prep("INSERT INTO screening_changes (agent_id, subject, level, at) VALUES (?, ?, ?, ?)").run([agentId, subject, level, now]);
-    });
-  }
-
-  screeningRules(agentId: Uint8Array): { subject: string; level: string; set_at: number }[] {
-    return this.#prep("SELECT subject, level, set_at FROM screening_rules WHERE agent_id = ? AND scope = 'sender' ORDER BY set_at").all([agentId]) as unknown as { subject: string; level: string; set_at: number }[];
+  setScreeningRule(agentId: Uint8Array, scope: "sender" | "tier", subject: string, level: string): void {
+    this.#prep("INSERT INTO screening_rules (agent_id, scope, subject, level, set_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (agent_id, scope, subject) DO UPDATE SET level = excluded.level, set_at = excluded.set_at").run([agentId, scope, subject, level, Date.now()]);
   }
 
   unreadBounds(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): { first: number; last: number } | undefined {

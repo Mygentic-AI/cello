@@ -39,8 +39,8 @@ const model = outboundOnly ? { classifier: null, fact: { state: "not_used", runn
 const jobs = new Map<number, AsyncGenerator<ScreenStep, InboundVerdict>>();
 
 type Request =
-  | { type: "outbound"; id: number; text: string; keys: string[] }
-  | { type: "start"; id: number; body: Uint8Array; level: "full" | "deterministic" }
+  | { type: "outbound"; id: number; text: string; keys: string[]; pii: { whitelist: string[]; email: boolean; phone: boolean } }
+  | { type: "start"; id: number; body: Uint8Array; level: "full" | "deterministic"; language: { enforce: boolean; allow: string[] } }
   | { type: "step"; id: number };
 
 function readText(body: Uint8Array): string | null {
@@ -67,7 +67,7 @@ async function step(id: number): Promise<void> {
 port.on("message", (request: Request) => {
   if (request.type === "outbound") {
     try {
-      port.postMessage({ type: "outbound", id: request.id, verdict: screenOutbound(request.text, request.keys) });
+      port.postMessage({ type: "outbound", id: request.id, verdict: screenOutbound(request.text, request.keys, request.pii) });
     } catch (err: unknown) {
       port.postMessage({ type: "failed", id: request.id, message: err instanceof Error ? err.message : String(err) });
     }
@@ -80,7 +80,7 @@ port.on("message", (request: Request) => {
       port.postMessage({ type: "done", id: request.id, verdict: { verdict: "allow", delivered: null, findings: [], reason: null, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies InboundVerdict });
       return;
     }
-    jobs.set(request.id, screenInbound(text, request.level === "full" ? model.classifier : null));
+    jobs.set(request.id, screenInbound(text, request.level === "full" ? model.classifier : null, request.language));
   }
   step(request.id).catch((err: unknown) => {
     jobs.delete(request.id);

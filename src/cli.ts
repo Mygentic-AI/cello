@@ -271,16 +271,14 @@ function askTerminal(question: string): Promise<string> {
 
 // v1's guard was stdin being a terminal, and a yes. This also needs stdout to be one, and a code that's only ever shown on it,
 // so an answer can't be prepared in advance. Nothing a message says can reach this: it runs only when someone runs this command.
-async function confirmPerson(op: Operation, params: Record<string, unknown>): Promise<void> {
-  if (params["level"] === "full") return;
+// The daemon decides whether a change needs a person, and its refusal says what the change is and who can make it.
+async function confirmPerson(refusal: string): Promise<void> {
   const refuse = (error: string, message: string): never => fail(`${JSON.stringify({ error, message })}\n`, EXIT_REFUSED);
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    refuse("person_required", `This weakens screening, so only a person at a terminal can do it. Nothing changed. If you're an agent, relay this to your operator, to run in their own terminal: cello-v2 ${op.command} ${params["sender"] as string} --level ${params["level"] as string} --agent ${params["agent"] as string}`);
-  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) refuse("person_required", refusal);
   // A shell that names itself as a caller is an agent's, by the rule in the help.
-  if (process.env["CELLO_CALLER"]) refuse("person_required", "This shell has CELLO_CALLER set, so it's an agent's shell. Nothing changed. Run this in a terminal of your own.");
+  if (process.env["CELLO_CALLER"]) refuse("person_required", `${refusal} This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own.`);
   const code = randomBytes(3).toString("hex");
-  process.stdout.write(`\nThis weakens screening of everything ${params["sender"] as string} sends to ${params["agent"] as string}, to level ${params["level"] as string}.\nAn agent you control can still forward something hostile it picked up elsewhere.\n\n`);
+  process.stdout.write(`\n${refusal.split(" Nothing changed.")[0] as string}\n\n`);
   const answer = await askTerminal(`To go ahead, type ${code}: `);
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
@@ -382,13 +380,21 @@ async function main(): Promise<void> {
     if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
     return;
   }
-  if (op.command === "screening") await confirmPerson(op, params);
+  params["caller"] ??= CALLER;
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
-  const answer = op.method === "export_transcript"
-    ? exportTranscript({ ...params, out: resolve(params["out"] as string) }, (fields) => client.call(op.method, fields))
-    : client.call(op.method, params, waited);
-  const result = await answer as { event?: string; ok?: boolean; agent_id?: string };
+  const ask = (fields: Record<string, unknown>): Promise<unknown> => (op.method === "export_transcript"
+    ? exportTranscript({ ...fields, out: resolve(fields["out"] as string) }, (sent) => client.call(op.method, sent))
+    : client.call(op.method, fields, waited));
+  let answer: unknown;
+  try {
+    answer = await ask(params);
+  } catch (err: unknown) {
+    if (!(err instanceof DaemonRefused) || err.code !== "person_required") throw err;
+    await confirmPerson(err.message);
+    answer = await ask({ ...params, person_confirmed: true });
+  }
+  const result = answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
   process.stdout.write(render(result));
   // The id, never the name: a name is a label, and it could later mean a different agent.

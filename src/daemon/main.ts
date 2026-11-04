@@ -145,6 +145,32 @@ function waitForEvent(socket: Socket, agent: string, caller: string, seconds: nu
   });
 }
 
+function governed(method: string, params: Record<string, unknown>): unknown {
+  const named = params["agent"] === undefined ? undefined : engine.resolveAgent(text(params, "agent"));
+  const id = named === undefined ? undefined : new Uint8Array(Buffer.from(named, "hex"));
+  const g = engine.governance;
+  if (method === "settings") return g.listSettings(id);
+  if (method === "settings_set") return g.settingsSet(id, named, params);
+  if (!id || !named) throw new LocalError("no_current_agent", "name the agent");
+  switch (method) {
+    case "contacts": return g.listContacts(id);
+    case "contact_add": return g.contactAdd(id, named, params);
+    case "contact_remove": return g.contactRemove(id, named, params);
+    case "contact_set_tier": return g.contactSetTier(id, named, params);
+    case "contact_set_away": return g.contactSetAway(id, params);
+    case "contact_set_moniker": return g.contactSetMoniker(id, params);
+    case "config": return g.listGuards(id, params["key"] as string | undefined);
+    case "config_set": return g.guardSet(id, named, params);
+    case "screening": return g.setScreening(id, named, params);
+    case "screening_log": return g.screeningLog(id, params["limit"] as number | undefined);
+    case "policy_list": return g.policyList(id);
+    case "policy_pending": return g.policyPending(id);
+    case "policy_propose": return g.policyPropose(id, named, params);
+    case "policy_approve": return g.policyApprove(id, named, params);
+    default: throw new LocalError("unknown_method", `no such method: ${method}`);
+  }
+}
+
 async function handle(socket: Socket, method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case "status": {
@@ -183,7 +209,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "initiate_session":
       return engine.initiate(acting(params), text(params, "target"));
     case "send":
-      return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true);
+      return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
     case "receive": {
       const { result, commit } = engine.receive(acting(params), params["session_id"] === undefined ? undefined : text(params, "session_id"));
       return new AfterWrite(result, commit);
@@ -221,11 +247,24 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
-    // Not in the tool table's MCP half: only the command line reaches these, after it has asked a person.
-    case "screening":
-      return engine.setScreeningRule(engine.resolveAgent(text(params, "agent")), text(params, "sender"), params["level"]);
+    // What a person decides. Each of these judges which way a change goes, and refuses a loosening that no person agreed to.
+    case "contacts":
+    case "contact_add":
+    case "contact_remove":
+    case "contact_set_tier":
+    case "contact_set_away":
+    case "contact_set_moniker":
     case "settings":
-      return engine.settings(params["name"], params["value"]);
+    case "settings_set":
+    case "config":
+    case "config_set":
+    case "screening":
+    case "screening_log":
+    case "policy_list":
+    case "policy_pending":
+    case "policy_propose":
+    case "policy_approve":
+      return governed(method, params);
     case "screener_reload":
       return engine.reloadScreener();
     case "shutdown":
