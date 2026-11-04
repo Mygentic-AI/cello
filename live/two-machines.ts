@@ -401,6 +401,7 @@ class Side {
   readonly #child: ChildProcess;
   readonly #waiting = new Map<number, { resolve(value: unknown): void; reject(err: Error): void }>();
   #next = 1;
+  #closed = false;
 
   constructor(name: string, command: string, args: string[], stderrPath: string) {
     this.name = name;
@@ -414,7 +415,9 @@ class Side {
       else waiter?.reject(new Error(`${name}: ${frame.error}`));
     });
     this.#child.stderr?.on("data", (chunk: Buffer) => appendFileSync(stderrPath, chunk));
+    this.#child.stdin?.on("error", () => undefined);
     this.#child.on("close", () => {
+      this.#closed = true;
       for (const waiter of this.#waiting.values()) waiter.reject(new Error(`${name}: the link to this side closed`));
       this.#waiting.clear();
     });
@@ -423,6 +426,10 @@ class Side {
   call<T = Json>(cmd: string, args: Json = {}): Promise<T> {
     const id = this.#next++;
     return new Promise((resolve, reject) => {
+      if (this.#closed) {
+        reject(new Error(`${this.name}: the link to this side closed`));
+        return;
+      }
       this.#waiting.set(id, { resolve: resolve as (value: unknown) => void, reject });
       this.#child.stdin?.write(`${JSON.stringify({ id, cmd, ...args })}\n`);
     });
@@ -684,10 +691,23 @@ async function orchestrate(): Promise<void> {
   }
 
   const local = (name: string): Side => new Side(name, process.execPath, [new URL(import.meta.url).pathname, "--worker", "--caller", `two-machines-${name}`], join(dir, `stderr-${name}.log`));
-  const far = (name: string): Side => new Side(name, "gcloud", [...ssh, `node ~/cello-v2/live/two-machines.ts --worker --caller two-machines-${name}`], join(dir, `stderr-${name}.log`));
+  // The Mac's link drops now and then, and a dropped link before anything has started costs nothing but a retry.
+  const far = async (name: string): Promise<Side> => {
+    for (let attempt = 1; ; attempt++) {
+      const side = new Side(name, "gcloud", [...ssh, `node ~/cello-v2/live/two-machines.ts --worker --caller two-machines-${name}`], join(dir, `stderr-${name}.log`));
+      try {
+        await side.call("login", { server: args.server });
+        return side;
+      } catch (err: unknown) {
+        if (attempt === 4) throw err;
+        say(`retrying the link to ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  };
   const mac = local("mac");
-  const vm = far("vm");
-  const control = far("vm-control");
+  await mac.call("login", { server: args.server });
+  const vm = await far("vm");
+  const control = await far("vm-control");
   const sides = [mac, vm, control];
   const results: Json = {};
   const failures: string[] = [];
@@ -709,7 +729,6 @@ async function orchestrate(): Promise<void> {
   const tagBase = time.slice(11).replaceAll("-", "");
 
   try {
-    await Promise.all(sides.map((side) => side.call("login", { server: args.server })));
     const benches = await Promise.all(sides.slice(0, 2).map((side) => side.call("bench")));
     results["measured_alone"] = { mac: benches[0], vm: benches[1] };
     save();
