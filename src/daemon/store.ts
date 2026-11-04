@@ -234,6 +234,17 @@ export class Store {
     this.#db.close();
   }
 
+  // For channel-store.ts, which keeps channel tables out of this file.
+  raw(): { exec(sql: string): void; run(sql: string, params: unknown[]): void; get(sql: string, params: unknown[]): unknown; all(sql: string, params: unknown[]): unknown[]; transaction<T>(work: () => T): T } {
+    return {
+      exec: (sql) => { this.#db.exec(sql); },
+      run: (sql, params) => { this.#prep(sql).run(params); },
+      get: (sql, params) => this.#prep(sql).get(params),
+      all: (sql, params) => this.#prep(sql).all(params),
+      transaction: (work) => this.transaction(work),
+    };
+  }
+
   transaction<T>(work: () => T): T {
     this.#db.exec("BEGIN IMMEDIATE");
     try {

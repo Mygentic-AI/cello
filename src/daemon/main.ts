@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
+import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
 import { celloHome, databasePath, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
@@ -56,7 +57,8 @@ function ring(agentHex: string, bell: Doorbell): void {
   }
 }
 
-const engine = new Engine(store, serverUrl, { ring });
+const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame) });
+const channels = new Channels(store, engine.channelHost());
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
 mainThreadDelay.enable();
@@ -65,6 +67,10 @@ function text(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   if (typeof value !== "string" || value.length === 0) throw new LocalError("bad_argument", `${key} must be a non-empty string`);
   return value;
+}
+
+function optionalText(params: Record<string, unknown>, key: string): string | undefined {
+  return params[key] === undefined ? undefined : text(params, key);
 }
 
 function describeCaller(caller: string): string {
@@ -111,6 +117,7 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   logEvent("daemon.stopping");
+  channels.stop();
   engine.stop();
   for (const socket of sockets) socket.destroy();
   ipc.close(() => {
@@ -224,11 +231,46 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+    case "channel_create":
+      return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);
+    case "channel_join":
+      return channels.join(acting(params), text(params, "channel_id"), optionalText(params, "note"));
+    case "channel_leave":
+      return channels.leave(acting(params), text(params, "channel_id"));
+    case "channel_requests":
+      return channels.requests(engine.resolveAgent(text(params, "agent")), text(params, "channel_id"));
+    case "channel_approve":
+      return channels.approve(acting(params), text(params, "channel_id"), text(params, "member"));
+    case "channel_refuse":
+      return channels.refuse(acting(params), text(params, "channel_id"), text(params, "member"));
+    case "channel_eject":
+      return channels.eject(acting(params), text(params, "channel_id"), text(params, "member"));
+    case "channel_add_poster":
+      return channels.addPoster(acting(params), text(params, "channel_id"), text(params, "poster"));
+    case "channel_remove_poster":
+      return channels.removePoster(acting(params), text(params, "channel_id"), text(params, "poster"));
+    case "channel_post":
+      return channels.post(acting(params), text(params, "channel_id"), text(params, "text"), optionalText(params, "title"));
+    case "channel_collect":
+      return channels.collect(engine.resolveAgent(text(params, "agent")), optionalText(params, "channel_id"));
+    case "channels":
+      return channels.list(engine.resolveAgent(text(params, "agent")));
+    case "channel_settings":
+      return channels.settings(acting(params), text(params, "channel_id"), optionalText(params, "delivery"), optionalText(params, "screen_bodies"));
+    case "channel_read": {
+      const { result, commit } = await channels.read(acting(params), text(params, "channel_id"), params["titles_only"] === true);
+      return new AfterWrite(result, commit);
+    }
+    case "channel_history":
+      return channels.history(engine.resolveAgent(text(params, "agent")), text(params, "channel_id"), typeof params["after"] === "number" ? params["after"] : 0);
     // Not in the tool table's MCP half: only the command line reaches these, after it has asked a person.
     case "screening":
       return engine.setScreeningRule(engine.resolveAgent(text(params, "agent")), text(params, "sender"), params["level"]);
-    case "settings":
-      return engine.settings(params["name"], params["value"]);
+    case "settings": {
+      const answer = engine.settings(params["name"], params["value"]);
+      channels.settingsChanged();
+      return answer;
+    }
     case "screener_reload":
       return engine.reloadScreener();
     case "shutdown":
@@ -281,6 +323,7 @@ const ipc = createServer((socket) => {
 await new Promise<void>((resolve) => ipc.listen({ path, readableAll: false, writableAll: false }, resolve));
 logEvent("daemon.listening", { pid: process.pid, server: serverUrl });
 await engine.start();
+channels.start();
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
