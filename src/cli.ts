@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
 import "./require-node.ts";
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { createInterface as createReadline } from "node:readline";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,11 @@ import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { installModel } from "./screener/model-installer.ts";
+import { SCREENER_RUNTIME_MODULE, describeScreenerState, runtimeAvailable, screenerModelDir, screenerRuntimeDir, screenerState } from "./screener/screener-state.ts";
+
+const DOWNLOAD_MB = 241;
+const DISK_MB = 618;
 
 // Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
 // Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
@@ -52,7 +58,7 @@ function commandHelp(op: Operation): string {
 }
 
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`]]]);
+  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`]]]);
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
     lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
@@ -243,6 +249,93 @@ async function login(args: string[]): Promise<void> {
   client.close();
   const state = status.connected ? "connected" : `not connected yet (${status.problem ?? "still trying"}). It keeps trying by itself`;
   process.stdout.write(`Daemon started, process ${status.pid}, for ${server}: ${state}.\n`);
+  // From what's on disk: this runs only at login, and 'status' reports what the running screen really loaded.
+  const model = await screenerState({ dir: screenerModelDir(), runtimePresent: await runtimeAvailable(), verifyDigests: false });
+  process.stdout.write(model.state === "ready"
+    ? "Screening: the deterministic rules and the model. 'cello-v2 status' says when the model has really loaded.\n"
+    : "Screening: the deterministic rules only. The model is optional: cello-v2 screener install\n");
+}
+
+function askTerminal(question: string): Promise<string> {
+  const rl = createReadline({ input: process.stdin, output: process.stdout });
+  return new Promise((done) => {
+    rl.once("close", () => done(""));
+    rl.question(question, (answer) => {
+      rl.removeAllListeners("close");
+      rl.close();
+      done(answer.trim());
+    });
+  });
+}
+
+// v1's guard was stdin being a terminal, and a yes. This also needs stdout to be one, and a code that's only ever shown on it,
+// so an answer can't be prepared in advance. Nothing a message says can reach this: it runs only when someone runs this command.
+async function confirmPerson(op: Operation, params: Record<string, unknown>): Promise<void> {
+  if (params["level"] === "full") return;
+  const refuse = (error: string, message: string): never => fail(`${JSON.stringify({ error, message })}\n`, EXIT_REFUSED);
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    refuse("person_required", `This weakens screening, so only a person at a terminal can do it. Nothing changed. If you're an agent, relay this to your operator, to run in their own terminal: cello-v2 ${op.command} ${params["sender"] as string} --level ${params["level"] as string} --agent ${params["agent"] as string}`);
+  }
+  // A shell that names itself as a caller is an agent's, by the rule in the help.
+  if (process.env["CELLO_CALLER"]) refuse("person_required", "This shell has CELLO_CALLER set, so it's an agent's shell. Nothing changed. Run this in a terminal of your own.");
+  const code = randomBytes(3).toString("hex");
+  process.stdout.write(`\nThis weakens screening of everything ${params["sender"] as string} sends to ${params["agent"] as string}, to level ${params["level"] as string}.\nAn agent you control can still forward something hostile it picked up elsewhere.\n\n`);
+  const answer = await askTerminal(`To go ahead, type ${code}: `);
+  if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
+}
+
+async function screenerCommand(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  const yes = rest.includes("--yes");
+  const repair = rest.includes("--repair");
+  if (sub === "status") {
+    const dir = screenerModelDir();
+    const state = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
+    process.stdout.write(`${describeScreenerState(state)}\nModel directory: ${dir}\n`);
+    return;
+  }
+  if (sub !== "install" || args[1] === "--help") {
+    process.stdout.write(`Usage: cello-v2 screener status\n       cello-v2 screener install [--yes] [--repair]\n\nThe deterministic rules always run. The model is a second, optional layer: about ${DOWNLOAD_MB} MB to download and ${DISK_MB} MB on disk. Nothing fetches it unless you run install and agree. Every file is checked against its published SHA-256.\n`);
+    if (sub !== "install" && sub !== undefined && sub !== "--help") process.exitCode = EXIT_USAGE;
+    return;
+  }
+  const dir = screenerModelDir();
+  const before = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
+  if (before.state === "ready") {
+    process.stdout.write(`${describeScreenerState(before)}\n`);
+    return;
+  }
+  if (before.state === "broken" && !repair) fail(`${describeScreenerState(before)} Run again with --repair to fetch the files that failed.\n`, EXIT_REFUSED);
+  if (!yes) {
+    if (!process.stdin.isTTY) fail(`${JSON.stringify({ error: "consent_required", message: `Nothing was downloaded. The model is about ${DOWNLOAD_MB} MB, and it's only fetched if someone says so. Run this at a terminal, or with --yes.` })}\n`, EXIT_REFUSED);
+    process.stdout.write(`CELLO's deterministic screening rules are already running. A prompt-injection model is designed to catch a different set of attacks.\n\nThis downloads:\n  Patronus Wolf Defender model, from Hugging Face: 131 MB\n  Transformers.js by Hugging Face, with Microsoft's ONNX Runtime, from npm: about 110 MB\n\nTotal: about ${DOWNLOAD_MB} MB to download, about ${DISK_MB} MB on disk. Every model file is checked against its published SHA-256.\n\n`);
+    const answer = (await askTerminal("Install now? [y/N] ")).toLowerCase();
+    if (answer !== "y" && answer !== "yes") {
+      process.stdout.write("Nothing was downloaded.\n");
+      return;
+    }
+  }
+  if (repair) rmSync(dir, { recursive: true, force: true });
+  const model = await installModel({ dir, consent: true, onProgress: (file, i, total) => process.stdout.write(`Model file ${i + 1} of ${total}: ${file}\n`) });
+  if (!model.installed) fail(`${JSON.stringify({ error: "model_install_failed", message: model.error ?? "the model didn't install" })}\n`, EXIT_REFUSED);
+  if (!(await runtimeAvailable())) {
+    process.stdout.write(`Installing the runtime into ${screenerRuntimeDir()}\n`);
+    mkdirSync(screenerRuntimeDir(), { recursive: true });
+    const npm = spawnSync("npm", ["install", "--prefix", screenerRuntimeDir(), "--no-audit", "--no-fund", "--foreground-scripts", "--allow-scripts=onnxruntime-node,protobufjs", SCREENER_RUNTIME_MODULE], { stdio: "inherit" });
+    if (npm.status !== 0) fail(`${JSON.stringify({ error: "runtime_install_failed", message: `npm install failed with status ${npm.status ?? "none"}, so the model can't run. Try again.` })}\n`, EXIT_REFUSED);
+  }
+  const after = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
+  if (after.state !== "ready") fail(`${describeScreenerState(after)}\n`, EXIT_REFUSED);
+  // A running daemon picks it up now. If none is running, the next login does.
+  try {
+    const client = await IpcClient.connect(socketPath());
+    await client.call("screener_reload");
+    client.close();
+    process.stdout.write("Installed. The daemon is loading it, and 'cello-v2 status' says when it's really running.\n");
+  } catch (err: unknown) {
+    if (!(err instanceof DaemonGone)) throw err;
+    process.stdout.write("Installed. It loads at the next login.\n");
+  }
 }
 
 async function main(): Promise<void> {
@@ -261,6 +354,7 @@ async function main(): Promise<void> {
     }
     return login(args);
   }
+  if (command === "screener") return screenerCommand(args);
   if (command === "logout") {
     if (wantsHelp) {
       process.stdout.write("Usage: cello-v2 logout\n\nStop the daemon. Conversations carry on after the next login.\n");
@@ -285,6 +379,7 @@ async function main(): Promise<void> {
     if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
     return;
   }
+  if (op.personOnly) await confirmPerson(op, params);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   const answer = op.method === "export_transcript"

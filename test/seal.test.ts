@@ -61,7 +61,7 @@ function rootOf(size: number): Uint8Array {
 async function record(c: Cast, n: number, ackThrough: number | null, certificate: Partial<SealCertificateFields> = {}): Promise<SealRecordOnWire> {
   const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, throughPosition: n, root: certificate.root ?? rootOf(n) };
   const requestBytes = sealRequestBytes(request);
-  const ack = ackThrough === null ? null : { sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: hashes[ackThrough - 1] as Uint8Array, root: rootOf(ackThrough) };
+  const ack = ackThrough === null ? null : { sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: hashes[ackThrough - 1] as Uint8Array, root: rootOf(ackThrough), screenedThrough: Math.max(0, ackThrough - 1), screeningEtaSeconds: 7 };
   const fields: SealCertificateFields = {
     sealKeyId: c.sealKey.id,
     serverId: c.server.id,

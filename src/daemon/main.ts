@@ -213,6 +213,11 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+    // Not in the tool table's MCP half: only the command line reaches these, after it has asked a person.
+    case "screening":
+      return engine.setScreeningRule(engine.resolveAgent(text(params, "agent")), text(params, "sender"), params["level"]);
+    case "screener_reload":
+      return engine.reloadScreener();
     case "shutdown":
       setImmediate(shutdown);
       return { stopping: true };

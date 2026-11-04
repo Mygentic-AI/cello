@@ -91,7 +91,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   const acked = options.ackedHashes ?? hashes;
   const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, throughPosition: n, root: rootOf(hashes, n) };
   const requestBytes = sealRequestBytes(request);
-  const ack = ackThrough === null ? null : { sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough) };
+  const ack = ackThrough === null ? null : { sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0, screeningEtaSeconds: 0 };
   const fields: SealCertificateFields = {
     sealKeyId: c.sealKey.id,
     serverId: c.server.id,
