@@ -31,6 +31,14 @@ type Params = Record<string, unknown>;
 
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
 
+// The only reasons a refusal can carry. The caller's daemon writes the sentence, so a refuser's prose never reaches its model.
+export const REFUSAL_SENTENCES = {
+  not_accepting: "This agent is not accepting connections. Retrying will not change this.",
+  busy: "This agent can't take another conversation from you right now.",
+  session_limit: "You have reached the number of conversations this agent allows you. Close one, and try again.",
+} as const;
+export type RefusalCode = keyof typeof REFUSAL_SENTENCES;
+
 function hexParam(params: Params, name: string): { id: Uint8Array; hex: string } {
   const value = params[name];
   if (typeof value !== "string" || !/^[0-9a-fA-F]{64}$/.test(value)) throw new LocalError("bad_argument", `${name} must be an agent_id, 64 hex characters`);
@@ -76,6 +84,56 @@ export class Governance {
     this.guards.record(agentId, key, from, to, direction, confirmed);
     logEvent("governance.changed", { agent: toHex(agentId), key, from, to, direction, confirmed });
     if (direction === "loosen") this.#hooks.notify(agentId, `${key} changed from ${JSON.stringify(from)} to ${JSON.stringify(to)}, by a person at this machine's terminal. If that wasn't you, run: ${undo}`);
+  }
+
+  // ---- The gate. Runs before any key material exists, and asks nobody: a call either fits what the owner set or it's refused. ----
+
+  admit(agentId: Uint8Array, callerId: Uint8Array): { code: RefusalCode; limit?: number } | null {
+    const tier = this.contacts.tierOf(agentId, callerId);
+    const limits = this.reach.limitsFor(agentId, tier);
+    if (limits.shut) return { code: "not_accepting" };
+    const quietMs = this.reach.number(agentId, "limits.quiet_minutes") * 60_000;
+    const now = Date.now();
+    // A session stays open however long it's quiet, and only stops counting. Sessions this agent started aren't anyone's knock.
+    const counting = this.#store.sessionsOf(agentId).filter((s) => s.role === "callee" && (s.state === "accepted" || s.state === "active") && s.peer_closed === 0 && s.own_closed === 0 && now - s.last_activity_at < quietMs);
+    const fromCaller = counting.filter((s) => toHex(s.counterparty_id) === toHex(callerId)).length;
+    if (fromCaller >= limits.max_sessions) return tier === TIER.UNKNOWN ? { code: "busy" } : { code: "session_limit", limit: limits.max_sessions };
+    if (tier === TIER.UNKNOWN) {
+      const strangers = counting.filter((s) => this.contacts.tierOf(agentId, s.counterparty_id) === TIER.UNKNOWN).length;
+      if (strangers >= this.reach.number(agentId, "limits.stranger_pool")) return { code: "busy" };
+    }
+    return null;
+  }
+
+  // Every refusal goes on the ledger, one row per caller, so knocking a thousand times can push nobody else out. Bob hears
+  // about a limit, at most once in each cooldown. A block or a shut tier is his own choice, so it just sits in the inbox.
+  noteRefusal(agentId: Uint8Array, agentHex: string, callerHex: string, code: RefusalCode): void {
+    const told = this.reach.addRefusal(agentId, fromHex(callerHex), code, code !== "not_accepting", this.reach.number(agentId, "limits.cap_alarm_minutes") * 60_000);
+    logEvent("session.refused", { agent: agentHex, caller: callerHex, reason: code });
+    if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello-v2 contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+  }
+
+  knocks(agentId: Uint8Array, agentHex: string): unknown[] {
+    return this.reach.refusals(agentId).map((row) => ({
+      contact_id: toHex(row.contact_id),
+      first_at: new Date(row.first_refused_at).toISOString(),
+      last_at: new Date(row.last_refused_at).toISOString(),
+      times: row.times,
+      reason: row.last_reason,
+      let_through: `cello-v2 contact-set-tier ${toHex(row.contact_id)} --tier known --agent ${agentHex}`,
+    }));
+  }
+
+  // What this agent calls itself, sealed to whoever it talks to. Empty offers no name.
+  offeredName(agentId: Uint8Array, fallback: string): string {
+    return this.reach.offeredName(agentId) ?? fallback;
+  }
+
+  setOwnMoniker(agentId: Uint8Array, agentHex: string, params: Params): unknown {
+    const moniker = params["clear"] === true ? "" : this.#monikerOf(params);
+    if (moniker === undefined) throw new LocalError("bad_argument", "give the name, or --clear to offer none");
+    this.reach.setOfferedName(agentId, moniker);
+    return { agent_id: agentHex, offers_name: moniker || null };
   }
 
   // ---- Contacts ----
@@ -146,6 +204,7 @@ export class Governance {
     const direction: Direction = to > from ? "loosen" : to < from ? "tighten" : "neutral";
     if (direction === "loosen") requirePerson(params, `This raises ${contact.hex} from ${tierName(from)} to ${tierName(to)}, which gives it more room with ${agentHex}.`, `cello-v2 contact-set-tier ${contact.hex} --tier ${tierName(to)} --agent ${agentHex}`);
     this.contacts.put(agentId, contact.id, { tier: to });
+    if (direction === "loosen") this.reach.forgetRefusal(agentId, contact.id);
     if (direction !== "neutral") this.#weakened(agentId, `contact.${contact.hex}.tier`, tierName(from), tierName(to), direction, params, `cello-v2 contact-set-tier ${contact.hex} --tier ${tierName(from)} --agent ${agentHex}`);
     return this.#contactView(agentId, this.contacts.get(agentId, contact.id) as ContactRow);
   }

@@ -8,11 +8,14 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { socketPath } from "../src/daemon/paths.ts";
+import { IpcClient } from "../src/ipc/client.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const FLOOD_MESSAGE_BYTES = 200_000;
+const KNOCKS = 1000;
 
 type Json = Record<string, unknown>;
 interface Message { position: number; from: string; from_id: string; text?: string; blocked?: boolean; screening?: { verdict: string; reason?: string } }
@@ -356,6 +359,134 @@ test("tier screening: only a person, only whitelisted or vip, and one sender's r
   a.ok(["send", session, "-", "--notice", "--over", "--agent", "Ola"], hostile);
   const third = await until("the third message", () => read(b, "Pat").messages[0]);
   assert.equal(third.screening?.verdict, "flagged", "one sender's rule outranks the tier's");
+});
+
+function sql(query: string): string {
+  const run = spawnSync("docker", ["compose", "exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "cello_owner", "-d", "cello", "-tAc", query], { encoding: "utf8", cwd: process.env["CELLO_SERVER_DIR"] as string });
+  assert.equal(run.status, 0, run.stderr);
+  return run.stdout.trim();
+}
+
+const REFUSED = "This agent is not accepting connections. Retrying will not change this.";
+const BUSY = "This agent can't take another conversation from you right now.";
+const inbox = (m: Machine, agent: string): { refused_callers: { contact_id: string; times: number; reason: string; let_through: string }[] } => m.ok(["inbox", "--agent", agent]) as never;
+
+test("the gate: a blocked caller hears the sentence at once, nothing is kept, and the server can't read why", () => {
+  const a = machine();
+  const b = machine();
+  const aId = idOf(a, "AceOfDiamonds");
+  const bId = idOf(b, "Bo");
+  b.ok(["contact-set-tier", aId, "--tier", "blocked", "--agent", "Bo"]);
+
+  const started = Date.now();
+  const first = a.ok(["initiate-session", bId, "--agent", "AceOfDiamonds"]);
+  assert.equal(first["state"], "refused", "a definite no, not waiting");
+  assert.equal(first["message"], REFUSED);
+  assert.ok(Date.now() - started < 10_000, "with no timeout");
+  assert.ok(read(a, "AceOfDiamonds").notices.some((n) => n.text.includes(REFUSED)), "it stays on the record for whoever holds the agent");
+  assert.deepEqual((b.ok(["sessions", "--all", "--agent", "Bo"]))["sessions"], [], "no session on the side that refused");
+  assert.equal(inbox(b, "Bo").refused_callers[0]?.contact_id, aId);
+  assert.match(inbox(b, "Bo").refused_callers[0]?.let_through ?? "", /contact-set-tier/);
+
+  // The server holds a signed no, and no reason, tier or name.
+  const held = sql(`SELECT refusal::text FROM sessions WHERE encode(session_id, 'hex') = '${first["session_id"] as string}'`);
+  assert.ok(held.length > 0, "the refusal is there");
+  // Long words only: the copy is mostly base64, which holds any short word by chance.
+  for (const word of ["not_accepting", "blocked", "accepting", "AceOfDiamonds"]) assert.ok(!held.includes(word), `the server's copy mentions ${word}`);
+  assert.equal(sql("SELECT count(*) FROM information_schema.columns WHERE table_name = 'agents' AND column_name = 'name'"), "0");
+  assert.ok(!sql(`SELECT registration::text FROM agents WHERE encode(agent_id, 'hex') = '${aId}'`).includes("AceOfDiamonds"));
+
+  // A restart asks nobody again: the refusal took it off Bo's list.
+  const times = inbox(b, "Bo").refused_callers[0]?.times;
+  b.ok(["logout"]);
+  b.run(["login", "--server", url]);
+  assert.equal(inbox(b, "Bo").refused_callers[0]?.times, times);
+
+  // Your own block is a stop sign the other way too, and a person can drive through it.
+  a.ok(["contact-set-tier", bId, "--tier", "blocked", "--agent", "AceOfDiamonds"]);
+  a.refused(["initiate-session", bId, "--agent", "AceOfDiamonds"], "person_required");
+});
+
+test("the gate: a whitelisted caller connects with every other tier shut, and a stranger over the limit hears a fixed sentence", async () => {
+  const friend = machine();
+  const stranger = machine();
+  const b = machine();
+  const friendId = idOf(friend, "Fay");
+  idOf(stranger, "Sam");
+  const bId = idOf(b, "Bex");
+  for (const tier of ["unknown", "known", "vip"]) b.ok(["settings-set", `bounds.${tier}.not_accepting`, "true", "--agent", "Bex"]);
+  assert.match(b.person(["contact-set-tier", friendId, "--tier", "whitelisted", "--agent", "Bex"]), /whitelisted/);
+  assert.equal(friend.ok(["initiate-session", bId, "--agent", "Fay"])["state"], "active");
+  assert.equal(stranger.ok(["initiate-session", bId, "--agent", "Sam"])["message"], REFUSED, "the same words for a shut tier as for a block");
+
+  // Open the door to strangers, one conversation each, and quiet stops counting after a real minute.
+  assert.match(b.person(["settings-set", "bounds.unknown.not_accepting", "false", "--agent", "Bex"]), /"value":"false"/);
+  b.ok(["settings-set", "bounds.unknown.max_sessions", "1", "--agent", "Bex"]);
+  assert.match(b.person(["settings-set", "limits.quiet_minutes", "1", "--agent", "Bex"]), /"value":"1"/);
+  const open = stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
+  assert.equal(open["state"], "active");
+  const over = stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
+  assert.equal(over["state"], "refused");
+  assert.equal(over["message"], BUSY, "nothing here says why, or what tier");
+  // Its daemon writes these after the server takes the refusal, which can be just after the caller hears it.
+  await until("the owner to hear about a limit", () => read(b, "Bex").notices.some((n) => /over a limit/.test(n.text)));
+  stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
+  const samId = (stranger.ok(["agents"]) as unknown as { agents: { agent_id: string }[] }).agents[0]?.agent_id;
+  await until("the second knock on the ledger", () => inbox(b, "Bex").refused_callers.find((r) => r.contact_id === samId && r.reason === "busy" && r.times >= 3));
+  assert.ok(!read(b, "Bex").notices.some((n) => /over a limit/.test(n.text)), "and only once in the cooldown");
+
+  await new Promise((resolve) => setTimeout(resolve, 61_000));
+  assert.equal(stranger.ok(["initiate-session", bId, "--agent", "Sam"])["state"], "active", "a quiet session stops counting");
+  assert.equal(stranger.ok(["send", open["session_id"] as string, "still here", "--over", "--agent", "Sam"])["sent"], true, "and it's still open");
+  await until("the message in the quiet session", () => read(b, "Bex").messages.find((m) => m.text === "still here"));
+});
+
+test("the gate: one caller knocking a thousand times is one row, and pushes nobody else out", async () => {
+  const noisy = machine();
+  const other = machine();
+  const b = machine();
+  const noisyId = idOf(noisy, "Nog");
+  const otherId = idOf(other, "Oz");
+  const bId = idOf(b, "Bee");
+  b.ok(["contact-set-tier", otherId, "--tier", "blocked", "--agent", "Bee"]);
+  other.ok(["initiate-session", bId, "--agent", "Oz"]);
+  b.ok(["contact-set-tier", noisyId, "--tier", "blocked", "--agent", "Bee"]);
+
+  const client = await IpcClient.connect(socketPath(noisy.home));
+  try {
+    for (let i = 0; i < KNOCKS; i++) {
+      const answer = await client.call("initiate_session", { agent: "Nog", caller: "cli", target: bId }) as { state: string };
+      assert.equal(answer.state, "refused", `knock ${i}`);
+    }
+  } finally {
+    client.close();
+  }
+  const rows = inbox(b, "Bee").refused_callers;
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.contact_id === noisyId)?.times, KNOCKS);
+  assert.equal(rows.find((r) => r.contact_id === otherId)?.times, 1, "the other caller's record is still there");
+});
+
+test("names: the one it gives itself reaches only the other side, is marked, never replaces yours, and a change is told once", async () => {
+  const a = machine();
+  const b = machine();
+  const aId = idOf(a, "DeeTheFirstOfHerName");
+  const bId = idOf(b, "Eve");
+  const session = await call(a, "DeeTheFirstOfHerName", bId);
+  const withOf = (m: Machine, agent: string, id: string): string | undefined => (m.ok(["sessions", "--agent", agent]) as unknown as { sessions: SessionView[] }).sessions.find((s) => s.session_id === id)?.with;
+  assert.equal(withOf(b, "Eve", session), "DeeTheFirstOfHerName (self-declared)");
+  assert.equal(withOf(a, "DeeTheFirstOfHerName", session), "Eve (self-declared)");
+  b.ok(["contact-add", aId, "--moniker", "MyDee", "--agent", "Eve"]);
+  assert.equal(withOf(b, "Eve", session), "MyDee");
+
+  a.ok(["moniker", "DeirdreOfTheSorrows", "--agent", "DeeTheFirstOfHerName"]);
+  const next = await call(a, "DeeTheFirstOfHerName", bId);
+  assert.equal(withOf(b, "Eve", next), "MyDee", "a new name never applies by itself");
+  const told = await until("the rename notice", () => read(b, "Eve").notices.find((n) => /now calls itself DeirdreOfTheSorrows/.test(n.text)));
+  assert.ok(told);
+  await call(a, "DeeTheFirstOfHerName", bId);
+  assert.ok(!read(b, "Eve").notices.some((n) => /now calls itself/.test(n.text)), "and told once");
+  for (const name of ["DeeTheFirstOfHerName", "DeirdreOfTheSorrows"]) assert.equal(sql(`SELECT count(*) FROM sessions WHERE accept::text LIKE '%${name}%' OR confirm::text LIKE '%${name}%' OR offer::text LIKE '%${name}%'`), "0", `the server can read ${name}`);
 });
 
 test("moving the database and its key to a new home moves every contact, tier, limit, guard, policy and rule", async () => {

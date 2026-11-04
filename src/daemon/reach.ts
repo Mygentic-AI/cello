@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS refused_callers (
   last_refused_at  INTEGER NOT NULL,
   times            INTEGER NOT NULL,
   last_reason      TEXT NOT NULL,
+  last_alarm_at    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (agent_id, contact_id)
 );
 `;
@@ -193,9 +194,22 @@ export class Reach {
     return { direction: byMagnitude(row[field], Number(to)), from: String(row[field]), to, apply: () => write(field, Number(to)) };
   }
 
-  addRefusal(agentId: Uint8Array, contactId: Uint8Array, reason: string): void {
+  // Says whether the owner is due a notice about this caller. The cooldown is stored here, so a restart doesn't repeat one.
+  // A refusal that tells nobody doesn't start the clock, or the owner would miss the limit that follows it.
+  addRefusal(agentId: Uint8Array, contactId: Uint8Array, reason: string, tells: boolean, cooldownMs: number): boolean {
     const now = Date.now();
-    this.#store.prepare("INSERT INTO refused_callers (agent_id, contact_id, first_refused_at, last_refused_at, times, last_reason) VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT (agent_id, contact_id) DO UPDATE SET last_refused_at = excluded.last_refused_at, times = times + 1, last_reason = excluded.last_reason").run(agentId, contactId, now, now, reason);
+    const last = (this.#store.prepare("SELECT last_alarm_at FROM refused_callers WHERE agent_id = ? AND contact_id = ?").get(agentId, contactId) as { last_alarm_at: number } | undefined)?.last_alarm_at ?? 0;
+    const due = tells && now - last >= cooldownMs;
+    this.#store.prepare("INSERT INTO refused_callers (agent_id, contact_id, first_refused_at, last_refused_at, times, last_reason, last_alarm_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT (agent_id, contact_id) DO UPDATE SET last_refused_at = excluded.last_refused_at, times = times + 1, last_reason = excluded.last_reason, last_alarm_at = excluded.last_alarm_at").run(agentId, contactId, now, now, reason, due ? now : last);
+    return due;
+  }
+
+  offeredName(agentId: Uint8Array): string | undefined {
+    return (this.#store.prepare("SELECT value FROM agent_settings WHERE agent_id = ? AND key = 'self.offered_name'").get(agentId) as { value: string } | undefined)?.value;
+  }
+
+  setOfferedName(agentId: Uint8Array, name: string): void {
+    this.#store.prepare("INSERT INTO agent_settings (agent_id, key, value, updated_at) VALUES (?, 'self.offered_name', ?, ?) ON CONFLICT (agent_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(agentId, name, Date.now());
   }
 
   refusals(agentId: Uint8Array): { contact_id: Uint8Array; first_refused_at: number; last_refused_at: number; times: number; last_reason: string }[] {

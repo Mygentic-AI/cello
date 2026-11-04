@@ -170,6 +170,7 @@ function governed(method: string, params: Record<string, unknown>): unknown {
     case "policy_pending": return g.policyPending(id);
     case "policy_propose": return g.policyPropose(id, named, params);
     case "policy_approve": return g.policyApprove(id, named, params);
+    case "moniker": return g.setOwnMoniker(id, named, params);
     default: throw new LocalError("unknown_method", `no such method: ${method}`);
   }
 }
@@ -210,7 +211,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return { released: true, agent_id: agent };
     }
     case "initiate_session":
-      return engine.initiate(acting(params), text(params, "target"));
+      return engine.initiate(acting(params), text(params, "target"), params);
     case "send":
       return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
     case "receive": {
@@ -267,6 +268,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "policy_pending":
     case "policy_propose":
     case "policy_approve":
+    case "moniker":
       return governed(method, params);
     case "screener_reload":
       return engine.reloadScreener();

@@ -1,6 +1,6 @@
 // The owner's node: keys, conversations and recovery. Durable state decides everything.
 // After any restart, the same catch-up path runs: resend what's pending, then read from position.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { openSessionContent, sealSessionContent } from "../protocol/aead.ts";
 import { ChainVerifier, type ChainFault, type WitnessedEntry, verifyTranscript } from "../protocol/chain.ts";
 import { ZERO_HASH, equalBytes, toHex } from "../protocol/encode.ts";
@@ -16,7 +16,9 @@ import {
   EntryKind,
   EntryMode,
   type EntryFields,
+  type OfferFields,
   acceptBytes,
+  refuseBytes,
   agentAuthBytes,
   assignmentBytes,
   ciphertextHash,
@@ -47,18 +49,20 @@ import {
   signedDeliveryAck,
   signedEntry,
   signedOffer,
+  signedRefuse,
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
 import { LocalError, requirePerson } from "./errors.ts";
-import { Governance } from "./governance.ts";
+import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
+import { validateMoniker } from "./who-label.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import { OutboundRateLimiter } from "./rate-limit.ts";
 import { type LanguageGuard, type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
 import { type Settings, loadSettings } from "./settings.ts";
-import { tierName } from "./tiers.ts";
+import { TIER, tierName } from "./tiers.ts";
 import type { EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 
@@ -91,6 +95,23 @@ const MODEL_MISSING = "This agent's database used the screening model, and the m
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
+
+const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/refusal").update(sharedSecret).digest());
+
+// Only these words ever come out of a refusal, whatever the other side put in it.
+function refusalSentence(opened: Uint8Array | null): string {
+  const fallback = "This agent refused the call.";
+  if (!opened) return fallback;
+  let parsed: { code?: unknown; limit?: unknown };
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(opened)) as typeof parsed;
+  } catch {
+    return fallback;
+  }
+  if (typeof parsed.code !== "string" || !Object.hasOwn(REFUSAL_SENTENCES, parsed.code)) return fallback;
+  const sentence = REFUSAL_SENTENCES[parsed.code as RefusalCode];
+  return Number.isSafeInteger(parsed.limit) ? `${sentence} The limit is ${parsed.limit as number}.` : sentence;
+}
 
 export { LocalError };
 
@@ -244,6 +265,7 @@ export class Engine {
   readonly #outbound = new OutboundScreen();
   readonly #ackTimers = new Map<string, NodeJS.Timeout>();
   readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
+  readonly #refusals = new Map<string, string>();
   readonly governance: Governance;
   #lastCrashTold = 0;
   #modelMissingTold = false;
@@ -472,9 +494,8 @@ export class Engine {
     const clientNonce = new Uint8Array(randomBytes(32));
     return {
       identity: identityCodec.encode(identity),
-      name: agent.name,
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity, name: agent.name }))),
+      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity }))),
       signature: signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
@@ -698,8 +719,8 @@ export class Engine {
 
   async #register(agent: AgentContext): Promise<void> {
     const identity = agent.signer.publicIdentity;
-    const signature = await agent.signer.sign("cello-v2-register", registerBytes({ serverId: this.#serverId(), identity, name: agent.name }));
-    await this.#link.call("register", { identity: identityCodec.encode(identity), name: agent.name, signature: signatureCodec.encode(signature) });
+    const signature = await agent.signer.sign("cello-v2-register", registerBytes({ serverId: this.#serverId(), identity }));
+    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature) });
     this.#store.markRegistered(agent.signer.id);
     agent.registered = true;
     logEvent("agent.registered", { agent: agent.hex });
@@ -780,6 +801,10 @@ export class Engine {
       return;
     }
     if (local.role === "caller") {
+      if (local.state === "offered" && wire.refusal) {
+        await this.#onRefused(agent, local, wire.refusal);
+        return;
+      }
       if (local.state === "offered" && wire.accept) {
         await this.#answerAccept(agent, local, wire.accept);
         local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
@@ -801,6 +826,40 @@ export class Engine {
   }
 
   // Tiers and policy aren't in this iteration, so a daemon takes every validly signed call.
+  // A definite no: the caller never waits out the offer. No session row is kept here, and the server takes it off this agent's
+  // list, so a restart doesn't count it twice. The reason goes to the caller's own key, so the server can't read it.
+  async #refuseOffer(agent: AgentContext, fields: OfferFields, refusal: { code: RefusalCode; limit?: number }): Promise<void> {
+    const { ciphertext, sharedSecret } = await mlKemEncapsulate(fields.mlKemPublic);
+    const refuseFields = {
+      offerHash: structureHash(offerBytes(fields)),
+      mlKemCiphertext: ciphertext,
+      sealedReason: sealSessionContent(refusalKey(sharedSecret), new TextEncoder().encode(JSON.stringify(refusal))),
+    };
+    sharedSecret.fill(0);
+    const signature = await agent.signer.sign("cello-v2-session-refuse", refuseBytes(refuseFields));
+    await this.#link.call("session.refuse", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), refusal: signedRefuse.encode({ fields: refuseFields, signature }) });
+    this.governance.noteRefusal(agent.signer.id, agent.hex, toHex(fields.callerId), refusal.code);
+  }
+
+  // What the caller's daemon says it heard. Only a callee's signature can make this happen, and only fixed sentences come out.
+  async #onRefused(agent: AgentContext, local: SessionRow, wire: WireSigned): Promise<void> {
+    const refusal = signedRefuse.decode(wire, "refusal");
+    const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
+    if (!equalBytes(refusal.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this refusal answers a different offer");
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-refuse", refuseBytes(refusal.fields), refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
+    const sharedSecret = await mlKemDecapsulate(local.mlkem_seed as Uint8Array, refusal.fields.mlKemCiphertext);
+    const opened = openSessionContent(refusalKey(sharedSecret), refusal.fields.sealedReason);
+    sharedSecret.fill(0);
+    const sentence = refusalSentence(opened);
+    this.#store.updateSession(agent.signer.id, local.session_id, { state: "closed", fault: "refused", x25519_secret: null, mlkem_seed: null });
+    const sessionHex = toHex(local.session_id);
+    this.#refusals.set(agent.hex + sessionHex, sentence);
+    logEvent("session.was_refused", { agent: agent.hex, session: sessionHex });
+    this.#notify(agent, local.session_id, `${toHex(local.counterparty_id)} refused this call: ${sentence}`);
+    this.#activation.get(agent.hex + sessionHex)?.();
+  }
+
+  // One at a time per agent, so a burst of calls can't all pass the count before any of them is on disk.
   async #acceptOffer(agent: AgentContext, wire: SessionOnWire): Promise<void> {
     const offer = signedOffer.decode(wire.offer, "offer");
     const fields = offer.fields;
@@ -812,7 +871,19 @@ export class Engine {
       logEvent("session.offer_expired", { session: toHex(fields.sessionId) });
       return;
     }
+    const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, fields));
+    if (!accept) return;
+    await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
+    logEvent("session.accepted", { agent: agent.hex, session: toHex(fields.sessionId) });
+  }
 
+  // Tier first, before any key material exists. The new session is on disk when this returns, so the next call counts it.
+  async #admitOffer(agent: AgentContext, wire: SessionOnWire, fields: OfferFields): Promise<WireSigned | undefined> {
+    const refusal = this.governance.admit(agent.signer.id, fields.callerId);
+    if (refusal) {
+      await this.#refuseOffer(agent, fields, refusal);
+      return undefined;
+    }
     const own = await generateSessionEphemeral();
     const { ciphertext, sharedSecret } = await mlKemEncapsulate(fields.mlKemPublic);
     const { contentKey } = deriveSessionSecrets({
@@ -828,6 +899,7 @@ export class Engine {
       x25519Public: own.publicKey,
       mlKemCiphertext: ciphertext,
       sealedSalt: sealSessionContent(contentKey, salt),
+      sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))),
     };
     const signature = await agent.signer.sign("cello-v2-session-accept", acceptBytes(acceptFields));
     const accept = signedAccept.encode({ fields: acceptFields, signature });
@@ -836,7 +908,7 @@ export class Engine {
       session_id: fields.sessionId,
       role: "callee",
       counterparty_id: fields.callerId,
-      counterparty_name: wire.callerName,
+      counterparty_name: "",
       counterparty_keys: JSON.stringify(wire.callerIdentity),
       state: "accepted",
       offer: JSON.stringify(wire.offer),
@@ -846,8 +918,17 @@ export class Engine {
     });
     destroySessionEphemeral(own);
     sharedSecret.fill(0);
-    await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
-    logEvent("session.accepted", { agent: agent.hex, session: toHex(fields.sessionId) });
+    return accept;
+  }
+
+  // A name it gave itself, opened only by the party it's for. One that doesn't fit the rule is no name at all.
+  #takeOfferedName(agent: AgentContext, local: SessionRow, key: Uint8Array, sealed: Uint8Array): void {
+    const opened = openSessionContent(key, sealed);
+    const name = opened ? validateMoniker(new TextDecoder().decode(opened)) : null;
+    if (!name) return;
+    this.#store.updateSession(agent.signer.id, local.session_id, { counterparty_name: name });
+    const renamed = this.governance.contacts.noteOfferedName(agent.signer.id, local.counterparty_id, name);
+    if (renamed) this.#notify(agent, local.session_id, renamed);
   }
 
   async #answerAccept(agent: AgentContext, local: SessionRow, wireAccept: WireSigned): Promise<void> {
@@ -870,7 +951,8 @@ export class Engine {
     const peerSalt = openSessionContent(contentKey, accept.fields.sealedSalt);
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     const ownSalt = generateSaltContribution();
-    const confirmFields = { acceptHash: structureHash(acceptBytes(accept.fields)), sealedSalt: sealSessionContent(contentKey, ownSalt) };
+    this.#takeOfferedName(agent, local, contentKey, accept.fields.sealedName);
+    const confirmFields = { acceptHash: structureHash(acceptBytes(accept.fields)), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
     const signature = await agent.signer.sign("cello-v2-session-confirm", confirmBytes(confirmFields));
     this.#store.updateSession(agent.signer.id, local.session_id, {
       state: "accepted",
@@ -902,6 +984,7 @@ export class Engine {
     if (!(await verifySignature(keys, "cello-v2-session-confirm", confirmBytes(confirm.fields), confirm.signature))) throw new Error("this confirm isn't signed by the caller");
     const peerSalt = openSessionContent(local.session_key as Uint8Array, confirm.fields.sealedSalt);
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
+    this.#takeOfferedName(agent, local, local.session_key as Uint8Array, confirm.fields.sealedName);
     await this.#activate(agent, local, wireConfirm, wireAssignment, deriveSessionSalt(local.own_salt as Uint8Array, peerSalt));
   }
 
@@ -1711,7 +1794,7 @@ export class Engine {
   // ---- What agents and people ask for ----
 
   async createAgent(name: string): Promise<unknown> {
-    if (!name || new TextEncoder().encode(name).length > 64) throw new LocalError("bad_argument", "an agent name must be 1 to 64 bytes");
+    if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
     if ([...this.#agents.values()].some((a) => a.name === name)) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
     const seeds = generateIdentitySeeds();
     const signer = await signerFromSeeds(seeds);
@@ -1735,8 +1818,13 @@ export class Engine {
     return this.#requireAgent(agentHex).name;
   }
 
-  async initiate(agentHex: string, target: string): Promise<unknown> {
+  async initiate(agentHex: string, target: string, params: Record<string, unknown> = {}): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
+    // You blocked them, so calling them is a stop sign. A person can drive through it, once.
+    const dialled = /^[0-9a-fA-F]{64}/.exec(target)?.[0];
+    if (dialled && this.governance.contacts.tierOf(agent.signer.id, parseHex(dialled, 32, "target")) === TIER.BLOCKED) {
+      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello-v2 initiate-session ${target} --agent ${agent.hex}`);
+    }
     let address: ReturnType<typeof parseAddress>;
     try {
       address = parseAddress(target);
@@ -1756,7 +1844,7 @@ export class Engine {
   // The callee's server hosts, and each side connects to it directly. No server relays for another.
   async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array): Promise<unknown> {
     const agentHex = agent.hex;
-    const lookup = await this.#call(() => route.link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown; name: string };
+    const lookup = await this.#call(() => route.link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown };
     const identity = identityCodec.decode(lookup.identity, "identity");
     // The id you typed is the check: a server can't substitute other keys under it.
     if (!equalBytes(identityId(identity), targetId)) throw new LocalError("wrong_identity", "the server returned keys that don't match the id you asked for");
@@ -1782,7 +1870,7 @@ export class Engine {
         session_id: sessionId,
         role: "caller",
         counterparty_id: targetId,
-        counterparty_name: lookup.name,
+        counterparty_name: "",
         counterparty_keys: JSON.stringify(lookup.identity),
         state: "offered",
         offer: JSON.stringify(offer),
@@ -1798,7 +1886,12 @@ export class Engine {
     clearTimeout(timer);
     this.#activation.delete(agent.hex + sessionHex);
     const state = (this.#store.session(agent.signer.id, sessionId) as SessionRow).state;
-    return { session_id: sessionHex, state: state === "active" ? "active" : "waiting", counterparty: lookup.name };
+    const refused = this.#refusals.get(agent.hex + sessionHex);
+    if (refused) {
+      this.#refusals.delete(agent.hex + sessionHex);
+      return { session_id: sessionHex, state: "refused", message: refused };
+    }
+    return { session_id: sessionHex, state: state === "active" ? "active" : "waiting" };
   }
 
   async #call(work: () => Promise<unknown>): Promise<unknown> {
@@ -1904,9 +1997,9 @@ export class Engine {
     const waiting = this.#store.sessionsOf(agent.signer.id).flatMap((s) => {
       const unread = this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position);
       const held = this.#screening.waiting(agent.hex, toHex(s.session_id));
-      return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread, ready: this.#store.deliverableCount(agent.signer.id, s.session_id, s.read_position), ...(held ? { still_screening: held } : {}) }] : [];
+      return unread > 0 ? [{ session_id: toHex(s.session_id), from: this.#who(agent, s), from_id: toHex(s.counterparty_id), unread, ready: this.#store.deliverableCount(agent.signer.id, s.session_id, s.read_position), ...(held ? { still_screening: held } : {}) }] : [];
     });
-    return { waiting, notices: this.#store.notices(agent.signer.id).length };
+    return { waiting, notices: this.#store.notices(agent.signer.id).length, refused_callers: this.governance.knocks(agent.signer.id, agent.hex) };
   }
 
   // Everything this agent holds of a conversation, its own messages included, in the order the server set.
@@ -1919,13 +2012,13 @@ export class Engine {
       const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
       return {
         position: row.position,
-        from: row.own === 1 ? agent.name : local.counterparty_name,
+        from: row.own === 1 ? agent.name : this.#who(agent, local),
         from_id: toHex(row.own === 1 ? agent.signer.id : local.counterparty_id),
         own: row.own === 1,
         ...shownMessage(row, closing),
       };
     });
-    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
+    return { session_id: toHex(local.session_id), with: this.#who(agent, local), with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
   }
 
   // What can be read right now. A message still being screened isn't in it, or a caller would be told to read and find nothing.
@@ -1964,7 +2057,7 @@ export class Engine {
         unread: this.unreadCount(agent.hex),
         sessions: this.#store.sessionsOf(agent.signer.id).map((s) => ({
           session_id: toHex(s.session_id),
-          with: s.counterparty_name,
+          with: this.#who(agent, s),
           with_id: toHex(s.counterparty_id),
           state: s.state,
           position: s.verified_position,

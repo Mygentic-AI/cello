@@ -197,9 +197,8 @@ class Stranger {
     const identity = this.signer.publicIdentity;
     return {
       identity: identityCodec.encode(identity),
-      name: "Stranger",
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity, name: "Stranger" }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity }))),
       signature: signatureCodec.encode(await this.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }

@@ -108,6 +108,18 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [],
   },
   {
+    command: "moniker",
+    group: "Contacts",
+    summary: "Set the name this agent gives itself to others.",
+    scoped: true,
+    acts: false,
+    description: "Set the name this agent gives itself. It goes sealed to whoever it talks to, and the server never sees it. They see it marked (self-declared). The default is the name it was created with.",
+    params: [
+      { name: "moniker", kind: "string", positional: true, description: "1 to 64 letters, digits, underscores or dashes." },
+      { name: "clear", kind: "boolean", description: "Offer no name." },
+    ],
+  },
+  {
     command: "contact-add",
     group: "Contacts",
     summary: "Add a contact, as known. Lifting a block needs a person.",
