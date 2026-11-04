@@ -545,6 +545,19 @@ test("a standby past its time tells each side once, across restarts, and changes
   toldOnce(owen.read(), AUTHOR, "the author");
   await settle();
 
+  // Both daemons frozen past the due time, the nearest a test gets to a sleeping laptop. On waking, each side is told once.
+  await promised(SIX_SECONDS);
+  const frozen = [nora, owen].map((who) => (who.must(["status"]) as { pid: number }).pid);
+  assert.equal(owen.standbys()?.[0]?.overdue, false, "the freeze must come before it falls due");
+  for (const pid of frozen) process.kill(pid, "SIGSTOP");
+  await sleep(6500);
+  for (const pid of frozen) process.kill(pid, "SIGCONT");
+  await until("both sides told on waking", () => (nora.must(["status"]) as { agents: { unread: number }[] }).agents[0]?.unread === 1 && (owen.must(["status"]) as { agents: { unread: number }[] }).agents[0]?.unread === 1);
+  await sleep(FOR_ANY_LATE_NOTICE);
+  toldOnce(nora.read(), READER, "the reader");
+  toldOnce(owen.read(), AUTHOR, "the author");
+  await settle();
+
   // The reader is away while the promise is kept. Coming back after its time, it reads the follow-up and hears no false alarm.
   nora.kill();
   owen.act("send", session, "back in a moment", "--standby", THREE_SECONDS);
