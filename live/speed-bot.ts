@@ -33,6 +33,8 @@ async function worker(): Promise<void> {
       outcome = err instanceof DaemonRefused ? err.code : String(err);
     }
     sent.push({ session, tag: plan.tag, seq, size, startedAt: started, ms: performance.now() - started, outcome, ...(position === undefined ? {} : { position }) });
+    // A refusal comes back at once, and without this a worker would spin on it while a long upload finishes.
+    if (outcome !== "sent") await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
 

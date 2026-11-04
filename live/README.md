@@ -20,7 +20,9 @@ node live/speed.ts --local [--scenarios a,b] [--seconds 30] [--cpu-prof]   # a s
 node live/speed.ts --server wss://host/v1 --gentle                         # a shared server: few messages, few of them long
 ```
 
-Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree. Don't aim it without `--gentle` at a server others use.
+Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree, and `--project` and `--port` to run beside another track. Don't aim it without `--gentle` at a server others use.
+
+The `slow_*` scenarios put every connection through one shared throttled pipe, a packet at a time. They fail if a long upload holds up another conversation or a connection drops. Real links can queue more than this pipe does, so a pass here doesn't prove a given real link.
 
 **The screening tests.** `live/screening.live.ts` is one of the scripted tests, on the deterministic screener: hostile text in a tail, a queue through a daemon kill, a real worker crash, the person-only setting, and a database moved to a new home. `live/screening-model.live.ts` is short and run by hand with the model: one long message, to show the main thread doesn't stall. Set `MODEL_SOURCE` to a folder holding `screener/` and `screener-runtime/`, which it clones and never changes. Big test messages are prose, because the outbound screen redacts hash-like text, so a hash-heavy load has to come from a sender that doesn't run it.
 
