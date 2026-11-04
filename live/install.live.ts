@@ -27,7 +27,7 @@ const npmCache = join(work, "npm-cache");
 const packageDir = join(prefix, "lib", "node_modules", "cello-v2");
 const binary = join(prefix, "bin", "cello-v2");
 const mcpBinary = join(prefix, "bin", "cello-v2-mcp");
-const compose = { ...process.env, COMPOSE_PROJECT_NAME: "cello-v2-install", CELLO_PORT: port, POSTGRES_PASSWORD: randomHex(), CELLO_APP_PASSWORD: randomHex() };
+const compose = { ...process.env, COMPOSE_PROJECT_NAME: process.env["CELLO_INSTALL_PROJECT"] ?? "cello-v2-install", CELLO_PORT: port, POSTGRES_PASSWORD: randomHex(), CELLO_APP_PASSWORD: randomHex() };
 
 let tarball = "";
 let passed = 0;

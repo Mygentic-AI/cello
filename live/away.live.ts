@@ -18,6 +18,9 @@ interface View { session_id: string; state: string; own_closed: boolean; peer_cl
 
 class Machine {
   readonly home = mkdtempSync(join(tmpdir(), "cello-v2-away-"));
+  run(args: string[]): { stderr: string } {
+    return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+  }
   ok(args: string[], input?: string): Json {
     const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home, CELLO_CALLER: "cli" } });
     assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
@@ -30,6 +33,31 @@ class Machine {
     spawnSync(process.execPath, [cliPath, "logout"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
   }
 }
+
+// A real terminal: the code is read off the screen and typed back.
+const TERMINAL = `
+import os, pty, re, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], sys.argv[1:])
+out, sent, end = "", False, time.time() + 30
+while time.time() < end:
+    ready, _, _ = select.select([fd], [], [], 0.2)
+    if ready:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data.decode(errors="replace")
+    asked = re.search(r"type ([0-9a-f]{6}):", out)
+    if asked and not sent:
+        sent = True
+        os.write(fd, (asked.group(1) + "\\n").encode())
+os.close(fd)
+print(out)
+`;
 
 const started: Machine[] = [];
 function machine(): Machine {
@@ -161,6 +189,30 @@ test("one message closes a never-answered session, tells the caller, and frees t
   assert.equal(call(a, "Gus", bId).length, 32, "the slot is free again");
   const owner = await until("the message to be screened", () => { const r = read(b, "Fay"); return r.messages.some((m) => m.text === "my one message") && r; });
   assert.ok(owner.notices.some((n) => /left one message/.test(n.text)), "the owner hears what happened");
+});
+
+test("an operator closing by hand isn't reported as the one-message rule", async () => {
+  const b = machine();
+  const bId = idOf(b, "Rex");
+  const a = machine();
+  idOf(a, "Sue");
+  const session = call(a, "Sue", bId);
+  await greetingOf(a, "Sue", session);
+  b.ok(["close-session", session, "--agent", "Rex"]);
+  await until("the close", () => view(a, "Sue", session)?.peer_closed);
+  assert.ok(!read(a, "Sue").notices.some((n) => n.text === ONE_MESSAGE));
+});
+
+test("a suspended agent sends no greeting", async () => {
+  const b = machine();
+  const bId = idOf(b, "Tam");
+  const a = machine();
+  idOf(a, "Uma");
+  const terminal = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "suspend", "--agent", "Tam"], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_V2_HOME: b.home } });
+  assert.match(terminal.stdout, /"status":\s*"suspended"/);
+  const answer = a.run(["initiate-session", bId, "--agent", "Uma"]);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assert.deepEqual((a.ok(["greetings", "--agent", "Uma"]) as { greetings: unknown[] }).greetings, [], `the call said ${answer.stderr}`);
 });
 
 test("a conversation already under way gets neither", async () => {

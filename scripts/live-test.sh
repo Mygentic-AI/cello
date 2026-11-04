@@ -12,7 +12,9 @@ if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   exit 1
 fi
 cd "$server_dir"
-trap 'docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+# A test's own cleanup is skipped when it times out or is force-exited, which left daemons running. Only this run's
+# daemons carry this port in their command, so a person's real daemon is never touched.
+trap 'pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 docker compose up -d --build --wait server || { docker compose logs migrate postgres 2>&1 | tail -30; exit 1; }
 cd "$here"
 # One file at a time, because the daemon test stops the shared server on purpose. The install test starts its own server.

@@ -19,6 +19,8 @@ Run them whenever you like. They need nobody's OK.
 
 **The away test.** `CELLO_SERVER_DIR=<server> scripts/away-test.sh`. A real server on project `cello-v2-away` and port 18900, with real daemons. It reads the server's database as its owner. Other live tests turn `away.answering` off for agents nobody holds, because a call to one of those is greeted and closed after one message.
 
+**The kill switch test** runs alone: `CELLO_SERVER_DIR=<server> scripts/status-test.sh`. Two real servers on projects `cello-v2-status-a` and `-b`, ports 18800 and 18801, with real daemons and a real terminal for the person-only commands. It flips the switch mid-conversation, and checks both connections, sealing, the signed log, forged statements, and what crosses between servers. It builds under the heavy-run lock, and needs no other lock.
+
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 
 ```

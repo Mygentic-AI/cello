@@ -65,6 +65,7 @@ function doorbellText(frame: IpcNotification): string {
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
+    case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
     case "channel_post": return "CELLO: a channel you follow has new posts. Call cello_channel_read to read them.";
     case "channel_notice": return "CELLO: there's a notice about a channel. Call cello_channels to see it.";
     case "channel_request": return "CELLO: someone has asked to join a channel you administer. Call cello_channel_requests to see who.";
