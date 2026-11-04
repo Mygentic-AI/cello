@@ -411,6 +411,11 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
   assert.equal(await pick({ reveal: "1", sealId: partId }), 3);
   assert.equal(await pick({ all: true, sealId: partId }), 3, "all with a named seal means all that seal covers");
 
+  // A corrupt stored seal is named, wherever it sits and however the seal is chosen.
+  assert.equal(await faultFor([{} as SealRecordOnWire], { all: true }), "stored_seal_unreadable");
+  assert.equal(await faultFor([whole, {} as SealRecordOnWire], { all: true }), "stored_seal_unreadable");
+  assert.equal(await faultFor([{} as SealRecordOnWire], { all: true, sealId: partId }), "stored_seal_unreadable");
+
   // A record that can't back up its seal is refused rather than exported.
   assert.equal(await faultFor([whole], { all: true, salt: null }), "salt_missing");
   const gap = await buildTranscript(request({ ...chain, held: chain.held.filter((row) => row.position !== 2) }, [whole], { reveal: "1" }));

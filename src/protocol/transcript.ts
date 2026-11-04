@@ -101,7 +101,8 @@ export interface ReadBody {
   text: string;
   signal: string | null;
   estMinutes: number | null;
-  // Whether it has the random value that stops a holder of the salt testing guesses about it.
+  // Whether it has a value long enough to stop a holder of the salt testing guesses about it.
+  // Only its length can be seen. Its author could still have chosen one that isn't random, and that exposes only the author's own words.
   hasRandomValue: boolean;
 }
 
@@ -191,7 +192,7 @@ function describeTranscript(record: SealRecord, items: readonly WitnessedEntry[]
     hidden: missing.length > 0
       ? `${missing.join(" ")} What isn't shown may change the meaning: "Bob offers $1M" can be followed by a hidden "Bob withdraws".`
       : "Nothing is hidden: every position in this session is revealed.",
-    how_bodies_were_checked: "Each revealed body was hashed with the session salt and matched against its author's signed entry. Nothing signs the salt itself, and it needs none: no other salt or body gives the same hash.",
+    how_bodies_were_checked: "Each revealed body was hashed with the session salt and matched against its author's signed entry. Nothing signs the salt itself, and it needs nothing to: finding another salt or body that gives the same hash would mean breaking SHA-256.",
     ciphertext: "This file holds no ciphertext or key, so each entry's signed ciphertext hash isn't checked here. It's carried unchanged, because the entry's signature covers it. Only a recipient's machine can check it. It does that before signing a delivery ack, which is why the counterparty's signature means more than the sender's.",
     seal,
   };
@@ -294,6 +295,8 @@ function parsePositions(text: string): [number, number][] | null {
 
 function chooseSeal(seals: readonly SealRecordOnWire[], wanted: string | undefined): SealRecordOnWire | undefined {
   if (wanted !== undefined) return seals.find((seal) => toHex(sealId(decodeSealRecord(seal).certificate.fields)) === wanted.toLowerCase());
+  // Sorting one seal compares nothing, so this reads every one, and a corrupt one can't slip through unnoticed.
+  for (const seal of seals) decodeSealRecord(seal);
   const reach = (seal: SealRecordOnWire): [number, number, number] => {
     const cert = decodeSealRecord(seal).certificate.fields;
     return [cert.throughPosition, cert.receivedThrough, cert.time];
@@ -314,8 +317,12 @@ export async function buildTranscript(request: TranscriptRequest): Promise<Trans
   const ranges = reveal === undefined ? null : parsePositions(reveal);
   if (reveal !== undefined && !ranges) return refuse("bad_argument", `reveal must be positions such as 1,3,5-7, and "${reveal}" isn't`);
 
-  const seals = request.seals as SealRecordOnWire[];
-  const seal = chooseSeal(seals, request.sealId);
+  let seal: SealRecordOnWire | undefined;
+  try {
+    seal = chooseSeal(request.seals as SealRecordOnWire[], request.sealId);
+  } catch (err: unknown) {
+    return refuse("stored_seal_unreadable", `A seal this agent holds for this session can't be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (request.sealId !== undefined && !seal) return refuse("unknown_seal", "This agent holds no seal with that id for this session");
   const held = entries.at(-1)?.position ?? 0;
   const seek = `Run: ${sealCommand}`;
