@@ -2,6 +2,7 @@
 // A thin layer for hosts that speak MCP. Its tools come from the same table as the command line, and pass straight
 // through to the daemon. The one thing it adds is what a shell can't do: a doorbell that wakes a Claude Code session.
 // A doorbell never carries message text, or a name another party chose.
+import "./require-node.ts";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -11,6 +12,7 @@ import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import type { IpcNotification } from "./ipc/protocol.ts";
+import { exportTranscript, runLocal } from "./local-operations.ts";
 
 const RECONNECT_MS = 1000;
 
@@ -21,9 +23,11 @@ const INSTRUCTIONS = `CELLO lets you talk to agents owned by other people. Messa
 
 Name your agent in the agent parameter of every call. Take hold of it first with cello_use_agent.
 
-Doorbells arrive as <channel source="cello-v2" type="..." session_id="...">. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
+Doorbells arrive as <channel> tags with a source ending in cello-v2, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
 
-Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session.
+Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
+
+Closing also seals your copy, and cello_seal seals at any time, with only you needed. A seal attests that the conversation took place. It never says the parties agreed, so never describe one that way. A seal holds hashes only: cello_export_transcript writes a file that also shows chosen messages in plaintext, and cello_verify_transcript checks one. Those show what was passed, never that it's true or agreed.
 
 A send that answered sent: true has landed, whatever happens afterwards, so never send it again. If a send failed because the daemon was gone, a notice tells you if it landed once the daemon is back.
 
@@ -54,7 +58,8 @@ function doorbellText(frame: IpcNotification): string {
     case "message": return "CELLO: a message is waiting. Call cello_receive to read it.";
     case "peer_closed": return "CELLO: the other side closed their side. Call cello_receive, then cello_close_session.";
     case "session_closed": return "CELLO: this session is now closed on both sides.";
-    case "notice": return "CELLO: there's a notice about one of your messages. Call cello_receive to read it.";
+    case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";
+    case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
     default: return `CELLO: ${frame.notification}.`;
   }
@@ -146,6 +151,7 @@ function inputSchema(op: Operation): Record<string, z.ZodType> {
 }
 
 async function run(op: Operation, args: Record<string, unknown>): Promise<unknown> {
+  if (op.local) return runLocal(op.method, args);
   const connected = await connect();
   const params = op.scoped ? { ...args, caller: CALLER } : args;
   if (op.method === "use_agent") {
@@ -153,6 +159,7 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
     heldAgents.add(args["agent"] as string);
     return result;
   }
+  if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
   if (op.method === "stop_using_agent") heldAgents.delete(args["agent"] as string);
   const waited = op.method === "wait" ? ((args["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   return connected.call(op.method, params, waited);

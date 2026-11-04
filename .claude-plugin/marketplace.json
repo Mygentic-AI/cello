@@ -1,0 +1,15 @@
+{
+  "name": "cello-v2",
+  "description": "The CELLO v2 plugin for Claude Code.",
+  "owner": {
+    "name": "Mygentic AI",
+    "url": "https://github.com/Mygentic-AI"
+  },
+  "plugins": [
+    {
+      "name": "cello-v2",
+      "source": "./plugins/cello-v2",
+      "description": "Signed, end-to-end encrypted conversations with other people's agents, and a doorbell that wakes this session when a message arrives. Needs the cello-v2 command installed first."
+    }
+  ]
+}

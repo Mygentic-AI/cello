@@ -6,8 +6,11 @@ import { ChainVerifier, type ChainFault, type WitnessedEntry, verifyTranscript }
 import { ZERO_HASH, equalBytes, toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, type Signer, generateIdentitySeeds, identityId, signerFromSeeds, verifySignature } from "../protocol/identity.ts";
 import { deriveSessionSecrets, destroySessionEphemeral, generateSessionEphemeral } from "../protocol/key-agreement.ts";
+import { verifyConsistency } from "../protocol/merkle.ts";
 import { mlKemDecapsulate, mlKemEncapsulate } from "../protocol/ml-kem.ts";
 import { deriveSessionSalt, generateSaltContribution, saltedContentHash } from "../protocol/salt.ts";
+import { type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, sealId, sealSummary } from "../protocol/seal.ts";
+import { buildTranscript } from "../protocol/transcript.ts";
 import {
   type AssignmentFields,
   EntryKind,
@@ -23,6 +26,7 @@ import {
   entryHash,
   offerBytes,
   registerBytes,
+  sealRequestBytes,
   structureHash,
 } from "../protocol/structures.ts";
 import {
@@ -42,6 +46,7 @@ import {
   signedDeliveryAck,
   signedEntry,
   signedOffer,
+  signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
@@ -53,8 +58,18 @@ const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
 const POSITION_CHECK_MS = 30_000;
 const AUTH_RETRY_MS = 5_000;
+// One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
+const MAX_REPLY_BYTES = 8_000_000;
 const CONFIG_SERVER_URL = "server_url";
 const CONFIG_SERVER_IDENTITY = "server_identity";
+const CONFIG_SEAL_KEY = "seal_key";
+const CONFIG_SEAL_LOG_HEAD = "seal_log_head";
+const SEAL_EVERYTHING_HELD = 0;
+// Not refusals of the seal itself: the first means this agent's login hasn't finished, the second that the server failed.
+const SEAL_RETRY_CODES: readonly string[] = ["not_authenticated", "internal_error"];
+// A timer can stop counting while a machine sleeps, so no wait outlasts this before the clock is read again.
+const STANDBY_CHECK_MAX_MS = 60_000;
+const LATEST_DATE_MS = 8.64e15;
 
 export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
@@ -69,7 +84,7 @@ export class LocalError extends Error {
 }
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue";
   agent: string;
   session_id?: string;
   from_id?: string;
@@ -107,6 +122,21 @@ function parseBody(bytes: Uint8Array): Body | null {
   }
 }
 
+interface OpenStandby {
+  by: "you" | "other_side";
+  position: number;
+  due: number;
+}
+
+// Both daemons start from the server's ack time, so they agree on the due time. Each compares it with its own clock,
+// so a clock that's wrong by a minute tells a minute early or late, and changes nothing else.
+// The minutes can come from the other party, so anything that isn't a usable time counts as no time.
+function standbyDue(estMinutes: unknown, ackTime: number): number | undefined {
+  if (typeof estMinutes !== "number" || !(estMinutes > 0)) return undefined;
+  const due = Math.ceil(ackTime + estMinutes * 60_000);
+  return due <= LATEST_DATE_MS ? due : undefined;
+}
+
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);
@@ -123,6 +153,10 @@ export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
 }
 
+function notSealedYet(reason: string): unknown {
+  return { sealed: false, status: "not_sealed_yet", message: `This isn't sealed yet: ${reason}. The request is saved and retried by itself, and you'll get a notice.` };
+}
+
 export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
@@ -134,6 +168,8 @@ export class Engine {
   readonly #activation = new Map<string, () => void>();
   #server: ConnectedServer | undefined;
   #positionCheck: NodeJS.Timeout | undefined;
+  #standbyCheck: NodeJS.Timeout | undefined;
+  #standbyCheckAt = 0;
 
   constructor(store: Store, url: string, events: EngineEvents) {
     this.#store = store;
@@ -161,6 +197,7 @@ export class Engine {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
       this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false });
     }
+    this.#checkStandbys();
     this.#link.start();
     // Pushes are hints. This catches a lost one, so it costs seconds rather than a conversation.
     this.#positionCheck = setInterval(() => {
@@ -170,6 +207,7 @@ export class Engine {
 
   stop(): void {
     clearInterval(this.#positionCheck);
+    clearTimeout(this.#standbyCheck);
     this.#link.stop();
   }
 
@@ -247,12 +285,17 @@ export class Engine {
 
   async #catchUpAgent(agent: AgentContext): Promise<void> {
     try {
+      const listedAt = Date.now();
       const listed = await this.#link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
       const seen = new Set<string>();
       for (const wire of listed.sessions) {
-        const sessionHex = toHex(signedOffer.decode(wire.offer).fields.sessionId);
+        const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
+        const sessionHex = toHex(sessionId);
         seen.add(sessionHex);
-        this.#background("session update", this.#lane(agent.hex, sessionHex, () => this.#onSessionWire(agent, wire)));
+        this.#background("session update", this.#lane(agent.hex, sessionHex, async () => {
+          await this.#onSessionWire(agent, wire);
+          this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
+        }));
       }
       // An offer written to disk just before a crash may never have reached the server.
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
@@ -315,6 +358,7 @@ export class Engine {
     if (local.state === "active" || local.state === "closed") {
       const hasWork = wire.tip > local.verified_position || this.#store.pendingEntries(agent.signer.id, sessionId).length > 0 || local.fault !== null || local.delivered_through < this.#latestFromPeer(agent, local);
       if (hasWork) await this.#settle(agent, local);
+      if (this.#store.sealWants(agent.signer.id, sessionId).length > 0) await this.#retrySeals(agent, sessionId);
     }
   }
 
@@ -465,7 +509,7 @@ export class Engine {
       server: this.#serverIdentity(),
       participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)],
     });
-    for (const row of this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position)) {
+    for (const row of this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position)) {
       verifier.adopt(signedEntry.decode(JSON.parse(row.entry)).fields);
     }
     this.#verifiers.set(key, verifier);
@@ -567,10 +611,12 @@ export class Engine {
     let body: Uint8Array | undefined;
 
     if (fromMe) {
-      if (!this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash)) {
+      const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash);
+      if (!own) {
         this.#hold(agent, local, "own_entry_unknown", position);
         return false;
       }
+      body = own.body;
     } else {
       if (!item.ciphertext) {
         this.#hold(agent, local, "encrypted_text_missing", position);
@@ -626,20 +672,108 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
+    const written = parseBody(body as Uint8Array);
+    const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, witnessed.ack.time) : undefined;
+    if (due !== undefined) this.#armStandbyCheck(due);
     return true;
   }
 
+  // ---- Standbys past their time. Only the two daemons can see these, so all of this is local, and it only tells. ----
+
+  #standbyIn(row: EntryRow | undefined, by: OpenStandby["by"], local: SessionRow): OpenStandby | undefined {
+    if (!row || row.position === null || row.ack === null || row.position > local.verified_position) return undefined;
+    if (signedEntry.decode(JSON.parse(row.entry)).fields.kind !== EntryKind.message) return undefined;
+    const body = parseBody(row.body);
+    if (body?.signal !== "standby") return undefined;
+    const due = standbyDue(body.est_minutes, signedAck.decode(JSON.parse(row.ack)).fields.time);
+    return due === undefined ? undefined : { by, position: row.position, due };
+  }
+
+  // A promise is open while it's its author's latest word. A follow-up still on its way to the server has no position
+  // yet, so it counts as following up. If it's refused it leaves the chain, and the promise before it is open again.
+  #openStandbys(agent: AgentContext, local: SessionRow): OpenStandby[] {
+    if (local.state !== "active") return [];
+    const own = this.#standbyIn(this.#store.lastOwnEntry(agent.signer.id, local.session_id), "you", local);
+    const peer = this.#standbyIn(this.#store.lastPeerEntry(agent.signer.id, local.session_id), "other_side", local);
+    return [own, peer].filter((standby) => standby !== undefined);
+  }
+
+  #standbyView(agent: AgentContext, local: SessionRow): unknown[] {
+    const now = Date.now();
+    return this.#openStandbys(agent, local).map((s) => ({ by: s.by, position: s.position, due_at: new Date(s.due).toISOString(), overdue: s.due <= now }));
+  }
+
+  // One timer, set only while a promise is open. Every wait ends at the due time or the limit, and then reads the clock.
+  #armStandbyCheck(due: number): void {
+    if (this.#standbyCheck && due >= this.#standbyCheckAt) return;
+    clearTimeout(this.#standbyCheck);
+    const now = Date.now();
+    this.#standbyCheckAt = Math.min(due, now + STANDBY_CHECK_MAX_MS);
+    this.#standbyCheck = setTimeout(() => this.#checkStandbys(), Math.max(0, this.#standbyCheckAt - now));
+  }
+
+  // Your own promise is settled by what's on this disk, so it can be told right now, even with no server.
+  // The other side's may have been kept on the server, unread, so it's left for a catch-up to confirm.
+  #checkStandbys(): void {
+    this.#standbyCheck = undefined;
+    const now = Date.now();
+    let next = Infinity;
+    for (const agent of this.#agents.values()) {
+      let confirm = false;
+      for (const local of this.#store.sessionsOf(agent.signer.id)) {
+        try {
+          for (const standby of this.#openStandbys(agent, local)) {
+            if (this.#store.standbyTold(agent.signer.id, local.session_id, standby.position)) continue;
+            if (standby.due > now) next = Math.min(next, standby.due);
+            else if (standby.by === "you") this.#tellLate(agent, local, standby);
+            else confirm = true;
+          }
+        } catch (err: unknown) {
+          logEvent("standby.check_failed", { agent: agent.hex, session: toHex(local.session_id), message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      // Offline, the catch-up comes with the reconnect. A failed one comes round again with the position check.
+      if (confirm && agent.online) void this.#catchUpAgent(agent);
+    }
+    if (next !== Infinity) this.#armStandbyCheck(next);
+  }
+
+  // The list was asked for after the promise fell due and this daemon holds all of it, so nothing kept the promise by then.
+  #tellLatePeer(agent: AgentContext, sessionId: Uint8Array, listedAt: number, tip: number): void {
+    const local = this.#store.session(agent.signer.id, sessionId);
+    if (!local || local.verified_position < tip) return;
+    for (const standby of this.#openStandbys(agent, local)) {
+      if (standby.by === "other_side" && standby.due <= listedAt) this.#tellLate(agent, local, standby);
+    }
+  }
+
+  // The mark and the notice commit together. A crash before the doorbell still leaves the notice for the next receive or wait.
+  #tellLate(agent: AgentContext, local: SessionRow, standby: OpenStandby): void {
+    const due = new Date(standby.due).toISOString();
+    const text = standby.by === "you"
+      ? `You said you'd follow up by now, in your message at position ${standby.position}, due ${due}.`
+      : `The other side said it would follow up by now, in its message at position ${standby.position}, due ${due}, and it hasn't.`;
+    const told = this.#store.transaction(() => {
+      if (this.#store.standbyTold(agent.signer.id, local.session_id, standby.position)) return false;
+      this.#store.markStandbyTold(agent.signer.id, local.session_id, standby.position);
+      this.#store.addNotice(agent.signer.id, local.session_id, text);
+      return true;
+    });
+    if (!told) return;
+    const sessionHex = toHex(local.session_id);
+    logEvent("standby.overdue", { agent: agent.hex, session: sessionHex, by: standby.by, position: standby.position });
+    this.#events.ring(agent.hex, { type: "standby_overdue", agent: agent.name, session_id: sessionHex });
+  }
+
   #latestFromPeer(agent: AgentContext, local: SessionRow): number {
-    const rows = this.#store.unreadEntries(agent.signer.id, local.session_id, local.delivered_through);
-    return rows.length > 0 ? (rows[rows.length - 1] as EntryRow).position as number : 0;
+    return this.#store.unreadBounds(agent.signer.id, local.session_id, local.delivered_through)?.last ?? 0;
   }
 
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
   async #deliver(agent: AgentContext, local: SessionRow): Promise<void> {
     const through = this.#latestFromPeer(agent, local);
     if (through <= local.delivered_through) return;
-    const row = this.#store.verifiedEntries(agent.signer.id, local.session_id, through).at(-1) as EntryRow;
-    const ack = signedAck.decode(JSON.parse(row.ack as string)).fields;
+    const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
     const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root };
     const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
     await this.#link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }) });
@@ -661,6 +795,7 @@ export class Engine {
       if (err instanceof ServerRefused) {
         // A repeat of a landed entry always returns its ack, so a refusal means this entry never landed.
         this.#store.markNotSent(row.id);
+        this.#armStandbyCheck(Date.now());
         return { status: "refused", code: err.code, message: err.message };
       }
       throw err;
@@ -682,8 +817,8 @@ export class Engine {
     if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", `this message is ${bodyBytes.length} bytes, over the limit of about 1 MB`);
 
     const verifier = this.#verifier(agent, local);
-    const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
-    const readPosition = unread.length > 0 ? (unread[0] as EntryRow).position as number - 1 : verifier.position;
+    const unread = this.#store.unreadBounds(agent.signer.id, local.session_id, local.read_position);
+    const readPosition = unread ? unread.first - 1 : verifier.position;
     const readRoot = verifier.rootAt(readPosition);
     if (!readRoot) throw new Error(`no root is held for position ${readPosition}`);
 
@@ -734,13 +869,13 @@ export class Engine {
   async send(agentHex: string, sessionHex: string, text: string, signal: Signal, estMinutes: number | undefined, notice: boolean): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
-    if (signal === "standby" && !(typeof estMinutes === "number" && estMinutes > 0)) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
+    if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
       if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
-      if (!notice && this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position).length > 0) {
+      if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {
         throw new LocalError("session_not_current", "a message has arrived that you haven't read. Nothing was sent. Call receive, then decide what to say.");
       }
       if (this.#store.pendingEntries(agent.signer.id, local.session_id).length > 0) {
@@ -777,12 +912,185 @@ export class Engine {
       if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
       if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
       await this.#resendPending(agent, local);
+      // Durable before the close goes, so a crash anywhere after this still ends in a seal.
+      this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
       const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: "", signal: null, est_minutes: null };
       const outcome = await this.#append(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow, EntryKind.close, EntryMode.notice, body);
       const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
+      const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
       const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
-      return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, ...report };
+      return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
     });
+  }
+
+  // ---- Sealing ----
+
+  async seal(agentHex: string, sessionHex: string, through: number | undefined): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    if (through !== undefined && (!Number.isSafeInteger(through) || through < 1)) throw new LocalError("bad_argument", "through must be a position, a whole number from 1 up");
+    return this.#lane(agentHex, sessionHex, async () => {
+      const local = this.#requireSession(agent, sessionHex);
+      if (local.verified_position < 1) throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
+      if (through !== undefined && through > local.verified_position) throw new LocalError("seal_beyond_held", `you hold this session through position ${local.verified_position}, so ${through} can't be sealed`);
+      const wanted = through ?? local.verified_position;
+      this.#store.addSealWant(agent.signer.id, local.session_id, wanted);
+      return this.#attemptSeal(agent, local.session_id, wanted);
+    });
+  }
+
+  // A want is removed only by a stored seal or a final refusal. Anything else leaves it to retry at the next catch-up.
+  async #attemptSeal(agent: AgentContext, sessionId: Uint8Array, wanted: number): Promise<unknown> {
+    const local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+    const through = wanted === SEAL_EVERYTHING_HELD ? local.verified_position : wanted;
+    if (through < 1) {
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      throw new LocalError("nothing_to_seal", "this session has no witnessed messages yet");
+    }
+    if (!agent.online) return notSealedYet(this.#link.problem ?? "this agent isn't online yet");
+    const root = this.#verifier(agent, local).rootAt(through);
+    if (!root) throw new Error(`no root is held for position ${through}`);
+    const fields = { serverId: this.#serverId(), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
+    const signature = await agent.signer.sign("cello-v2-seal-request", sealRequestBytes(fields));
+    let answer: { record: SealRecordOnWire; logProof: string[] | null };
+    try {
+      answer = await this.#link.call("seal.request", {
+        agent: toB64(agent.signer.id),
+        request: signedSealRequest.encode({ fields, signature }),
+        knownLogSize: this.#knownSealLogHead()?.size ?? 0,
+      }) as typeof answer;
+    } catch (err: unknown) {
+      if (err instanceof ServerUnreachable) return notSealedYet(err.message);
+      if (err instanceof ServerRefused && SEAL_RETRY_CODES.includes(err.code)) return notSealedYet(`${err.code}: ${err.message}`);
+      if (err instanceof ServerRefused) {
+        this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+        throw new LocalError(err.code, err.message);
+      }
+      throw err;
+    }
+    let record: SealRecord;
+    try {
+      record = await this.#checkSealAnswer(agent, local, through, root, answer.record, answer.logProof);
+    } catch (err: unknown) {
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      logEvent("seal.refused", { agent: agent.hex, session: toHex(sessionId), code: err instanceof LocalError ? err.code : "failed" });
+      throw err;
+    }
+    const head = record.log.head.fields;
+    this.#store.transaction(() => {
+      this.#store.addSeal(agent.signer.id, sealId(record.certificate.fields), sessionId, JSON.stringify(answer.record));
+      this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
+      this.#store.setConfig(CONFIG_SEAL_KEY, toHex(head.sealKeyId));
+      if (head.size > (this.#knownSealLogHead()?.size ?? 0)) this.#store.setConfig(CONFIG_SEAL_LOG_HEAD, JSON.stringify({ size: head.size, root: toB64(head.root) }));
+    });
+    logEvent("seal.stored", { agent: agent.hex, session: toHex(sessionId), through });
+    return { sealed: true, ...sealSummary(record), statement: describeSeal(record) };
+  }
+
+  #knownSealLogHead(): { size: number; root: Uint8Array } | undefined {
+    const stored = this.#store.getConfig(CONFIG_SEAL_LOG_HEAD);
+    if (!stored) return undefined;
+    const parsed = JSON.parse(stored) as { size: number; root: string };
+    return { size: parsed.size, root: fromB64(parsed.root, "stored seal log root") };
+  }
+
+  // The server can send anything, so nothing is stored or reported as sealed until it all checks out against this record.
+  async #checkSealAnswer(agent: AgentContext, local: SessionRow, through: number, root: Uint8Array, raw: SealRecordOnWire, logProof: string[] | null): Promise<SealRecord> {
+    let decoded: SealRecord;
+    try {
+      decoded = decodeSealRecord(raw);
+    } catch (err: unknown) {
+      throw new LocalError("malformed_record", `the server's seal record can't be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!equalBytes(identityId(decoded.server), this.#serverId())) throw new LocalError("seal_wrong_server", "this seal names a server other than the one this daemon pinned");
+    const sealKeyId = identityId(decoded.sealKey);
+    const pinned = this.#store.getConfig(CONFIG_SEAL_KEY);
+    if (pinned && pinned !== toHex(sealKeyId)) throw new LocalError("seal_key_changed", `this server's seal key has changed since your first seal: it was ${pinned}, and it's now ${toHex(sealKeyId)}`);
+    const check = await checkSealRecord(raw, sealKeyId);
+    if (!check.ok) throw new LocalError(check.fault, check.message);
+    const cert = check.record.certificate.fields;
+    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", `the server sealed a different history from the one you hold at position ${through}`);
+    const subject = equalBytes(cert.sessionId, local.session_id) && equalBytes(cert.sealerId, agent.signer.id) && equalBytes(cert.counterpartyId, local.counterparty_id) && cert.throughPosition === through;
+    if (!subject) throw new LocalError("seal_wrong_subject", "the server's certificate isn't for this seal: its session, parties or position differ");
+    if (cert.tip < local.verified_position || (local.state === "closed" && cert.closed !== 1)) {
+      throw new LocalError("seal_misreports_session", `the certificate says ${cert.tip} positions and closed=${cert.closed}, and you hold ${local.verified_position} in a session that is ${local.state}`);
+    }
+    this.#checkSealLogHistory(check.record, logProof);
+    return check.record;
+  }
+
+  // Catches a log rewritten since this daemon last saw it. It can't catch two readers being shown different logs: only an outside witness can.
+  #checkSealLogHistory(record: SealRecord, logProof: string[] | null): void {
+    const known = this.#knownSealLogHead();
+    if (!known) return;
+    const head = record.log.head.fields;
+    const rewritten = new LocalError("seal_log_rewritten", `this server's seal log no longer contains what it showed you when it had ${known.size} seals. Nothing was stored.`);
+    if (!logProof) throw rewritten;
+    const path = logProof.map((hash) => fromB64(hash, "logProof"));
+    const consistent = known.size <= head.size
+      ? verifyConsistency(known.size, head.size, known.root, head.root, path)
+      : verifyConsistency(head.size, known.size, head.root, known.root, path);
+    if (!consistent) throw rewritten;
+  }
+
+  async #sealAfterClose(agent: AgentContext, sessionId: Uint8Array): Promise<unknown> {
+    try {
+      return await this.#attemptSeal(agent, sessionId, SEAL_EVERYTHING_HELD);
+    } catch (err: unknown) {
+      if (!(err instanceof LocalError)) throw err;
+      return { sealed: false, status: "refused", error: err.code, message: err.message };
+    }
+  }
+
+  async #retrySeals(agent: AgentContext, sessionId: Uint8Array): Promise<void> {
+    for (const want of this.#store.sealWants(agent.signer.id, sessionId)) {
+      const label = want.through === SEAL_EVERYTHING_HELD ? "The seal after your close" : `Your seal through position ${want.through}`;
+      try {
+        const result = await this.#attemptSeal(agent, sessionId, want.through) as { sealed: boolean; seal_id?: string };
+        // One still waiting mustn't hold up a different one that could finish.
+        if (!result.sealed) continue;
+        this.#notify(agent, sessionId, `${label} is done. Its id is ${result.seal_id as string}.`);
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError)) throw err;
+        this.#notify(agent, sessionId, `${label} wasn't made: ${err.code}, ${err.message}.`);
+      }
+    }
+  }
+
+  seals(agentHex: string, sessionHex: string | undefined): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const sessionId = sessionHex === undefined ? undefined : this.#requireSession(agent, sessionHex).session_id;
+    return {
+      seals: this.#store.seals(agent.signer.id, sessionId).map((row) => sealSummary(decodeSealRecord(JSON.parse(row.record)))),
+      waiting: this.#store.sealWants(agent.signer.id, sessionId).map((want) => ({ session_id: toHex(want.session_id), through: want.through === SEAL_EVERYTHING_HELD ? "everything held" : want.through })),
+    };
+  }
+
+  exportSeal(agentHex: string, sealHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const row = this.#store.seal(agent.signer.id, parseHex(sealHex, 32, "seal id"));
+    if (!row) throw new LocalError("unknown_seal", "this agent holds no seal with that id");
+    return JSON.parse(row.record);
+  }
+
+  // Reads this agent's own record, so it needs no server and moves no read position.
+  async exportTranscript(agentHex: string, sessionHex: string, choice: { reveal: string | undefined; all: boolean; sealId: string | undefined }): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    const built = await buildTranscript({
+      ...choice,
+      session: toHex(local.session_id),
+      sealCommand: `cello-v2 seal ${toHex(local.session_id)} --agent ${agent.name}`,
+      entries: this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => ({
+        position: row.position as number,
+        entry: JSON.parse(row.entry) as WireSigned,
+        ack: row.ack ? JSON.parse(row.ack) as WireSigned : null,
+        body: row.body,
+      })),
+      seals: this.#store.seals(agent.signer.id, local.session_id).map((row) => JSON.parse(row.record) as unknown),
+      salt: local.salt,
+    });
+    if (!built.ok) throw new LocalError(built.fault, built.message);
+    return { file: built.file, summary: built.summary };
   }
 
   // ---- What agents and people ask for ----
@@ -875,9 +1183,18 @@ export class Engine {
     const sessions = sessionHex ? [this.#requireSession(agent, sessionHex)] : this.#store.sessionsOf(agent.signer.id);
     const messages: unknown[] = [];
     const reads: { sessionId: Uint8Array; through: number }[] = [];
+    let room = MAX_REPLY_BYTES;
+    let more = false;
     for (const local of sessions) {
-      const unread = this.#store.unreadEntries(agent.signer.id, local.session_id, local.read_position);
+      if (room <= 0) {
+        more ||= this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0;
+        continue;
+      }
+      const page = this.#store.unreadPage(agent.signer.id, local.session_id, local.read_position, room);
+      const unread = page.rows;
+      more ||= page.more;
       for (const row of unread) {
+        room -= row.body.length;
         const body = parseBody(row.body);
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
         messages.push({
@@ -894,7 +1211,7 @@ export class Engine {
     }
     const notices = this.#store.notices(agent.signer.id);
     return {
-      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })) },
+      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -925,10 +1242,11 @@ export class Engine {
         with_id: toHex(s.counterparty_id),
         state: s.state,
         position: s.verified_position,
-        unread: this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length,
+        unread: this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position),
         own_closed: s.own_closed === 1,
         peer_closed: s.peer_closed === 1,
         fault: s.fault,
+        standbys: this.#standbyView(agent, s),
       })),
     };
   }
@@ -937,17 +1255,18 @@ export class Engine {
   inbox(agentHex: string): unknown {
     const agent = this.#requireAgent(agentHex);
     const waiting = this.#store.sessionsOf(agent.signer.id).flatMap((s) => {
-      const unread = this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length;
+      const unread = this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position);
       return unread > 0 ? [{ session_id: toHex(s.session_id), from: s.counterparty_name, from_id: toHex(s.counterparty_id), unread }] : [];
     });
     return { waiting, notices: this.#store.notices(agent.signer.id).length };
   }
 
   // Everything this agent holds of a conversation, its own messages included, in the order the server set.
-  transcript(agentHex: string, sessionHex: string): unknown {
+  transcript(agentHex: string, sessionHex: string, after = 0): unknown {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
-    const entries = this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => {
+    const page = this.#store.recordPage(agent.signer.id, local.session_id, after, local.verified_position, MAX_REPLY_BYTES);
+    const entries = page.rows.map((row) => {
       const body = parseBody(row.body);
       const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
       return {
@@ -960,12 +1279,12 @@ export class Engine {
         ...(!closing && !body ? { unreadable: true } : {}),
       };
     });
-    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries };
+    return { session_id: toHex(local.session_id), with: local.counterparty_name, with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
   }
 
   unreadCount(agentHex: string): number {
     const agent = this.#requireAgent(agentHex);
-    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadEntries(agent.signer.id, s.session_id, s.read_position).length, 0);
+    const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.unreadCount(agent.signer.id, s.session_id, s.read_position), 0);
     return messages + this.#store.notices(agent.signer.id).length;
   }
 
@@ -973,7 +1292,7 @@ export class Engine {
   async verifySession(agentHex: string, sessionHex: string): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
     const local = this.#requireSession(agent, sessionHex);
-    const items: WitnessedEntry[] = this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => {
+    const items: WitnessedEntry[] = this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position).map((row) => {
       const entry = signedEntry.decode(JSON.parse(row.entry));
       const ack = signedAck.decode(JSON.parse(row.ack as string));
       return { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };
@@ -1003,6 +1322,7 @@ export class Engine {
           own_closed: s.own_closed === 1,
           peer_closed: s.peer_closed === 1,
           fault: s.fault,
+          standbys: this.#standbyView(agent, s),
         })),
       })),
     };

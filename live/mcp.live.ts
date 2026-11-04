@@ -2,7 +2,7 @@
 // It doesn't prove Claude Code acts on a doorbell. Only the live test with real sessions proves that.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -159,10 +159,57 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   await two.bell("message");
   await two.tool("cello_receive");
 
+  // A standby past its time rings both sides, in fixed words.
+  await two.tool("cello_send", { session_id: sessionId, text: "back in a moment", signal: "standby", est_minutes: 0.02 });
+  await one.bell("message");
+  await one.tool("cello_receive");
+  for (const side of [one, two]) {
+    const late = await side.bell("standby_overdue");
+    assert.equal(late.meta["session_id"], sessionId);
+    assert.match(late.content, /past its time.*Call cello_receive/);
+    assert.doesNotMatch(JSON.stringify(late), /back in a moment/);
+  }
+  assert.match(JSON.stringify(await one.tool("cello_receive")), /said it would follow up by now/);
+  assert.match(JSON.stringify(await two.tool("cello_receive")), /You said you'd follow up by now/);
+
   await two.tool("cello_close_session", { session_id: sessionId });
   await one.bell("peer_closed");
   await one.tool("cello_receive");
   const closed = await one.tool("cello_close_session", { session_id: sessionId });
   assert.equal(closed["state"], "closed");
   await two.bell("session_closed");
+
+  // Seals work through the tools as they do from the shell, including the check that needs no daemon.
+  const seal = closed["seal"] as { sealed: boolean; seal_id: string; seal_key: string; session_closed: boolean };
+  assert.deepEqual([seal.sealed, seal.session_closed], [true, true]);
+  // The doorbell rings before the other side's delivery ack goes, and that ack makes a new, better seal. Only then has nothing changed.
+  let settled = await one.tool("cello_seal", { session_id: sessionId });
+  for (let i = 0; i < 100 && settled["received_through"] !== settled["witnessed_through"]; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    settled = await one.tool("cello_seal", { session_id: sessionId });
+  }
+  assert.equal(settled["received_through"], settled["witnessed_through"]);
+  assert.equal((await one.tool("cello_seal", { session_id: sessionId }))["seal_id"], settled["seal_id"], "a repeat with nothing changed is the same seal");
+  assert.ok(((await one.tool("cello_seals"))["seals"] as unknown[]).length >= 1);
+  const sealFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-seal-")), "seal.json");
+  writeFileSync(sealFile, JSON.stringify(await one.tool("cello_export_seal", { seal_id: seal.seal_id })));
+  const checked = await one.tool("cello_verify_seal", { file: sealFile, seal_key: seal.seal_key });
+  assert.deepEqual([checked["ok"], checked["seal_id"]], [true, seal.seal_id]);
+  assert.equal((await one.tool("cello_verify_seal", { file: sealFile, seal_key: "00".repeat(32) }))["fault"], "wrong_seal_key");
+
+  // Transcripts through the tools. A tool has no folder anyone can rely on, so out must be absolute, and the plaintext stays out of its answer.
+  const firstWords = ((await one.tool("cello_transcript", { session_id: sessionId }))["entries"] as { text: string }[])[0]?.text as string;
+  assert.ok(firstWords);
+  const notAbsolute = await one.tool("cello_export_transcript", { session_id: sessionId, all: true, out: "transcript.json" });
+  assert.deepEqual([notAbsolute["isError"], notAbsolute["error"]], [true, "bad_out_path"]);
+  const nothingChosen = await one.tool("cello_export_transcript", { session_id: sessionId, out: join(tmpdir(), "cello-v2-never-written.json") });
+  assert.equal(nothingChosen["error"], "no_reveal_chosen");
+  const transcriptFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-transcript-")), "transcript.json");
+  const answer = await one.tool("cello_export_transcript", { session_id: sessionId, reveal: "1", out: transcriptFile });
+  assert.equal(answer["file"], transcriptFile);
+  assert.ok(!JSON.stringify(answer).includes(firstWords), "the answer goes to a model, and it holds no plaintext");
+  const proved = await one.tool("cello_verify_transcript", { file: transcriptFile, seal_key: seal.seal_key });
+  assert.ok(proved["ok"], proved["message"] as string);
+  assert.deepEqual((proved["messages"] as { text: string }[]).map((m) => m.text), [firstWords]);
+  assert.equal((await one.tool("cello_verify_transcript", { file: transcriptFile, seal_key: "00".repeat(32) }))["fault"], "wrong_seal_key");
 });

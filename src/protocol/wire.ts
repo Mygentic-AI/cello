@@ -2,7 +2,7 @@
 // Nothing signed depends on this encoding, so it can change without touching a signature.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
 import { PROTOCOL_VERSION } from "./structures.ts";
-import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields } from "./structures.ts";
+import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, SealCertificateFields, SealLogHeadFields, SealRequestFields } from "./structures.ts";
 
 export { PROTOCOL_VERSION };
 
@@ -29,6 +29,10 @@ export const ERROR_CODES = [
   "bad_read_position",
   "bad_ciphertext",
   "too_large",
+  "nothing_to_seal",
+  "seal_beyond_tip",
+  "seal_root_mismatch",
+  "seal_log_inconsistent",
   "internal_error",
 ] as const;
 
@@ -121,6 +125,23 @@ export const offerCodec = codec<OfferFields>({ serverId: "bytes", sessionId: "by
 export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes" });
 export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes" });
 export const assignmentCodec = codec<AssignmentFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", confirmHash: "bytes", time: "int" });
+export const sealRequestCodec = codec<SealRequestFields>({ serverId: "bytes", sessionId: "bytes", sealerId: "bytes", throughPosition: "int", root: "bytes" });
+export const sealCertificateCodec = codec<SealCertificateFields>({
+  sealKeyId: "bytes",
+  serverId: "bytes",
+  sessionId: "bytes",
+  sealerId: "bytes",
+  counterpartyId: "bytes",
+  requestHash: "bytes",
+  root: "bytes",
+  throughPosition: "int",
+  tip: "int",
+  closed: "int",
+  receivedThrough: "int",
+  deliveryAckHash: "bytes",
+  time: "int",
+});
+export const sealLogHeadCodec = codec<SealLogHeadFields>({ sealKeyId: "bytes", size: "int", root: "bytes", time: "int" });
 
 export interface Signed<T> {
   fields: T;
@@ -157,6 +178,9 @@ export const signedOffer = signedCodec(offerCodec);
 export const signedAccept = signedCodec(acceptCodec);
 export const signedConfirm = signedCodec(confirmCodec);
 export const signedAssignment = signedCodec(assignmentCodec);
+export const signedSealRequest = signedCodec(sealRequestCodec);
+export const signedSealCertificate = signedCodec(sealCertificateCodec);
+export const signedSealLogHead = signedCodec(sealLogHeadCodec);
 
 // The state of one session as the server holds it. A daemon needs nothing else to catch up.
 export interface SessionOnWire {

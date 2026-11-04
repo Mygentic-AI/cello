@@ -57,13 +57,43 @@ CREATE TABLE IF NOT EXISTS entries (
   UNIQUE (agent_id, session_id, position),
   FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
-CREATE INDEX IF NOT EXISTS entries_session ON entries(agent_id, session_id, state);
+DROP INDEX IF EXISTS entries_session;
+CREATE INDEX IF NOT EXISTS entries_by_state ON entries(agent_id, session_id, state, position);
+-- Every send asks for the author's last entry. Without this, that sorts the author's whole history, bodies included.
+CREATE INDEX IF NOT EXISTS entries_own ON entries(agent_id, session_id, own, id);
 
 CREATE TABLE IF NOT EXISTS notices (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id   BLOB NOT NULL REFERENCES agents(agent_id),
   session_id BLOB,
   text       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS seals (
+  agent_id         BLOB NOT NULL,
+  seal_id          BLOB NOT NULL,
+  session_id       BLOB NOT NULL,
+  record           TEXT NOT NULL,
+  PRIMARY KEY (agent_id, seal_id),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
+-- A seal asked for and not finished, so it survives a restart. Through 0 means everything held when it goes.
+CREATE TABLE IF NOT EXISTS seal_wants (
+  agent_id   BLOB NOT NULL,
+  session_id BLOB NOT NULL,
+  through    INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, session_id, through),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
+-- A standby whose lateness has been told, so a restart can neither repeat that nor lose it. Its position names the promise.
+CREATE TABLE IF NOT EXISTS standby_told (
+  agent_id   BLOB NOT NULL,
+  session_id BLOB NOT NULL,
+  position   INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, session_id, position),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
 );
 `;
 
@@ -109,6 +139,10 @@ export interface EntryRow {
 }
 
 export interface NoticeRow { id: number; session_id: Uint8Array | null; text: string }
+
+export interface SealRow { seal_id: Uint8Array; session_id: Uint8Array; record: string }
+
+export interface SealWantRow { session_id: Uint8Array; through: number }
 
 type SessionUpdate = Partial<Omit<SessionRow, "agent_id" | "session_id">>;
 
@@ -232,12 +266,66 @@ export class Store {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND state IN ('pending', 'landed') ORDER BY id DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
   }
 
+  lastPeerEntry(agentId: Uint8Array, sessionId: Uint8Array): EntryRow | undefined {
+    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 0 ORDER BY position DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
+  }
+
+  standbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): boolean {
+    return this.#prep("SELECT 1 FROM standby_told WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) !== undefined;
+  }
+
+  markStandbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): void {
+    this.#prep("INSERT INTO standby_told (agent_id, session_id, position) VALUES (?, ?, ?)").run([agentId, sessionId, position]);
+  }
+
   verifiedEntries(agentId: Uint8Array, sessionId: Uint8Array, throughPosition: number): EntryRow[] {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position <= ? ORDER BY position").all([agentId, sessionId, throughPosition]) as unknown as EntryRow[];
   }
 
-  unreadEntries(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): EntryRow[] {
-    return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? ORDER BY position").all([agentId, sessionId, readPosition]) as unknown as EntryRow[];
+  // The rest of these leave the message bodies on disk. They run for every message, and the reads are synchronous,
+  // so loading a long history here stops every other agent on this daemon until it's done.
+  unreadCount(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number {
+    return (this.#prep("SELECT count(*) AS c FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { c: number }).c;
+  }
+
+  unreadBounds(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): { first: number; last: number } | undefined {
+    const row = this.#prep("SELECT min(position) AS first, max(position) AS last FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ?").get([agentId, sessionId, readPosition]) as { first: number | null; last: number | null };
+    return row.first === null || row.last === null ? undefined : { first: row.first, last: row.last };
+  }
+
+  ackAt(agentId: Uint8Array, sessionId: Uint8Array, position: number): string | null | undefined {
+    return (this.#prep("SELECT ack FROM entries WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) as { ack: string | null } | undefined)?.ack;
+  }
+
+  signedRecord(agentId: Uint8Array, sessionId: Uint8Array, throughPosition: number): Pick<EntryRow, "entry" | "ack" | "position">[] {
+    return this.#prep("SELECT entry, ack, position FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position <= ? ORDER BY position").all([agentId, sessionId, throughPosition]) as unknown as Pick<EntryRow, "entry" | "ack" | "position">[];
+  }
+
+  // The last position that fits in maxBytes of bodies, and at least the first. Sizes come from the row header, not the body.
+  #pageEnd(where: string, params: unknown[], maxBytes: number): { through: number; more: boolean } | undefined {
+    const sizes = this.#prep(`SELECT position, length(body) AS size FROM entries WHERE ${where} ORDER BY position`).all(params) as { position: number; size: number }[];
+    let used = 0;
+    let through: number | undefined;
+    for (const row of sizes) {
+      used += row.size;
+      if (through !== undefined && used > maxBytes) return { through, more: true };
+      through = row.position;
+    }
+    return through === undefined ? undefined : { through, more: false };
+  }
+
+  unreadPage(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number, maxBytes: number): { rows: EntryRow[]; more: boolean } {
+    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND state = 'received' AND position > ?", [agentId, sessionId, readPosition], maxBytes);
+    if (!end) return { rows: [], more: false };
+    const rows = this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND position > ? AND position <= ? ORDER BY position").all([agentId, sessionId, readPosition, end.through]) as unknown as EntryRow[];
+    return { rows, more: end.more };
+  }
+
+  recordPage(agentId: Uint8Array, sessionId: Uint8Array, after: number, throughPosition: number, maxBytes: number): { rows: EntryRow[]; more: boolean } {
+    const end = this.#pageEnd("agent_id = ? AND session_id = ? AND position IS NOT NULL AND position > ? AND position <= ?", [agentId, sessionId, after, throughPosition], maxBytes);
+    if (!end) return { rows: [], more: false };
+    const rows = this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND position IS NOT NULL AND position > ? AND position <= ? ORDER BY position").all([agentId, sessionId, after, end.through]) as unknown as EntryRow[];
+    return { rows, more: end.more };
   }
 
   addNotice(agentId: Uint8Array, sessionId: Uint8Array | null, text: string): void {
@@ -250,5 +338,32 @@ export class Store {
 
   clearNotices(agentId: Uint8Array, throughId: number): void {
     this.#prep("DELETE FROM notices WHERE agent_id = ? AND id <= ?").run([agentId, throughId]);
+  }
+
+  addSealWant(agentId: Uint8Array, sessionId: Uint8Array, through: number): void {
+    this.#prep("INSERT OR IGNORE INTO seal_wants (agent_id, session_id, through) VALUES (?, ?, ?)").run([agentId, sessionId, through]);
+  }
+
+  removeSealWant(agentId: Uint8Array, sessionId: Uint8Array, through: number): void {
+    this.#prep("DELETE FROM seal_wants WHERE agent_id = ? AND session_id = ? AND through = ?").run([agentId, sessionId, through]);
+  }
+
+  sealWants(agentId: Uint8Array, sessionId?: Uint8Array): SealWantRow[] {
+    if (sessionId) return this.#prep("SELECT session_id, through FROM seal_wants WHERE agent_id = ? AND session_id = ? ORDER BY through").all([agentId, sessionId]) as unknown as SealWantRow[];
+    return this.#prep("SELECT session_id, through FROM seal_wants WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SealWantRow[];
+  }
+
+  // A repeat from the server is the same certificate, so storing it twice changes nothing.
+  addSeal(agentId: Uint8Array, sealId: Uint8Array, sessionId: Uint8Array, record: string): void {
+    this.#prep("INSERT OR IGNORE INTO seals (agent_id, seal_id, session_id, record) VALUES (?, ?, ?, ?)").run([agentId, sealId, sessionId, record]);
+  }
+
+  seals(agentId: Uint8Array, sessionId?: Uint8Array): SealRow[] {
+    if (sessionId) return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? AND session_id = ? ORDER BY rowid").all([agentId, sessionId]) as unknown as SealRow[];
+    return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? ORDER BY rowid").all([agentId]) as unknown as SealRow[];
+  }
+
+  seal(agentId: Uint8Array, sealId: Uint8Array): SealRow | undefined {
+    return this.#prep("SELECT seal_id, session_id, record FROM seals WHERE agent_id = ? AND seal_id = ?").get([agentId, sealId]) as SealRow | undefined;
   }
 }

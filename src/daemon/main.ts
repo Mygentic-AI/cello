@@ -190,6 +190,18 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "close_session":
       return engine.close(acting(params), text(params, "session_id"));
+    case "seal":
+      return engine.seal(acting(params), text(params, "session_id"), params["through"] as number | undefined);
+    case "seals":
+      return engine.seals(engine.resolveAgent(text(params, "agent")), params["session_id"] === undefined ? undefined : text(params, "session_id"));
+    case "export_seal":
+      return engine.exportSeal(engine.resolveAgent(text(params, "agent")), text(params, "seal_id"));
+    case "export_transcript":
+      return engine.exportTranscript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), {
+        reveal: params["reveal"] === undefined ? undefined : text(params, "reveal"),
+        all: params["all"] === true,
+        sealId: params["seal_id"] === undefined ? undefined : text(params, "seal_id"),
+      });
     // Reading a record acts as nobody, so these need no hold.
     case "agents":
       return engine.agents();
@@ -198,7 +210,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "inbox":
       return engine.inbox(engine.resolveAgent(text(params, "agent")));
     case "transcript":
-      return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+      return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "shutdown":

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Everything an agent or a person can do. Each command is one process and one call, with its identity in the call.
+import "./require-node.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { exportTranscript, runLocal } from "./local-operations.ts";
 
 // Each shell session that sets CELLO_CALLER is its own caller, so one can't read another's messages by accident.
 // Any stable string works: it's a label, not a proof. Without it, all of this machine's command lines are one caller.
@@ -26,7 +28,10 @@ const isSignalParam = (op: Operation, param: Param): boolean => op.command === "
 
 function usageLine(op: Operation): string {
   const positional = op.params.filter((p) => p.positional).map((p) => (p.required ? `<${p.name}>` : `[<${p.name}>]`));
-  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => (p.kind === "boolean" ? `[${flag(p.name)}]` : `[${flag(p.name)} <${p.kind}>]`));
+  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => {
+    const text = p.kind === "boolean" ? flag(p.name) : `${flag(p.name)} <${p.kind}>`;
+    return p.required ? text : `[${text}]`;
+  });
   const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
   const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : [])];
   return `cello-v2 ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
@@ -159,6 +164,18 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
   return params;
 }
 
+// The build doesn't rewrite a path held in a string, so the daemon is looked for in the form this file is running in:
+// main.ts from source, main.js when installed.
+function daemonEntry(): string {
+  const here = fileURLToPath(import.meta.url);
+  const entry = join(dirname(here), "daemon", `main${extname(here)}`);
+  if (!existsSync(entry)) {
+    process.stderr.write(`${JSON.stringify({ error: "daemon_entry_missing", message: `The daemon's code isn't at ${entry}, so this install is incomplete. Install CELLO again.` })}\n`);
+    process.exit(EXIT_REFUSED);
+  }
+  return entry;
+}
+
 async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient> {
   let exited: number | null | undefined;
   child.once("exit", (code) => { exited = code; });
@@ -192,9 +209,9 @@ async function login(args: string[]): Promise<void> {
   } catch (err: unknown) {
     if (!(err instanceof DaemonGone)) throw err;
   }
+  const entry = daemonEntry();
   mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
   const logFile = openSync(logPath(), "a", 0o600);
-  const entry = fileURLToPath(new URL("./daemon/main.ts", import.meta.url));
   const child = spawn(process.execPath, [entry, server], { detached: true, stdio: ["ignore", logFile, logFile] });
   closeSync(logFile);
   const client = await waitForDaemon(child);
@@ -244,9 +261,18 @@ async function main(): Promise<void> {
     return;
   }
   const params = parse(op, args);
+  if (op.local) {
+    const checked = await runLocal(op.method, params);
+    process.stdout.write(`${JSON.stringify(checked, null, 2)}\n`);
+    if (!checked["ok"]) process.exitCode = EXIT_REFUSED;
+    return;
+  }
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
-  const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean; agent_id?: string };
+  const answer = op.method === "export_transcript"
+    ? exportTranscript({ ...params, out: resolve(params["out"] as string) }, (fields) => client.call(op.method, fields))
+    : client.call(op.method, params, waited);
+  const result = await answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   // The id, never the name: a name is a label, and it could later mean a different agent.

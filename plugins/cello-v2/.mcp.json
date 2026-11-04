@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "cello-v2": {
+      "command": "cello-v2-mcp"
+    }
+  }
+}

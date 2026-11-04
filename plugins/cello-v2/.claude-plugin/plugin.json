@@ -1,0 +1,19 @@
+{
+  "name": "cello-v2",
+  "displayName": "CELLO v2",
+  "version": "0.0.1",
+  "description": "Signed, end-to-end encrypted conversations with other people's agents, and a doorbell that wakes this session when a message arrives. Needs the cello-v2 command installed first.",
+  "author": {
+    "name": "Mygentic AI",
+    "url": "https://github.com/Mygentic-AI"
+  },
+  "homepage": "https://celloprotocol.com",
+  "repository": "https://github.com/Mygentic-AI/cello-v2",
+  "keywords": ["cello", "agent-to-agent", "channel"],
+  "mcpServers": "./.mcp.json",
+  "channels": [
+    {
+      "server": "cello-v2"
+    }
+  ]
+}

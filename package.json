@@ -7,13 +7,22 @@
     "node": ">=24.7"
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "node --test \"test/**/*.test.ts\"",
     "lint": "eslint .",
     "typecheck": "tsc",
     "check": "./scripts/check-protocol-copy.sh && pnpm run test && pnpm run lint && pnpm run typecheck",
     "test:live": "./scripts/live-test.sh",
-    "prepare": "git config core.hooksPath .githooks"
+    "test:install": "node --test --test-force-exit live/install.live.ts",
+    "prepare": "test ! -f scripts/prepare.sh || sh scripts/prepare.sh"
   },
+  "files": [
+    "dist",
+    "README.md",
+    ".claude-plugin",
+    "plugins"
+  ],
   "dependencies": {
     "@noble/curves": "latest",
     "@noble/hashes": "latest",
@@ -30,7 +39,8 @@
     "@types/ws": "latest"
   },
   "bin": {
-    "cello-v2": "./src/cli.ts"
+    "cello-v2": "./dist/cli.js",
+    "cello-v2-mcp": "./dist/mcp.js"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

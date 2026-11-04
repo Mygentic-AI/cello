@@ -37,7 +37,7 @@ const KILL_AT_POSITION = 5;
 // A run that never starts shouldn't sit for the whole limit.
 const START_LIMIT_MS = 2 * 60 * 1000;
 // A doorbell that asks for a read, as opposed to one that only says a session started or closed.
-const READ_DOORBELL = /<channel source="[^"]*cello-v2"[^>]* type="(message|peer_closed|notice|daemon_back)"/;
+const READ_DOORBELL = /<channel source="[^"]*cello-v2"[^>]* type="(message|peer_closed|notice|standby_overdue|daemon_back)"/;
 const ANY_DOORBELL = /<channel source="[^"]*cello-v2"/;
 
 // A short path, because a Unix socket path can't be long.
