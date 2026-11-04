@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import WebSocket from "ws";
-import { channelPostAckCodec, channelPostCodec, hashBlob, postHash, readRoster, signMemberKey, signRoster } from "../src/protocol/channel.ts";
+import { type RosterFile, channelPostAckCodec, channelPostCodec, hashBlob, inRoster, postHash, readRoster, sealKeyEntry, signMemberKey, signRoster } from "../src/protocol/channel.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { channelPostAckBytes, channelPostBytes, type ChannelPostFields, agentAuthBytes, registerBytes } from "../src/protocol/structures.ts";
 import { PROTOCOL_VERSION, fromB64, identityCodec, signatureCodec, toB64 } from "../src/protocol/wire.ts";
@@ -409,11 +409,12 @@ test("a hostile server: an old post re-issued under a new number, a changed body
   assert.deepEqual([row.position, row.unread], [2, 1], "it counts as delivered, never stalls, and adds nothing to read");
   assert.ok(row.notices.some((n) => /re-posted as new/.test(n)));
 
-  // A changed body under the honest signature.
+  // A changed body under the honest signature. Bea is on pull so that the change happens before she fetches it.
+  ok("bea", "channel-settings", channel, "--delivery", "pull");
   post("ada", channel, "Second");
   sql(`UPDATE channel_posts SET body = '\\xdeadbeef' WHERE channel_id = ${bytea(channel)} AND position = 3`);
-  ok("bea", "channel-collect", channel);
-  row = await until("Bea to refuse the changed body", () => { const seen = view("bea", channel); return seen.notices.some((n) => /Post number 3 was refused/.test(n)) && seen; });
+  row = collect("bea", channel);
+  assert.ok(row.notices.some((n) => /Post number 3 was refused/.test(n)), `Bea refuses the changed body: ${row.notices.join("; ")}`);
   assert.equal(row.position, 3);
 
   // A key the server sealed itself, for the next generation, and a roster it signed itself.
@@ -422,11 +423,23 @@ test("a hostile server: an old post re-issued under a new number, a changed body
   assert.equal(await readRoster(fakeRoster, fake.publicIdentity).then((r) => r !== null), true, "the forgery is well formed, under its own key");
   const before = view("bea", channel).generation;
   sql(`INSERT INTO channel_rosters (channel_id, revision, roster) SELECT channel_id, roster_revision + 1, '${JSON.stringify(fakeRoster)}'::jsonb FROM channels WHERE channel_id = ${bytea(channel)}; UPDATE channels SET roster_revision = roster_revision + 1 WHERE channel_id = ${bytea(channel)}`);
-  ok("ada", "channel-collect", channel);
   // Every later roster is refused too: a daemon stops at the first break in the chain, and tells its person.
-  const noticed = await until("Bea to refuse the forged roster", () => { ok("bea", "channel-post", channel, "ping"); return view("bea", channel).notices.find((n) => /member list that isn't signed/.test(n)); });
-  assert.ok(noticed);
-  assert.equal(view("bea", channel).generation, before);
+  row = collect("bea", channel);
+  assert.ok(row.notices.some((n) => /member list that isn't signed/.test(n)), `Bea refuses the forged roster: ${row.notices.join("; ")}`);
+  assert.equal(row.generation, before);
+
+  // A group key the server sealed itself, to Bea's real member key, for a generation of its own making.
+  const held = JSON.parse(sql(`SELECT roster FROM channel_rosters WHERE channel_id = ${bytea(channel)} AND revision = 2`)) as RosterFile;
+  const beaRow = await readRoster(held, identityCodec.decode((JSON.parse(sql(`SELECT record FROM channels WHERE channel_id = ${bytea(channel)}`)) as { channel: unknown }).channel));
+  assert.ok(beaRow, "the real roster verifies");
+  const beaListed = inRoster(beaRow, new Uint8Array(Buffer.from(ids.bea, "hex")));
+  assert.ok(beaListed);
+  const forgedEntry = await sealKeyEntry(fake, beaRow, beaListed, 2, new Uint8Array(32).fill(9));
+  sql(`DELETE FROM channel_rosters WHERE channel_id = ${bytea(channel)} AND revision = 3; UPDATE channels SET roster_revision = 2, generation = 2 WHERE channel_id = ${bytea(channel)};
+       INSERT INTO channel_key_entries (channel_id, generation, member_id, entry) VALUES (${bytea(channel)}, 2, ${bytea(ids.bea)}, '${JSON.stringify(forgedEntry)}')`);
+  row = collect("bea", channel);
+  assert.ok(row.notices.some((n) => /that this channel's key didn't sign/.test(n)), `Bea refuses the server's key: ${row.notices.join("; ")}`);
+  assert.equal(refused("bea", "channel-post", channel, "this must not go out under the server's key"), "generation_stale", "with no signed key for it, she can't post under it");
 });
 
 test("eject: the next read is refused, a new key starts, and a member offline across two ejects still reads everything it's owed", async () => {

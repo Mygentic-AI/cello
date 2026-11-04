@@ -13,6 +13,8 @@ Run them whenever you like. They need nobody's OK.
 
 **The install test** is one of them, and it also runs alone: `pnpm run test:install`. It packs the tarball, installs it into an empty prefix, and uses only the installed binaries from outside this repo. It starts its own server, on project `cello-v2-install` and port 18095 (`CELLO_INSTALL_PORT` changes it). It prints the install time and size. After a failure, it keeps its temporary folder and says where.
 
+**The channels test.** `scripts/live-channels.sh` starts a real server on project `cello-v2-channels` and port 18600, and three daemons in their own folders. A bare socket plays the attacker, and the hostile cases work on the database as its owner and with the server's real signing key. It reads the database directly to check that a private channel holds no plaintext. `CHANNELS_LIVE_PATTERN` runs only tests whose names match. It sets its timings with `channel-config`, never the environment, because settings live in the database.
+
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 
 ```

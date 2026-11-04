@@ -316,8 +316,12 @@ export class ChannelStore {
     this.#db.run("DELETE FROM channel_gaps WHERE agent_id = ? AND channel_id = ? AND position = ?", [agent, channel, position]);
   }
 
+  // A fault that persists is checked again on every pass, and it needs telling once while it's unread.
   addNotice(agent: Uint8Array, channel: Uint8Array, text: string): void {
-    this.#db.run("INSERT INTO channel_notices (agent_id, channel_id, text) VALUES (?, ?, ?)", [agent, channel, text]);
+    this.#db.run(
+      "INSERT INTO channel_notices (agent_id, channel_id, text) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM channel_notices WHERE agent_id = ? AND channel_id = ? AND text = ?)",
+      [agent, channel, text, agent, channel, text],
+    );
   }
 
   notices(agent: Uint8Array, channel: Uint8Array): { id: number; text: string }[] {
