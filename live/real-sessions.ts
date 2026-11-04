@@ -9,7 +9,7 @@
 // Watch it with: tmux attach -r -t cello-live
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -34,6 +34,8 @@ const MCP = new URL("../src/mcp.ts", import.meta.url).pathname;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const CONVERSATION_LIMIT_MS = 15 * 60 * 1000;
 const KILL_AT_POSITION = 5;
+// A run that never starts shouldn't sit for the whole limit.
+const START_LIMIT_MS = 2 * 60 * 1000;
 // A doorbell that asks for a read, as opposed to one that only says a session started or closed.
 const READ_DOORBELL = /<channel source="[^"]*cello-v2"[^>]* type="(message|peer_closed|notice|daemon_back)"/;
 const ANY_DOORBELL = /<channel source="[^"]*cello-v2"/;
@@ -141,10 +143,27 @@ async function answerStartupDialogs(n: number): Promise<void> {
   });
 }
 
-function prompt(n: number, text: string): void {
-  tmux("send-keys", "-t", `${TMUX}:0.${n}`, "-l", text);
-  execFileSync("sleep", ["1"]);
+function transcriptHolds(folder: string, text: string): boolean {
+  const dir = join(homedir(), ".claude", "projects", folder.replace(/[^a-zA-Z0-9]/g, "-"));
+  if (!existsSync(dir)) return false;
+  return readdirSync(dir).filter((f) => f.endsWith(".jsonl")).some((file) =>
+    readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean).some((line) => {
+      const row = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
+      return row.type === "user" && JSON.stringify(row.message?.content ?? "").includes(JSON.stringify(text).slice(1, -1));
+    }));
+}
+
+// Pasted, because typing a long prompt as keystrokes once lost all but its last 135 characters.
+// Then checked, because a session that got half a prompt just asks what you meant, and the run waits for nothing.
+async function prompt(n: number, folder: string, text: string): Promise<void> {
+  const file = join(folder, ".prompt");
+  writeFileSync(file, text);
+  tmux("load-buffer", "-b", "cello-prompt", file);
+  tmux("paste-buffer", "-p", "-d", "-b", "cello-prompt", "-t", `${TMUX}:0.${n}`);
+  rmSync(file);
+  await sleep(2000);
   tmux("send-keys", "-t", `${TMUX}:0.${n}`, "Enter");
+  await until(`session ${n} to receive its whole prompt`, 30_000, () => transcriptHolds(folder, text));
 }
 
 function saveScreens(): void {
@@ -305,11 +324,12 @@ async function run(): Promise<void> {
   if (args.unscripted) {
     writeFileSync(join(alphaFolder, "budget.txt"), BUDGET);
     writeFileSync(join(betaFolder, "incidents.csv"), INCIDENTS);
-    prompt(1, unscriptedBeta);
+    await prompt(1, betaFolder, unscriptedBeta);
     await sleep(15_000);
-    prompt(0, unscriptedAlpha(betaId));
+    await prompt(0, alphaFolder, unscriptedAlpha(betaId));
     say("goals sent, with no lines. Nothing else goes to either session from here");
     try {
+      await until("the conversation to start", START_LIMIT_MS * 3, () => (session("Alpha")?.position ?? 0) >= 1);
       await until("both sides to close", CONVERSATION_LIMIT_MS, () => session("Alpha")?.state === "closed" && session("Beta")?.state === "closed");
       say("both sides closed");
       const sessionId = session("Alpha")?.session_id as string;
@@ -337,11 +357,12 @@ async function run(): Promise<void> {
     return;
   }
 
-  prompt(1, betaPrompt);
+  await prompt(1, betaFolder, betaPrompt);
   await sleep(15_000);
-  prompt(0, alphaPrompt(betaId));
+  await prompt(0, alphaFolder, alphaPrompt(betaId));
   say("prompts sent. Nothing else goes to either session from here");
 
+  await until("the conversation to start", START_LIMIT_MS, () => (session("Alpha")?.position ?? 0) >= 1);
   await until(`position ${KILL_AT_POSITION}`, CONVERSATION_LIMIT_MS, () => (session("Alpha")?.position ?? 0) >= KILL_AT_POSITION);
 
   const pid = status().pid;
