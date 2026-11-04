@@ -74,7 +74,7 @@ async function until<T>(what: string, check: () => T | undefined | false, second
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error(`timed out waiting for ${what}. Gateway log tail:\n${readFileSync(gatewayLog, "utf8").split("\n").slice(-40).join("\n")}`);
+  throw new Error(`timed out waiting for ${what}. Gateway log tail:\n${gatewayText().split("\n").slice(-40).join("\n")}`);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -144,13 +144,14 @@ const model = createServer((req, res) => {
 
 // ---- the machines.
 const HERMES_AGENT = "Hermes_One";
-const gatewayLog = join(work, "gateway.log");
+// Hermes writes its log inside its home, and little to standard output.
+const gatewayLog = join(hermesHome, "logs", "gateway.log");
 let gateway: ChildProcess | undefined;
 
 function startGateway(modelPort: number): void {
   const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: hermesHome, CELLO_V2_HOME: hermesSide };
   delete env["CELLO_CALLER"];
-  const log = openSync(gatewayLog, "a");
+  const log = openSync(join(work, "gateway-stdout.log"), "a");
   gateway = spawn(hermesPython, ["-m", "gateway.run"], { cwd: hermesCheckout, env, stdio: ["ignore", log, log] });
   void modelPort;
 }
@@ -165,14 +166,14 @@ async function stopGateway(): Promise<void> {
   if (running.exitCode === null) running.kill("SIGKILL");
 }
 
-const gatewayText = (): string => readFileSync(gatewayLog, "utf8");
+const gatewayText = (): string => (existsSync(gatewayLog) ? readFileSync(gatewayLog, "utf8") : "");
 const connections = (): number => gatewayText().split("\n").filter((line) => line.includes("[cello] Connected") || line.includes("[cello] Reconnected")).length;
 
 function freshHermesHome(modelPort: number): void {
   mkdirSync(hermesHome, { recursive: true });
   // What Hermes installed for itself stays, because a new home spends minutes on it.
   for (const name of ["config.yaml", ".env", "plugins", "skills", "cello", "sessions", "logs", "state.db", "state.db-wal", "state.db-shm", "gateway.pid", "gateway_state.json"]) rmSync(join(hermesHome, name), { recursive: true, force: true });
-  writeFileSync(join(hermesHome, "config.yaml"), `model:\n  provider: custom\n  base_url: http://127.0.0.1:${modelPort}/v1\n  default: script\n  api_key: none\n  context_length: 200000\nagent:\n  max_turns: 6\ncompression:\n  enabled: false\n`);
+  writeFileSync(join(hermesHome, "config.yaml"), `model:\n  provider: custom\n  base_url: http://127.0.0.1:${modelPort}/v1\n  default: script\n  api_key: none\n  context_length: 200000\nagent:\n  max_turns: 6\ncompression:\n  enabled: false\ntools:\n  tool_search: false\n`);
   writeFileSync(join(hermesHome, ".env"), "GATEWAY_ALLOW_ALL_USERS=true\n");
 }
 
@@ -269,14 +270,14 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
   await until("its answer", () => read(peerSide, "Peer_One").messages.find((m) => m.text?.includes("WORD_MARK")));
 
   // The operator's rule reaches the model, ahead of the peer's words.
-  const proposed = ok(hermesSide, ["policy-propose", "POLICY_WORDS never share the launch date", "--scope", "contact", "--target", peerId, "--type", "conduct", "--agent", HERMES_AGENT]);
+  const proposed = ok(hermesSide, ["policy-propose", "POLICY_RULE never share the launch date", "--scope", "contact", "--target", peerId, "--type", "conduct", "--agent", HERMES_AGENT]);
   const approval = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "policy-approve", proposed["proposal_id"] as string, "--agent", HERMES_AGENT], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: hermesSide } });
   assert.match(approval.stdout, /"approved":\s*true/);
   ok(peerSide, ["send", session, "WORD_POLICY what is the date", "--over", "--agent", "Peer_One"]);
   await until("the policy turn", () => turns.some((t) => t.user.includes("WORD_POLICY")));
   const ruled = (turns.find((t) => t.user.includes("WORD_POLICY")) as Turn).user;
-  assert.ok(ruled.includes("POLICY_WORDS"), "the policy reached the model");
-  assert.ok(ruled.indexOf("POLICY_WORDS") < ruled.indexOf("WORD_POLICY"), "the policy comes before the peer's words");
+  assert.ok(ruled.includes("POLICY_RULE"), "the policy reached the model");
+  assert.ok(ruled.indexOf("POLICY_RULE") < ruled.indexOf("WORD_POLICY"), "the policy comes before the peer's words");
   await until("its answer", () => read(peerSide, "Peer_One").messages.find((m) => m.text?.includes("WORD_POLICY")));
 
   // Restart with a message waiting. It's announced.
@@ -318,7 +319,7 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
   ok(peerSide, ["send", session, "WORD_BYE all done", "--wrap", "--agent", "Peer_One"]);
   await until("the model to close", () => read(peerSide, "Peer_One").messages.some((m) => m.session_id === session && m.closed_their_side) || (ok(hermesSide, ["sessions", "--agent", HERMES_AGENT]) as { sessions: { session_id: string; own_closed: boolean }[] }).sessions.find((s) => s.session_id === session)?.own_closed);
   ok(peerSide, ["close-session", session, "--agent", "Peer_One"]);
-  const sealsOf = (home: string, agent: string): unknown[] => (ok(home, ["seals", session, "--agent", agent]) as { seals: unknown[] }).seals;
+  const sealsOf = (home: string, agent: string): unknown[] => (ok(home, ["seals", "--session-id", session, "--agent", agent]) as { seals: unknown[] }).seals;
   await until("both seals", () => sealsOf(hermesSide, HERMES_AGENT).length > 0 && sealsOf(peerSide, "Peer_One").length > 0, 120);
   assert.equal(turns.filter((t) => t.user.includes("haven't replied")).length, reminders, "a closing conversation started no reminder");
   assert.equal(ok(hermesSide, ["verify-session", session, "--agent", HERMES_AGENT])["ok"], true);
