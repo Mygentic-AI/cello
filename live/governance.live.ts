@@ -15,7 +15,7 @@ const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const FLOOD_MESSAGE_BYTES = 200_000;
 
 type Json = Record<string, unknown>;
-interface Message { position: number; from: string; text?: string; blocked?: boolean; screening?: { verdict: string; reason?: string } }
+interface Message { position: number; from: string; from_id: string; text?: string; blocked?: boolean; screening?: { verdict: string; reason?: string } }
 interface Read { messages: Message[]; notices: { text: string }[]; policies?: { policy?: { type: string; level: string; text: string } }[] }
 interface SessionView { session_id: string; tier: string; with: string; bytes_received: number; byte_limit: number; same_daemon?: boolean; screening: { level: string; from: string } }
 
@@ -257,6 +257,7 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
 
   assert.match(a.person(["policy-approve", proposed["proposal_id"] as string, "--agent", "Kay"]), /"approved":true/);
   a.ok(["send", session, "reply", "--over", "--agent", "Kay"]);
+  await until("Kay's reply", () => read(b, "Lou").messages.length > 0);
   b.ok(["send", session, "second", "--over", "--agent", "Lou"]);
   const after = await until("the second message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(after.policies?.[0]?.policy?.text, conduct);
@@ -265,17 +266,52 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
   const none = a.ok(["policy-propose", "--none", "--scope", "contact", "--target", bId, "--type", "conduct", "--agent", "Kay"]);
   a.person(["policy-approve", none["proposal_id"] as string, "--agent", "Kay"]);
   a.ok(["send", session, "reply again", "--over", "--agent", "Kay"]);
+  await until("Kay's next reply", () => read(b, "Lou").messages.length > 0);
   b.ok(["send", session, "third", "--over", "--agent", "Lou"]);
   const silenced = await until("the third message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(silenced.policies, undefined);
 });
 
-test("byte limit: past it nothing is delivered or screened, the owner is told once, a reply still goes, and a stranger's never resets", async () => {
+test("byte limit: after a quiet spell a known caller's count starts again, and a stranger's doesn't", async () => {
+  const known = machine();
+  const stranger = machine();
+  const b = machine();
+  const knownId = idOf(known, "Una");
+  idOf(stranger, "Vic");
+  const bId = idOf(b, "Win");
+  // The shortest setting is a minute, so this is a real minute of quiet, not a test hook.
+  assert.match(b.person(["settings-set", "bounds.known.bytes_reset_minutes", "1", "--agent", "Win"]), /"value":"1"/);
+  for (const tier of ["known", "unknown"]) b.ok(["settings-set", `bounds.${tier}.max_bytes`, "1000", "--agent", "Win"]);
+  assert.match(b.person(["contact-set-tier", knownId, "--tier", "known", "--agent", "Win"]), /"tier":"known"/);
+  const long = "the quick brown fox jumps over the lazy dog near the river\n".repeat(20);
+  const fromKnown = await call(known, "Una", bId);
+  const fromStranger = await call(stranger, "Vic", bId);
+  known.ok(["send", fromKnown, "-", "--over", "--agent", "Una"], long);
+  stranger.ok(["send", fromStranger, "-", "--over", "--agent", "Vic"], long);
+  const withheld = await until("both to pass the limit", () => {
+    const r = read(b, "Win");
+    return r.messages.filter((m) => m.blocked).length === 2 && r;
+  });
+  assert.equal(withheld.notices.filter((n) => /passed its limit/.test(n.text)).length, 2);
+  await new Promise((resolve) => setTimeout(resolve, 61_000));
+  known.ok(["send", fromKnown, "after the quiet", "--notice", "--over", "--agent", "Una"]);
+  stranger.ok(["send", fromStranger, "after the quiet", "--notice", "--over", "--agent", "Vic"]);
+  const later = await until("both new messages", () => {
+    const r = read(b, "Win");
+    return r.messages.length === 2 && r;
+  });
+  assert.equal(later.messages.find((m) => m.from_id === knownId)?.text, "after the quiet", "known starts again");
+  const fromVic = later.messages.find((m) => m.from_id !== knownId);
+  assert.equal(fromVic?.text, undefined, "a stranger's doesn't");
+  assert.equal(fromVic?.blocked, true);
+});
+
+test("byte limit: past it nothing is delivered or screened, the owner is told once, a reply still goes, and the sender isn't told", async () => {
   const a = machine();
   const b = machine();
   idOf(a, "Max");
   const bId = idOf(b, "Nia");
-  b.ok(["settings-set", "bounds.unknown.max_bytes", String(FLOOD_MESSAGE_BYTES * 2), "--agent", "Nia"]);
+  b.ok(["settings-set", "bounds.unknown.max_bytes", String(Math.floor(FLOOD_MESSAGE_BYTES * 2.5)), "--agent", "Nia"]);
   const session = await call(a, "Max", bId);
   const line = "the quick brown fox jumps over the lazy dog near the river\n";
   const big = line.repeat(Math.floor(FLOOD_MESSAGE_BYTES / line.length));
