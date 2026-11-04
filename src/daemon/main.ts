@@ -220,6 +220,8 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
+    case "channel_config":
+      return channels.config(params);
     case "channel_create":
       return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);
     case "channel_join":

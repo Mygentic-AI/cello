@@ -29,18 +29,6 @@ import {
 } from "./structures.ts";
 import { type WireSigned, codec, fromB64, identityCodec, signatureCodec, signedCodec, toB64 } from "./wire.ts";
 
-// Ruled: a post's size, and how long it's kept. A longer message is split up by whoever sends it.
-export const MAX_POST_BODY_BYTES = 256 * 1024;
-export const MAX_POST_TITLE_BYTES = 200;
-export const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-export const MAX_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const QUOTA_BYTES_PER_ADMIN = 1024 * 1024 * 1024;
-export const POSTS_PER_MINUTE_PER_AUTHOR = 60;
-export const MAX_FUTURE_SKEW_MS = 60_000;
-// What sealing adds to a private post's title and body.
-export const MAX_SEAL_OVERHEAD_BYTES = 64;
-export const MAX_PENDING_JOINS = 256;
-
 const ENC = new TextEncoder();
 
 export const channelRecordCodec = codec<ChannelRecordFields>({ channelId: "bytes", adminId: "bytes", visibility: "int" });
@@ -131,7 +119,7 @@ export async function readInfo(raw: unknown, record: ChannelRecord): Promise<Cha
   const signed = tryRead(() => channelInfoCodec.decode(raw));
   if (!signed || !equalBytes(signed.fields.channelId, record.fields.channelId)) return null;
   if (!(Object.values(ChannelPosting) as number[]).includes(signed.fields.posting)) return null;
-  if (signed.fields.retentionMs < 1 || signed.fields.retentionMs > MAX_RETENTION_MS || signed.fields.generation < 1) return null;
+  if (signed.fields.retentionMs < 1 || signed.fields.generation < 1) return null;
   const bytes = tryRead(() => channelInfoBytes(signed.fields));
   if (!bytes || !(await verifySignature(record.channel, "cello-v2-channel-info", bytes, signed.signature))) return null;
   return signed.fields;
@@ -167,9 +155,9 @@ export interface CheckedPost {
   body: Uint8Array;
 }
 
-export type PostFault = "bad_post" | "too_large" | "bad_signature";
+export type PostFault = "bad_post" | "bad_signature";
 
-// The author's own signature, and that these are the title and body it signed. Rights are the caller's next check.
+// The author's own signature, and that these are the title and body it signed. Rights and size are the server's next check.
 export async function checkPost(raw: unknown, author: PublicIdentity, channelId: Uint8Array): Promise<CheckedPost | PostFault> {
   const parsed = tryRead(() => {
     const signed = channelPostCodec.decode(field(raw, "post"));
@@ -178,7 +166,6 @@ export async function checkPost(raw: unknown, author: PublicIdentity, channelId:
   if (!parsed) return "bad_post";
   const { fields, signature } = parsed.signed;
   if (!equalBytes(fields.channelId, channelId) || fields.authorSeq < 1 || fields.generation < 1) return "bad_post";
-  if (parsed.body.length > MAX_POST_BODY_BYTES + MAX_SEAL_OVERHEAD_BYTES || parsed.title.length > MAX_POST_TITLE_BYTES + MAX_SEAL_OVERHEAD_BYTES) return "too_large";
   if (!equalBytes(hashBlob(parsed.title), fields.titleHash) || !equalBytes(hashBlob(parsed.body), fields.bodyHash)) return "bad_post";
   const authorId = tryRead(() => identityId(author));
   if (!authorId || !equalBytes(authorId, fields.authorId)) return "bad_signature";

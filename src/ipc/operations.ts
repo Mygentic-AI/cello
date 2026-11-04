@@ -249,7 +249,7 @@ const DEFINITIONS: readonly Definition[] = [
       { name: "name", kind: "string", required: true, positional: true, description: "A display name, up to 64 bytes. It's a label, not an identity." },
       { name: "type", kind: "string", required: true, allowed: ["public", "private"], description: "public or private." },
       { name: "posting", kind: "string", allowed: ["admin", "posters", "members"], description: "Who may post: the admin (the default), named posters, or every member." },
-      { name: "retention_days", kind: "number", description: "Days a post is kept. The default is 7, and the most is 30. Each admin has 1 GB free across their channels." },
+      { name: "retention_days", kind: "number", description: "Days a post is kept. The default is in channel-config. The server sets the most it allows, and how much each admin may store: by default 30 days and 1 GB." },
     ],
   },
   {
@@ -349,11 +349,11 @@ const DEFINITIONS: readonly Definition[] = [
     summary: "Post to a channel. The number it answers with is its receipt.",
     scoped: true,
     acts: true,
-    description: "Post to a channel you may post in. It's signed here, and the server gives it the channel's next number: that number means it landed. A post is at most 256 kilobytes, and a longer one is refused, so split it into several posts yourself. If the server can't be reached it's saved and goes by itself.",
+    description: "Post to a channel you may post in. It's signed here, and the server gives it the channel's next number: that number means it landed. A post is at most 256 kilobytes unless this server says otherwise, and a longer one is refused, so split it into several posts yourself. If the server can't be reached it's saved and goes by itself.",
     params: [
       { name: "channel_id", kind: "string", required: true, positional: true, description: "The channel's id, 64 hex characters" },
-      { name: "text", kind: "string", required: true, positional: true, description: "The post, up to 256 kilobytes. On the command line, - reads it from standard input." },
-      { name: "title", kind: "string", description: "A short title, up to 200 bytes, which lets a reader decide whether to open the body." },
+      { name: "text", kind: "string", required: true, positional: true, description: "The post. On the command line, - reads it from standard input." },
+      { name: "title", kind: "string", description: "A short title, 200 bytes at most by default, which lets a reader decide whether to open the body." },
     ],
   },
   {
@@ -384,6 +384,19 @@ const DEFINITIONS: readonly Definition[] = [
     params: [
       { name: "channel_id", kind: "string", required: true, positional: true, description: "The channel's id, 64 hex characters" },
       { name: "titles_only", kind: "boolean", description: "Show only the titles, to decide what to open. This doesn't count as reading." },
+    ],
+  },
+  {
+    command: "channel-config",
+    group: "Channels",
+    summary: "See or change this machine's channel settings.",
+    scoped: false,
+    acts: false,
+    description: "See this machine's channel settings, or change any of them. They live in the daemon's encrypted database, so they move with it, and a change takes effect at once.",
+    params: [
+      { name: "channel_check_seconds", kind: "number", description: "How often the daemon checks every channel, in case a push was missed. The default is 30." },
+      { name: "channel_lost_wait_seconds", kind: "number", description: "How long a missing post is asked for before a reader calls it lost and moves on, and its publisher is told. The default is 3600." },
+      { name: "channel_default_retention_days", kind: "number", description: "How long a new channel keeps posts unless channel-create says otherwise. The default is 7." },
     ],
   },
   {

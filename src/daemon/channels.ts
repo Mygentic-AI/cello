@@ -9,10 +9,6 @@ import {
   type OpenKeys,
   type RosterFile,
   type RosterMemberFile,
-  DEFAULT_RETENTION_MS,
-  MAX_POST_BODY_BYTES,
-  MAX_POST_TITLE_BYTES,
-  MAX_RETENTION_MS,
   channelPostCodec,
   checkPost,
   hashBlob,
@@ -48,9 +44,11 @@ import { ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
 
-const CHECK_MS = Number(process.env["CELLO_CHANNEL_CHECK_MS"] ?? 30_000);
-// Ruled: a post that's really gone is told to reader and publisher, and the reader moves on. How long to wait first is this.
-const LOST_WAIT_MS = Number(process.env["CELLO_CHANNEL_LOST_WAIT_MS"] ?? 60 * 60 * 1000);
+// Settings live in the database with everything else, so moving the database and its key moves them too.
+// Each default is written there on first start. lost_wait_seconds: ruled that a post really gone is told to reader
+// and publisher and the reader moves on, and this is how long a reader waits first.
+const SETTING_DEFAULTS = { channel_check_seconds: 30, channel_lost_wait_seconds: 3600, channel_default_retention_days: 7 } as const;
+type Setting = keyof typeof SETTING_DEFAULTS;
 const MAX_PAGES_PER_COLLECT = 20;
 const READ_ROWS = 50;
 const MAX_REPLY_BYTES = 8_000_000;
@@ -97,6 +95,7 @@ function describeState(state: FollowRow["state"]): string {
 }
 
 export class Channels {
+  readonly #store: Store;
   readonly #db: ChannelStore;
   readonly #host: ChannelHost;
   readonly #queues = new Map<string, Promise<unknown>>();
@@ -105,19 +104,47 @@ export class Channels {
   #timer: NodeJS.Timeout | undefined;
 
   constructor(store: Store, host: ChannelHost) {
+    this.#store = store;
     this.#db = new ChannelStore(store);
     this.#host = host;
+    for (const [name, value] of Object.entries(SETTING_DEFAULTS)) {
+      if (store.getConfig(name) === undefined) store.setConfig(name, String(value));
+    }
   }
 
-  start(): void {
-    this.#timer = setInterval(() => {
+  #setting(name: Setting): number {
+    const value = Number(this.#store.getConfig(name));
+    if (!(value > 0)) throw new Error(`the setting ${name} in this database isn't a positive number`);
+    return value;
+  }
+
+  // Read again for each wait, so a change takes effect with no restart.
+  #schedule(): void {
+    clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => {
       for (const agent of this.#host.agents()) if (this.#host.online(agent)) this.#background("check", this.checkAgent(agent));
-    }, CHECK_MS);
+      this.#schedule();
+    }, this.#setting("channel_check_seconds") * 1000);
     this.#timer.unref();
   }
 
+  start(): void {
+    this.#schedule();
+  }
+
   stop(): void {
-    clearInterval(this.#timer);
+    clearTimeout(this.#timer);
+  }
+
+  config(changes: Record<string, unknown>): unknown {
+    for (const name of Object.keys(SETTING_DEFAULTS) as Setting[]) {
+      const value = changes[name];
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !(value > 0)) throw new LocalError("bad_argument", `${name} must be a positive number`);
+      this.#store.setConfig(name, String(value));
+    }
+    this.#schedule();
+    return Object.fromEntries((Object.keys(SETTING_DEFAULTS) as Setting[]).map((name) => [name, this.#setting(name)]));
   }
 
   #background(what: string, work: Promise<unknown>): void {
@@ -179,8 +206,9 @@ export class Channels {
     if (type !== "public" && type !== "private") throw new LocalError("bad_argument", "type must be public or private");
     const postingMode = ChannelPosting[(posting ?? "admin") as keyof typeof ChannelPosting] as number | undefined;
     if (postingMode === undefined) throw new LocalError("bad_argument", "posting must be admin, posters or members");
-    const retentionMs = retentionDays === undefined ? DEFAULT_RETENTION_MS : retentionDays * 86_400_000;
-    if (!(retentionMs > 0) || retentionMs > MAX_RETENTION_MS) throw new LocalError("bad_argument", `retention_days must be above 0 and at most ${MAX_RETENTION_MS / 86_400_000}`);
+    // The most a channel may keep is the server's to say, and it refuses by name.
+    const retentionMs = (retentionDays ?? this.#setting("channel_default_retention_days")) * 86_400_000;
+    if (!(retentionMs > 0)) throw new LocalError("bad_argument", "retention_days must be above 0");
 
     const admin = this.#host.signer(agentHex);
     const seeds = generateIdentitySeeds();
@@ -446,10 +474,6 @@ export class Channels {
     const channel = parseChannel(channelHex);
     const bodyBytes = ENC.encode(text);
     const titleBytes = ENC.encode(title ?? "");
-    if (bodyBytes.length > MAX_POST_BODY_BYTES) {
-      throw new LocalError("too_large", `This post is ${bodyBytes.length} bytes, and a post can be at most ${MAX_POST_BODY_BYTES} (256 kilobytes). Nothing was posted. Split it into several posts.`);
-    }
-    if (titleBytes.length > MAX_POST_TITLE_BYTES) throw new LocalError("too_large", `This title is ${titleBytes.length} bytes, and a title can be at most ${MAX_POST_TITLE_BYTES}. Nothing was posted.`);
     const signer = this.#host.signer(agentHex);
     return this.#serial(agentHex, channelHex, async () => {
       const follow = this.#requireFollow(signer.id, channel);
@@ -821,7 +845,7 @@ export class Channels {
         moving = false;
         continue;
       }
-      if (gap.state === "lost" || now - gap.first_seen >= LOST_WAIT_MS) {
+      if (gap.state === "lost" || now - gap.first_seen >= this.#setting("channel_lost_wait_seconds") * 1000) {
         if (gap.state !== "lost") await this.#declareLost(agentHex, channel, n);
         if (moving) position = n;
         continue;
