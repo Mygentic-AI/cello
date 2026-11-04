@@ -136,4 +136,15 @@ test("the holder is a caller: the command line is refused an agent a session hol
   await session.call("subscribe", { agent: "Iris", caller: "some-session" });
   session.close();
   await until("the hold to end with the session", () => cello(["receive", "--agent", "Iris"]).status === 0);
+
+  // A session that dies while waiting must not leave the agent locked, even having selected it twice.
+  ok(["stop-using", "--agent", "Iris"]);
+  const crashing = await IpcClient.connect(join(home, "daemon.sock"));
+  await crashing.call("subscribe", { agent: "Iris", caller: "crashing-session" });
+  await crashing.call("subscribe", { agent: "Iris", caller: "crashing-session" });
+  const waiting = crashing.call("wait", { agent: "Iris", caller: "crashing-session", timeout_seconds: 60 }).catch(() => undefined);
+  assert.equal(cello(["receive", "--agent", "Iris"]).json["error"], "agent_held");
+  crashing.close();
+  await waiting;
+  await until("the dead session's hold to end", () => cello(["receive", "--agent", "Iris"]).status === 0);
 });

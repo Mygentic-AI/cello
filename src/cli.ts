@@ -184,11 +184,12 @@ async function main(): Promise<void> {
   const params = parse(op, args);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
-  const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean };
+  const result = await client.call(op.method, params, waited) as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${params["agent"] as string}\n`, { mode: 0o600 });
-  if (op.method === "stop_using_agent" && currentAgent() === params["agent"]) rmSync(currentAgentFile());
+  // The id, never the name: a name is a label, and it could later mean a different agent.
+  if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${result.agent_id as string}\n`, { mode: 0o600 });
+  if (op.method === "stop_using_agent" && currentAgent() === result.agent_id) rmSync(currentAgentFile());
   if (op.method === "wait" && result.event === "timeout") process.exitCode = EXIT_TIMEOUT;
   if (op.method === "verify_session" && !result.ok) process.exitCode = EXIT_REFUSED;
 }

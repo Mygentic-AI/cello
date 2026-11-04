@@ -29,6 +29,8 @@ async function clearStaleSocket(): Promise<void> {
 }
 
 // Identity and state never live on a connection. Every call names its agent and its caller.
+// A caller is a plain string, not a proof: only this machine's owner can open this socket, and the worst a caller
+// can do by lying is pose as another caller of the same owner.
 // The holder is a caller. Sockets here are only a way to reach a caller right now, and can vanish at any moment.
 interface Holder { caller: string; since: number }
 interface Listener { socket: Socket; caller: string; releaseOnClose: boolean; onBell?: (bell: Doorbell) => void }
@@ -84,9 +86,10 @@ function acting(params: Record<string, unknown>): string {
 
 function stopListening(socket: Socket): void {
   for (const [agent, set] of listeners) {
-    for (const listener of [...set]) {
-      if (listener.socket !== socket) continue;
-      set.delete(listener);
+    // All of this socket's listeners go first, so a wait in progress on it can't keep a dead caller's hold alive.
+    const gone = [...set].filter((listener) => listener.socket === socket);
+    for (const listener of gone) set.delete(listener);
+    for (const listener of gone) {
       const stillThere = [...set].some((other) => other.caller === listener.caller);
       // A session's hold lasts as long as it can be reached. The command line's lasts until it lets go.
       if (listener.releaseOnClose && !stillThere && holders.get(agent)?.caller === listener.caller) holders.delete(agent);
@@ -108,7 +111,8 @@ function shutdown(): void {
   });
 }
 
-// A result that only counts once the caller has it.
+// A result that counts only once it's written to an open socket. That protects a caller that hung up first.
+// It can't protect one killed after the write and before reading it: written isn't the same as read.
 class AfterWrite {
   readonly result: unknown;
   readonly commit: () => void;
@@ -151,7 +155,11 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       const agent = acting(params);
       const set = listeners.get(agent) ?? new Set<Listener>();
       listeners.set(agent, set);
-      set.add({ socket, caller: text(params, "caller"), releaseOnClose: true });
+      const caller = text(params, "caller");
+      // Selecting an agent twice must not ring twice.
+      if (![...set].some((listener) => listener.socket === socket && listener.caller === caller && !listener.onBell)) {
+        set.add({ socket, caller, releaseOnClose: true });
+      }
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
     case "stop_using_agent": {
@@ -161,7 +169,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       for (const listener of [...(listeners.get(agent) ?? [])]) {
         if (listener.caller === caller && !listener.onBell) listeners.get(agent)?.delete(listener);
       }
-      return { released: true };
+      return { released: true, agent_id: agent };
     }
     case "initiate_session":
       return engine.initiate(acting(params), text(params, "target"));
