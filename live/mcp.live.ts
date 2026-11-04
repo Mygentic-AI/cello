@@ -175,4 +175,20 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   const checked = await one.tool("cello_verify_seal", { file: sealFile, seal_key: seal.seal_key });
   assert.deepEqual([checked["ok"], checked["seal_id"]], [true, seal.seal_id]);
   assert.equal((await one.tool("cello_verify_seal", { file: sealFile, seal_key: "00".repeat(32) }))["fault"], "wrong_seal_key");
+
+  // Transcripts through the tools. A tool has no folder anyone can rely on, so out must be absolute, and the plaintext stays out of its answer.
+  const firstWords = ((await one.tool("cello_transcript", { session_id: sessionId }))["entries"] as { text: string }[])[0]?.text as string;
+  assert.ok(firstWords);
+  const notAbsolute = await one.tool("cello_export_transcript", { session_id: sessionId, all: true, out: "transcript.json" });
+  assert.deepEqual([notAbsolute["isError"], notAbsolute["error"]], [true, "bad_out_path"]);
+  const nothingChosen = await one.tool("cello_export_transcript", { session_id: sessionId, out: join(tmpdir(), "cello-v2-never-written.json") });
+  assert.equal(nothingChosen["error"], "no_reveal_chosen");
+  const transcriptFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-transcript-")), "transcript.json");
+  const answer = await one.tool("cello_export_transcript", { session_id: sessionId, reveal: "1", out: transcriptFile });
+  assert.equal(answer["file"], transcriptFile);
+  assert.ok(!JSON.stringify(answer).includes(firstWords), "the answer goes to a model, and it holds no plaintext");
+  const proved = await one.tool("cello_verify_transcript", { file: transcriptFile, seal_key: seal.seal_key });
+  assert.ok(proved["ok"], proved["message"] as string);
+  assert.deepEqual((proved["messages"] as { text: string }[]).map((m) => m.text), [firstWords]);
+  assert.equal((await one.tool("cello_verify_transcript", { file: transcriptFile, seal_key: "00".repeat(32) }))["fault"], "wrong_seal_key");
 });
