@@ -189,10 +189,6 @@ interface Route {
   visits: Map<string, Promise<void>>;
   // Calls being set up, which have no session row yet to keep this route open.
   opening: number;
-  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
-  longLink: ServerLink;
-  longServer: ConnectedServer | undefined;
-  longProved: Set<string>;
 }
 
 function notSealedYet(reason: string): unknown {
@@ -203,7 +199,6 @@ export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
   readonly #link: ServerLink;
-  // The second connection, for long messages only, so moving one can't hold up anyone's short ones.
   // Long uploads under way, by entry row. Each outlives the send that started it, so a retry never sends it twice.
   readonly #uploads = new Map<number, { finished: Promise<unknown>; done: boolean }>();
   readonly #url: string;
@@ -356,9 +351,6 @@ export class Engine {
         },
         push: (frame) => this.#onPush(frame, route),
       }),
-      longLink: this.#longLinkTo(url, () => route),
-      longServer: undefined,
-      longProved: new Set(),
     };
     this.#visiting.set(url, route);
     route.link.start();

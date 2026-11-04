@@ -239,8 +239,8 @@ after(() => {
 test("the kill switch stops an agent at once, on each server, and leaves it able to seal", { timeout: 400_000 }, async () => {
   const portal = await signerFromSeeds(generateIdentitySeeds());
   const portalEnv = { CELLO_PORTAL_STATUS_KEY: JSON.stringify(identityCodec.encode(portal.publicIdentity)) };
-  server(["up", "--name", A.name, "--port", String(A.port)], portalEnv);
-  server(["up", "--name", B.name, "--port", String(B.port)], portalEnv);
+  server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv);
+  server(["up", "--name", B.name, "--port", String(B.port), "--no-build"], portalEnv);
   say("two servers up");
 
   // These are person-only: no tool exists for any of them.
@@ -294,7 +294,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   // A suspended agent can still seal what's witnessed.
   const sealed = cara.act("seal", session) as { sealed: boolean; seal_id: string };
   assert.equal(sealed.sealed, true, "a suspended agent must be able to seal");
-  const health = JSON.parse(server(["up", "--name", A.name, "--port", String(A.port)], portalEnv).trim().split("\n").at(-1) as string) as { seal_key: string };
+  const health = JSON.parse(server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv).trim().split("\n").at(-1) as string) as { seal_key: string };
   await until("Cara back after the server's restart check", () => cara.status().agents[0]?.online);
   const file = join(mkdtempSync(join(tmpdir(), "cello-v2-status-seal-")), "seal.json");
   writeFileSync(file, JSON.stringify(cara.act("export-seal", sealed.seal_id)));
