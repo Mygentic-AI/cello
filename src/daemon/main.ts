@@ -57,7 +57,7 @@ function ring(agentHex: string, bell: Doorbell): void {
   }
 }
 
-const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame) });
+const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
@@ -256,6 +256,8 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.agents();
     case "sessions":
       return engine.sessions(engine.resolveAgent(text(params, "agent")), params["all"] === true);
+    case "greetings":
+      return engine.greetings(engine.resolveAgent(text(params, "agent")));
     case "inbox":
       return engine.inbox(engine.resolveAgent(text(params, "agent")));
     case "transcript":

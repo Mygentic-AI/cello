@@ -161,6 +161,7 @@ function side(name: string, home: Server) {
 async function create(who: ReturnType<typeof side>): Promise<{ id: string; address: string }> {
   who.login();
   const made = who.must(["create-agent", who.name]);
+  who.must(["settings-set", "away.answering", "false", "--agent", who.name]);
   await until(`${who.name} online`, () => who.status().agents.every((a) => a.online));
   return { id: made["agent_id"] as string, address: made["address"] as string };
 }

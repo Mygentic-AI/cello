@@ -2,7 +2,7 @@
 // Nothing signed depends on this encoding, so it can change without touching a signature.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
 import { PROTOCOL_VERSION } from "./structures.ts";
-import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields } from "./structures.ts";
+import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, GreetingFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields } from "./structures.ts";
 
 export { PROTOCOL_VERSION };
 
@@ -142,6 +142,7 @@ export const offerCodec = codec<OfferFields>({ serverId: "bytes", sessionId: "by
 export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
 export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
 export const refuseCodec = codec<RefuseFields>({ offerHash: "bytes", mlKemCiphertext: "bytes", sealedReason: "bytes" });
+export const greetingCodec = codec<GreetingFields>({ offerHash: "bytes", sealedText: "bytes" });
 export const assignmentCodec = codec<AssignmentFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", confirmHash: "bytes", time: "int" });
 export const sealRequestCodec = codec<SealRequestFields>({ serverId: "bytes", sessionId: "bytes", sealerId: "bytes", throughPosition: "int", root: "bytes" });
 export const sealCertificateCodec = codec<SealCertificateFields>({
@@ -196,10 +197,14 @@ export const signedOffer = signedCodec(offerCodec);
 export const signedAccept = signedCodec(acceptCodec);
 export const signedConfirm = signedCodec(confirmCodec);
 export const signedRefuse = signedCodec(refuseCodec);
+export const signedGreeting = signedCodec(greetingCodec);
 export const signedAssignment = signedCodec(assignmentCodec);
 export const signedSealRequest = signedCodec(sealRequestCodec);
 export const signedSealCertificate = signedCodec(sealCertificateCodec);
 export const signedSealLogHead = signedCodec(sealLogHeadCodec);
+
+// The longest away greeting a server carries or a caller opens: the longest text a setting allows, in the widest encoding.
+export const MAX_GREETING_BYTES = 400_100;
 
 // The state of one session as the server holds it. A daemon needs nothing else to catch up.
 export interface SessionOnWire {
@@ -208,6 +213,7 @@ export interface SessionOnWire {
   confirm: WireSigned | null;
   assignment: WireSigned | null;
   refusal: WireSigned | null;
+  greeting: WireSigned | null;
   callerIdentity: Record<string, string | number>;
   calleeIdentity: Record<string, string | number>;
   state: SessionState;

@@ -26,6 +26,7 @@ import {
   deliveryAckBytes,
   entryBytes,
   entryHash,
+  greetingBytes,
   offerBytes,
   registerBytes,
   sealRequestBytes,
@@ -34,6 +35,7 @@ import {
 import {
   LONG_CIPHERTEXT_BYTES,
   MAX_CIPHERTEXT_BYTES,
+  MAX_GREETING_BYTES,
   type PushFrame,
   type SessionOnWire,
   type Signed,
@@ -48,11 +50,13 @@ import {
   signedConfirm,
   signedDeliveryAck,
   signedEntry,
+  signedGreeting,
   signedOffer,
   signedRefuse,
   signedSealRequest,
   toB64,
 } from "../protocol/wire.ts";
+import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
 import { LocalError, requirePerson } from "./errors.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
@@ -97,6 +101,7 @@ const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
 
+const greetingKey = (contentKey: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/greeting").update(contentKey).digest());
 const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/refusal").update(sharedSecret).digest());
 
 // Only these words ever come out of a refusal, whatever the other side put in it.
@@ -120,7 +125,7 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "channel_post" | "channel_notice" | "channel_request";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;
@@ -219,6 +224,8 @@ type AttemptOutcome =
 export interface EngineEvents {
   ring(agentHex: string, bell: Doorbell): void;
   channelPush(frame: PushFrame): void;
+  // Whether anyone holds this agent right now. The away greeting and the doorbell go by the same answer.
+  reachable(agentHex: string): boolean;
 }
 
 // A way to a server. The home route is the server this daemon logged in to, where its agents live and can be called.
@@ -272,6 +279,7 @@ export class Engine {
   readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
   readonly #refusals = new Map<string, string>();
   readonly governance: Governance;
+  readonly #away: Away;
   #lastCrashTold = 0;
   #modelMissingTold = false;
 
@@ -287,6 +295,7 @@ export class Engine {
       },
       isLocalAgent: (id) => this.#agents.has(toHex(id)),
     });
+    this.#away = new Away(store);
     this.#screening = new ScreeningQueue({
       load: (job) => this.#loadForScreen(job),
       verdict: (job, verdict) => this.#onVerdict(job, verdict),
@@ -327,6 +336,7 @@ export class Engine {
     }
     this.#link.start();
     this.#home.longLink.start();
+    for (const row of this.#away.unscreened()) this.#screenGreeting(row);
     // Back to every conversation hosted elsewhere, because a restart doesn't end one.
     for (const agent of this.#agents.values()) {
       for (const local of this.#store.sessionsOf(agent.signer.id)) {
@@ -839,6 +849,8 @@ export class Engine {
       }
     }
     local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+    if (local.role === "caller" && wire.greeting && local.session_key) await this.#onGreeting(agent, local, wire.greeting);
+    if (local.role === "callee" && local.state === "active") await this.#greetIfDue(agent, local);
     if (local.state === "active" || local.state === "closed") {
       const hasWork = wire.tip > local.verified_position || this.#store.pendingEntries(agent.signer.id, sessionId).length > 0 || local.fault !== null || local.delivered_through < this.#latestFromPeer(agent, local) || (local.delivered_through > 0 && Math.min(this.#screenedThrough(agent, local), local.delivered_through) > local.acked_screened);
       if (hasWork) await this.#settle(agent, local);
@@ -1007,6 +1019,136 @@ export class Engine {
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     this.#takeOfferedName(agent, local, local.session_key as Uint8Array, confirm.fields.sealedName);
     await this.#activate(agent, local, wireConfirm, wireAssignment, deriveSessionSalt(local.own_salt as Uint8Array, peerSalt));
+    if (!this.#events.reachable(agent.hex) && this.governance.reach.setting(agent.signer.id, "away.answering") === "true") this.#away.startVisit(agent.signer.id, local.session_id);
+  }
+
+  // ---- Away. A greeting goes beside the chain, signed by its sender and sealed to the caller, and the caller screens it like any text. ----
+
+  async #greetIfDue(agent: AgentContext, local: SessionRow): Promise<void> {
+    const visit = this.#away.visit(agent.signer.id, local.session_id);
+    if (visit?.state !== "due") return;
+    let wire = visit.greeting;
+    if (!wire) {
+      const text = this.governance.awayText(agent.signer.id, local.counterparty_id, agent.name);
+      if (!text) {
+        this.#away.setVisit(agent.signer.id, local.session_id, "not_sent");
+        return;
+      }
+      let screened: string;
+      try {
+        screened = (await this.#screenOutbound(agent, text, {})).text;
+      } catch (err: unknown) {
+        // A worker that's restarting says nothing about the text, so that one tries again at the next catch-up.
+        if (err instanceof LocalError && err.code === "screener_unavailable") return;
+        if (!(err instanceof LocalError)) throw err;
+        this.#away.setVisit(agent.signer.id, local.session_id, "not_sent");
+        logEvent("away.greeting_screened_out", { agent: agent.hex, session: toHex(local.session_id), code: err.code });
+        this.#notify(agent, local.session_id, `Your away text wasn't sent to ${this.#who(agent, local)}, because your own outbound screen stopped it: ${err.message}`);
+        return;
+      }
+      const fields = {
+        offerHash: structureHash(offerBytes(signedOffer.decode(JSON.parse(local.offer)).fields)),
+        sealedText: sealSessionContent(greetingKey(local.session_key as Uint8Array), new TextEncoder().encode(screened)),
+      };
+      const signature = await agent.signer.sign("cello-v2-session-greeting", greetingBytes(fields));
+      wire = JSON.stringify(signedGreeting.encode({ fields, signature }));
+      this.#away.setVisit(agent.signer.id, local.session_id, "due", wire);
+    }
+    try {
+      await this.#link.call("session.greet", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id), greeting: JSON.parse(wire) });
+    } catch (err: unknown) {
+      if (err instanceof ServerUnreachable) return;
+      throw err;
+    }
+    this.#away.setVisit(agent.signer.id, local.session_id, "sent");
+    logEvent("away.greeted", { agent: agent.hex, session: toHex(local.session_id) });
+  }
+
+  // The server carries this frame and can't be trusted about it, so nothing is kept unless the agent called signed it for this very call.
+  async #onGreeting(agent: AgentContext, local: SessionRow, wire: WireSigned): Promise<void> {
+    if (this.#away.greeting(agent.signer.id, local.session_id)) return;
+    const reject = (why: string): void => {
+      this.#away.rejectGreeting(agent.signer.id, local.session_id, local.counterparty_id, why);
+      logEvent("away.greeting_rejected", { agent: agent.hex, session: toHex(local.session_id), why });
+    };
+    let greeting: Signed<{ offerHash: Uint8Array; sealedText: Uint8Array }>;
+    try {
+      greeting = signedGreeting.decode(wire, "greeting");
+    } catch {
+      reject("malformed");
+      return;
+    }
+    if (greeting.fields.sealedText.length > MAX_GREETING_BYTES) {
+      reject("too_large");
+      return;
+    }
+    const offerHash = structureHash(offerBytes(signedOffer.decode(JSON.parse(local.offer)).fields));
+    if (!equalBytes(greeting.fields.offerHash, offerHash)) {
+      reject("answers_a_different_offer");
+      return;
+    }
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-greeting", greetingBytes(greeting.fields), greeting.signature))) {
+      reject("bad_signature");
+      return;
+    }
+    const opened = openSessionContent(greetingKey(local.session_key as Uint8Array), greeting.fields.sealedText);
+    if (!opened) {
+      reject("does_not_decrypt");
+      return;
+    }
+    this.#away.addGreeting(agent.signer.id, local.session_id, local.counterparty_id, opened);
+    this.#screenGreeting(this.#away.greeting(agent.signer.id, local.session_id) as GreetingRow);
+  }
+
+  // The same queue, screeners and rules as a message from this sender. What it holds is durable, so a restart screens it again.
+  #screenGreeting(row: GreetingRow): void {
+    const agentHex = toHex(row.agent_id);
+    const agent = this.#agents.get(agentHex);
+    if (!agent) return;
+    this.#nextChannelJob -= 1;
+    const bytes = new TextEncoder().encode(JSON.stringify({ text: new TextDecoder().decode(row.body as Uint8Array) }));
+    const sessionHex = toHex(row.session_id);
+    this.#screening.add({
+      entryId: this.#nextChannelJob, agentHex, sessionHex: `greeting:${sessionHex}`, position: 0, senderHex: toHex(row.sender_id), bytes: bytes.length, arrived: Date.now(),
+      channelText: {
+        bytes,
+        done: (verdict) => {
+          const detail: VerdictDetail = { delivered: verdict.delivered, findings: verdict.findings, reason: verdict.reason, score: verdict.score, ran: verdict.ran };
+          this.#away.setVerdict(row.agent_id, row.session_id, verdict.verdict, JSON.stringify(detail));
+          logEvent("screening.greeting_verdict", { agent: agentHex, session: sessionHex, verdict: verdict.verdict, findings: verdict.findings.map((f) => f.what) });
+          this.#events.ring(agentHex, { type: "away_greeting", agent: agent.name, session_id: sessionHex, from_id: toHex(row.sender_id) });
+        },
+      },
+    });
+  }
+
+  #shownGreeting(agent: AgentContext, row: GreetingRow): Record<string, unknown> {
+    const detail = JSON.parse(row.verdict_detail as string) as VerdictDetail;
+    const screening = { verdict: row.verdict, findings: detail.findings, ...(detail.score === null ? {} : { score: detail.score }), ...(detail.reason ? { reason: detail.reason } : {}), ran: detail.ran };
+    const local = this.#store.session(agent.signer.id, row.session_id) as SessionRow;
+    const about = { session_id: toHex(row.session_id), from: this.#who(agent, local), from_id: toHex(row.sender_id), automatic: true, in_the_record: false };
+    if (row.verdict === "blocked") return { ...about, blocked: true, screening };
+    return { ...about, text: detail.delivered ?? new TextDecoder().decode(row.body as Uint8Array), screening };
+  }
+
+  greetings(agentHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    return { greetings: this.#away.all(agent.signer.id).map((row) => this.#shownGreeting(agent, row)) };
+  }
+
+  // Their one message has landed, nobody here has said a word, and nobody has come back. Runs in the session's lane.
+  async #closeVisit(agent: AgentContext, sessionId: Uint8Array): Promise<void> {
+    const local = this.#store.session(agent.signer.id, sessionId) as SessionRow;
+    if (this.#away.visit(agent.signer.id, sessionId)?.state !== "sent") return;
+    if (this.#store.lastOwnEntry(agent.signer.id, sessionId)) {
+      this.#away.setVisit(agent.signer.id, sessionId, "answered");
+      return;
+    }
+    if (this.#events.reachable(agent.hex) || local.state !== "active") return;
+    this.#away.setVisit(agent.signer.id, sessionId, "closed");
+    logEvent("away.visit_closed", { agent: agent.hex, session: toHex(sessionId) });
+    await this.#closeInLane(agent, toHex(sessionId));
+    this.#notify(agent, sessionId, `${this.#who(agent, local)} left one message while nobody was reachable as this agent, and the visit was closed and sealed. Call receive to read it.`);
   }
 
   async #activate(agent: AgentContext, local: SessionRow, wireConfirm: WireSigned, wireAssignment: WireSigned, salt: Uint8Array): Promise<void> {
@@ -1202,6 +1344,8 @@ export class Engine {
     const ownClosed = local.own_closed === 1 || (closing && fromMe);
     const peerClosed = local.peer_closed === 1 || (closing && !fromMe);
     const nowClosed = ownClosed && peerClosed;
+    // Written by this daemon, not the other side: a close with no word from an agent that greeted is the one-message rule.
+    const closedOnGreeting = closing && !fromMe && local.role === "caller" && !this.#store.lastPeerEntry(agent.signer.id, local.session_id) && (this.#away.greeting(agent.signer.id, local.session_id)?.verdict ?? "rejected") !== "rejected";
     const counted = !fromMe && !closing ? this.#countBytes(agent, local, (body as Uint8Array).length, witnessed.ack.time) : undefined;
     try {
       this.#store.transaction(() => {
@@ -1245,6 +1389,11 @@ export class Engine {
     if (!fromMe && !counted?.withheld) {
       const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
       this.#screening.add({ entryId, agentHex: agent.hex, sessionHex, position, senderHex: toHex(local.counterparty_id), bytes: (body as Uint8Array).length, arrived: Date.now() });
+    }
+    if (closedOnGreeting) this.#notify(agent, local.session_id, ONE_MESSAGE_LINE);
+    // Queued, not awaited: this lane is the one running now.
+    if (!fromMe && !closing && local.role === "callee" && this.#away.visit(agent.signer.id, local.session_id)?.state === "sent") {
+      this.#background("one-message close", this.#lane(agent.hex, sessionHex, () => this.#closeVisit(agent, local.session_id)));
     }
     if (nowClosed && local.state !== "closed") {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
@@ -1620,20 +1769,22 @@ export class Engine {
 
   async close(agentHex: string, sessionHex: string): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
-    return this.#lane(agentHex, sessionHex, async () => {
-      const local = this.#requireSession(agent, sessionHex);
-      if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
-      if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
-      await this.#resendPending(agent, local);
-      // Durable before the close goes, so a crash anywhere after this still ends in a seal.
-      this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
-      const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: "", signal: null, est_minutes: null };
-      const outcome = await this.#append(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow, EntryKind.close, EntryMode.notice, body);
-      const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
-      const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
-      const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
-      return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
-    });
+    return this.#lane(agentHex, sessionHex, () => this.#closeInLane(agent, sessionHex));
+  }
+
+  async #closeInLane(agent: AgentContext, sessionHex: string): Promise<unknown> {
+    const local = this.#requireSession(agent, sessionHex);
+    if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
+    if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
+    await this.#resendPending(agent, local);
+    // Durable before the close goes, so a crash anywhere after this still ends in a seal.
+    this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
+    const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: "", signal: null, est_minutes: null };
+    const outcome = await this.#append(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow, EntryKind.close, EntryMode.notice, body);
+    const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
+    const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
+    const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
+    return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
   }
 
   // ---- Sealing ----
@@ -1936,7 +2087,8 @@ export class Engine {
       this.#refusals.delete(agent.hex + sessionHex);
       return { session_id: sessionHex, state: "refused", message: refused };
     }
-    return { session_id: sessionHex, state: state === "active" ? "active" : "waiting" };
+    if (state === "active") return { session_id: sessionHex, state };
+    return { session_id: sessionHex, state: "waiting", message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
   }
 
   async #call(work: () => Promise<unknown>): Promise<unknown> {
@@ -1988,8 +2140,10 @@ export class Engine {
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
     }
     const notices = this.#store.notices(agent.signer.id);
+    const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
+    const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
-      result: { messages, notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -1997,6 +2151,7 @@ export class Engine {
             const current = this.#store.session(agent.signer.id, read.sessionId) as SessionRow;
             if (read.through > current.read_position) this.#store.updateSession(agent.signer.id, read.sessionId, { read_position: read.through });
           }
+          for (const row of greetings) this.#away.markRead(agent.signer.id, row.session_id);
           if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
         });
       },
@@ -2023,6 +2178,7 @@ export class Engine {
         bytes_received: s.bytes_received,
         byte_limit: this.governance.reach.limitsFor(agent.signer.id, this.governance.contacts.tierOf(agent.signer.id, s.counterparty_id)).max_bytes,
         ...(s.role === "callee" ? this.governance.admissionFor(agent.signer.id, toHex(s.counterparty_id), this.governance.contacts.tierOf(agent.signer.id, s.counterparty_id)) : {}),
+        ...(s.role === "callee" && this.#away.visit(agent.signer.id, s.session_id) ? { away_visit: this.#away.visit(agent.signer.id, s.session_id)?.state } : {}),
         hosted_on: this.#urlOf(s),
         state: s.state,
         position: s.verified_position,
@@ -2070,7 +2226,7 @@ export class Engine {
   unreadCount(agentHex: string): number {
     const agent = this.#requireAgent(agentHex);
     const messages = this.#store.sessionsOf(agent.signer.id).reduce((sum, s) => sum + this.#store.deliverableCount(agent.signer.id, s.session_id, s.read_position), 0);
-    return messages + this.#store.notices(agent.signer.id).length;
+    return messages + this.#store.notices(agent.signer.id).length + this.#away.unread(agent.signer.id).length;
   }
 
   // Checks this agent's own record, using only public keys.

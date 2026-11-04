@@ -102,7 +102,12 @@ async function until<T>(what: string, check: () => T | undefined | false | Promi
   throw new Error(`timed out waiting for ${what}`);
 }
 
-const idOf = (m: Machine, name: string): string => m.ok(["create-agent", name])["agent_id"] as string;
+// These tests hold conversations with agents nobody has selected, so nothing answers for them. live/away.live.ts tests that.
+const idOf = (m: Machine, name: string): string => {
+  const id = m.ok(["create-agent", name])["agent_id"] as string;
+  m.ok(["settings-set", "away.answering", "false", "--agent", name]);
+  return id;
+};
 const tierIn = (m: Machine, agent: string, session: string): string | undefined => (m.ok(["sessions", "--agent", agent]) as unknown as { sessions: SessionView[] }).sessions.find((s) => s.session_id === session)?.tier;
 const contactTier = (m: Machine, agent: string, id: string): string | undefined => (m.ok(["contacts", "--agent", agent]) as unknown as { contacts: { contact_id: string; tier: string }[] }).contacts.find((c) => c.contact_id === id)?.tier;
 const read = (m: Machine, agent: string): Read => m.ok(["receive", "--agent", agent]) as unknown as Read;
