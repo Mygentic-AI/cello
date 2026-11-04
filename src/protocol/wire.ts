@@ -1,4 +1,4 @@
-// How signed things travel: JSON frames over one WebSocket, with bytes as base64url.
+// How signed things travel: JSON frames over WebSockets, with bytes as base64url.
 // Nothing signed depends on this encoding, so it can change without touching a signature.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
 import { PROTOCOL_VERSION } from "./structures.ts";
@@ -8,6 +8,9 @@ export { PROTOCOL_VERSION };
 
 export const MAX_CIPHERTEXT_BYTES = 1_100_000;
 export const MAX_FRAME_BYTES = 2_000_000;
+// Encrypted text over this travels on a daemon's second connection, so moving it can't hold up short messages.
+// The server never pushes it, and hands it over only to a fetch that says long: true.
+export const LONG_CIPHERTEXT_BYTES = 8_000;
 
 // Every refusal a server can give. Each names a cause the person affected can act on.
 export const ERROR_CODES = [
@@ -167,7 +170,7 @@ export interface WireSigned {
 }
 
 // A landed entry as it travels. The ciphertext is absent once the reader has confirmed storing it,
-// and for an author catching up on their own entries.
+// for an author catching up on their own entries, and from a push of a long message.
 export interface WitnessedOnWire {
   entry: WireSigned;
   ack: WireSigned;

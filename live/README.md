@@ -22,7 +22,9 @@ node live/speed.ts --local [--scenarios a,b] [--seconds 30] [--cpu-prof]   # a s
 node live/speed.ts --server wss://host/v1 --gentle                         # a shared server: few messages, few of them long
 ```
 
-Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree. Don't aim it without `--gentle` at a server others use.
+Set `CELLO_SERVER_DIR` or `--server-dir` when running from a worktree, and `--project` and `--port` to run beside another track. Don't aim it without `--gentle` at a server others use.
+
+The `slow_*` scenarios put every connection through one shared throttled pipe, a packet at a time. They fail if a long upload holds up another conversation or a connection drops. Real links can queue more than this pipe does, so a pass here doesn't prove a given real link.
 
 **The real-session test.** Two real Claude Code sessions through the server on the test instance, on the cheapest model. It's the only proof that a doorbell wakes a session. One run costs about 40 model turns.
 
