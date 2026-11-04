@@ -6,12 +6,14 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdirSync, mkdtempSync, appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, appendFileSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { cpus, homedir, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
+import { socketPath } from "../src/daemon/paths.ts";
+import { DaemonGone, DaemonRefused, IpcClient } from "../src/ipc/client.ts";
 import { sealSessionContent } from "../src/protocol/aead.ts";
 import { generateIdentitySeeds, signerFromSeeds, verifySignature } from "../src/protocol/identity.ts";
 import { generateSaltContribution, saltedContentHash } from "../src/protocol/salt.ts";
@@ -25,6 +27,10 @@ const NTP_HOST = "time.cloudflare.com";
 const EXPECT_TIMEOUT_MS = 180_000;
 const SIZES = [{ label: "short", bytes: 60 }, { label: "100 KB", bytes: 100_000 }, { label: "1 MB", bytes: 1_000_000 }];
 const WIRE_PREFIX = "TM ";
+const HOME_PREFIX = "c2m-";
+const HEARTBEAT_MS = 15_000;
+// An outage can leave SSH open with nobody on the far end, so stdin never closes. Silence is what shows the controller has gone.
+const CONTROLLER_SILENCE_MS = Number(process.env["TWO_MACHINES_SILENCE_MS"] ?? 180_000);
 
 const now = (): number => performance.timeOrigin + performance.now();
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,7 +65,7 @@ function checkLine(text: string): { id: string; whole: boolean } {
 // ---- The half that runs on each machine ----
 
 async function worker(caller: string): Promise<void> {
-  const home = mkdtempSync(join(tmpdir(), "c2m-"));
+  const home = mkdtempSync(join(tmpdir(), HOME_PREFIX));
   const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
   let server = "";
   let daemonPid = 0;
@@ -380,9 +386,16 @@ async function worker(caller: string): Promise<void> {
     await sleep(500);
   }
 
+  let heardController = now();
+  setInterval(() => {
+    if (now() - heardController > CONTROLLER_SILENCE_MS) void stopDaemon().then(() => process.exit(1));
+  }, 5000);
+
   const lines = createInterface({ input: process.stdin });
   lines.on("line", (raw) => {
+    heardController = now();
     const command = JSON.parse(raw) as Json;
+    if (command["cmd"] === "heartbeat") return;
     if (command["cmd"] === "finish") {
       void (async () => {
         await stopDaemon();
@@ -433,7 +446,10 @@ class Side {
     });
     this.#child.stderr?.on("data", (chunk: Buffer) => appendFileSync(stderrPath, chunk));
     this.#child.stdin?.on("error", () => undefined);
+    const heartbeat = setInterval(() => { this.#child.stdin?.write(`${JSON.stringify({ cmd: "heartbeat" })}\n`); }, HEARTBEAT_MS);
+    heartbeat.unref();
     this.#child.on("close", () => {
+      clearInterval(heartbeat);
       this.#closed = true;
       for (const waiter of this.#waiting.values()) waiter.reject(new Error(`${name}: the link to this side closed`));
       this.#waiting.clear();
@@ -713,6 +729,10 @@ async function orchestrate(): Promise<void> {
     execFileSync("gcloud", [...ssh, "rm -rf ~/cello-v2 && mkdir -p ~/cello-v2 && tar -x -C ~/cello-v2 && cd ~/cello-v2 && pnpm install --frozen-lockfile --ignore-scripts --reporter=silent && pnpm rebuild @signalapp/sqlcipher --reporter=silent"], { input: archive, stdio: ["pipe", "ignore", "pipe"], maxBuffer: 1e9 });
   }
 
+  // Before any worker starts, because each machine's workers and homes belong to one run at a time.
+  say(`leftovers here: ${execFileSync(process.execPath, [new URL(import.meta.url).pathname, "--clean-leftovers"], { encoding: "utf8" }).trim()}`);
+  say(`leftovers on ${args.instance}: ${execFileSync("gcloud", [...ssh, "node ~/cello-v2/live/two-machines.ts --clean-leftovers"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()}`);
+
   const local = (name: string): Side => new Side(name, process.execPath, [new URL(import.meta.url).pathname, "--worker", "--caller", `two-machines-${name}`], join(dir, `stderr-${name}.log`));
   // The Mac's link drops now and then, and a dropped link before anything has started costs nothing but a retry.
   const far = async (name: string): Promise<Side> => {
@@ -810,6 +830,25 @@ async function orchestrate(): Promise<void> {
   process.exit(failures.length === 0 ? 0 : 1);
 }
 
+// Only this test's own temporary homes. A daemon is asked to stop through its own socket, so nothing is found by name.
+async function cleanLeftovers(): Promise<void> {
+  const homes = readdirSync(tmpdir()).filter((name) => name.startsWith(HOME_PREFIX)).map((name) => join(tmpdir(), name));
+  let stopped = 0;
+  for (const home of homes) {
+    try {
+      const client = await IpcClient.connect(socketPath(home));
+      await client.call("shutdown");
+      client.close();
+      stopped += 1;
+    } catch (err: unknown) {
+      if (!(err instanceof DaemonGone || err instanceof DaemonRefused)) throw err;
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
+  process.stdout.write(`${homes.length} temporary homes removed, ${stopped} daemons stopped\n`);
+}
+
 const workerAt = process.argv.indexOf("--worker");
-if (workerAt >= 0) await worker(process.argv[process.argv.indexOf("--caller") + 1] ?? "two-machines");
+if (process.argv.includes("--clean-leftovers")) await cleanLeftovers();
+else if (workerAt >= 0) await worker(process.argv[process.argv.indexOf("--caller") + 1] ?? "two-machines");
 else await orchestrate();
