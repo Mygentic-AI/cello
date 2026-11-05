@@ -133,7 +133,7 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status" | "agent_displaced";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;

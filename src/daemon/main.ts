@@ -1,4 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -84,7 +85,9 @@ function takeHold(agentHex: string, caller: string, force: boolean): void {
     if (!force) throw new LocalError("agent_held", `${describeCaller(holder.caller)} holds ${engine.agentName(agentHex)}. It can be taken over with force.`);
     for (const listener of [...(listeners.get(agentHex) ?? [])]) {
       if (listener.caller === caller) continue;
-      writeFrame(listener.socket, { notification: "agent_displaced", data: { agent: engine.agentName(agentHex) } });
+      // A wait in progress ends now and says why, rather than running out its time.
+      if (listener.onBell) listener.onBell({ type: "agent_displaced", agent: engine.agentName(agentHex) });
+      else writeFrame(listener.socket, { notification: "agent_displaced", data: { agent: engine.agentName(agentHex) } });
       listeners.get(agentHex)?.delete(listener);
     }
   }
@@ -139,6 +142,20 @@ class AfterWrite {
     this.result = result;
     this.commit = commit;
   }
+}
+
+// For a program passing a read on: it counts only when the program says it reached whoever asked. Tokens live in memory,
+// so after a restart or this long the messages are simply still unread.
+const DEFERRED_READ_MS = 5 * 60_000;
+const deferredReads = new Map<string, { agent: string; commit: () => void; timer: NodeJS.Timeout }>();
+
+function delivered(params: Record<string, unknown>, agent: string, read: { result: unknown; commit: () => void }): unknown {
+  if (params["defer_commit"] !== true) return new AfterWrite(read.result, read.commit);
+  const token = randomUUID();
+  const timer = setTimeout(() => deferredReads.delete(token), DEFERRED_READ_MS);
+  timer.unref();
+  deferredReads.set(token, { agent, commit: read.commit, timer });
+  return { ...(read.result as object), commit_token: token };
 }
 
 function waitForEvent(socket: Socket, agent: string, caller: string, seconds: number): Promise<unknown> {
@@ -232,8 +249,18 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "send":
       return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
     case "receive": {
-      const { result, commit } = engine.receive(acting(params), params["session_id"] === undefined ? undefined : text(params, "session_id"));
-      return new AfterWrite(result, commit);
+      const agent = acting(params);
+      return delivered(params, agent, engine.receive(agent, params["session_id"] === undefined ? undefined : text(params, "session_id")));
+    }
+    case "commit_read": {
+      const agent = acting(params);
+      const token = text(params, "token");
+      const read = deferredReads.get(token);
+      if (read?.agent !== agent) throw new LocalError("read_token_unknown", "That read has expired or isn't this agent's. Nothing was marked as read, so the messages come back on the next read.");
+      deferredReads.delete(token);
+      clearTimeout(read.timer);
+      read.commit();
+      return { committed: true };
     }
     case "wait": {
       const agent = acting(params);
@@ -333,8 +360,8 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     case "channel_settings":
       return channels.settings(acting(params), text(params, "channel_id"), optionalText(params, "delivery"), optionalText(params, "screen_bodies"));
     case "channel_read": {
-      const { result, commit } = await channels.read(acting(params), text(params, "channel_id"), params["titles_only"] === true);
-      return new AfterWrite(result, commit);
+      const agent = acting(params);
+      return delivered(params, agent, await channels.read(agent, text(params, "channel_id"), params["titles_only"] === true));
     }
     case "channel_history":
       return channels.history(engine.resolveAgent(text(params, "agent")), text(params, "channel_id"), typeof params["after"] === "number" ? params["after"] : 0);
