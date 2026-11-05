@@ -2,7 +2,7 @@
 // After any restart, the same catch-up path runs: resend what's pending, then read from position.
 import { createHash, randomBytes } from "node:crypto";
 import { openSessionContent, sealSessionContent } from "../protocol/aead.ts";
-import { ChainVerifier, type ChainFault, type WitnessedEntry, verifyTranscript, witnessed } from "../protocol/chain.ts";
+import { ChainVerifier, type ChainFault, type WitnessedEntry, provesTwoAcks, verifyTranscript, witnessed } from "../protocol/chain.ts";
 import { ZERO_HASH, equalBytes, toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, type Signer, generateIdentitySeeds, identityId, signerFromSeeds, verifySignature } from "../protocol/identity.ts";
 import { deriveSessionSecrets, destroySessionEphemeral, generateSessionEphemeral } from "../protocol/key-agreement.ts";
@@ -191,6 +191,7 @@ function parseHex(value: unknown, bytes: number, name: string): Uint8Array {
 }
 
 const parseBody = readBodyBytes;
+const UNVERIFIABLE_REASON = "its text isn't what its author signed";
 
 interface OpenStandby {
   by: "you" | "other_side";
@@ -913,8 +914,7 @@ export class Engine {
   // What the caller's daemon says it heard. Only a callee's signature can make this happen, and only fixed sentences come out.
   async #onRefused(agent: AgentContext, local: SessionRow, wire: WireSigned): Promise<void> {
     const refusal = signedRefuse.decode(wire, "refusal");
-    const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
-    if (!equalBytes(refusal.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this refusal answers a different offer");
+    if (!equalBytes(refusal.fields.offerHash, structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes))) throw new Error("this refusal answers a different offer");
     if (!(await verifySignature(this.#counterpartyKeys(local), "cello-session-refuse", refusal.bytes, refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
     const sharedSecret = await mlKemDecapsulate(local.mlkem_seed as Uint8Array, refusal.fields.mlKemCiphertext);
     const opened = openSessionContent(refusalKey(sharedSecret), refusal.fields.sealedReason);
@@ -1007,7 +1007,7 @@ export class Engine {
     const accept = signedAccept.decode(wireAccept, "accept");
     const keys = this.#counterpartyKeys(local);
     const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
-    if (!equalBytes(accept.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this accept answers a different offer");
+    if (!equalBytes(accept.fields.offerHash, structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes))) throw new Error("this accept answers a different offer");
     if (!(await verifySignature(keys, "cello-session-accept", accept.bytes, accept.signature))) throw new Error("this accept isn't signed by the agent called");
     const seed = local.mlkem_seed;
     const secret = local.x25519_secret;
@@ -1051,8 +1051,7 @@ export class Engine {
   async #finishAsCallee(agent: AgentContext, local: SessionRow, wireConfirm: WireSigned, wireAssignment: WireSigned): Promise<void> {
     const confirm = signedConfirm.decode(wireConfirm, "confirm");
     const keys = this.#counterpartyKeys(local);
-    const acceptFields = signedAccept.decode(JSON.parse(local.accept as string)).fields;
-    if (!equalBytes(confirm.fields.acceptHash, structureHash(acceptBytes(acceptFields)))) throw new Error("this confirm answers a different accept");
+    if (!equalBytes(confirm.fields.acceptHash, structureHash(signedAccept.decode(JSON.parse(local.accept as string)).bytes))) throw new Error("this confirm answers a different accept");
     if (!(await verifySignature(keys, "cello-session-confirm", confirm.bytes, confirm.signature))) throw new Error("this confirm isn't signed by the caller");
     const peerSalt = openSessionContent(local.session_key as Uint8Array, confirm.fields.sealedSalt);
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
@@ -1254,6 +1253,10 @@ export class Engine {
     if (!local || (local.state !== "active" && local.state !== "closed") || this.#urlOf(local) !== route.url) return;
     const position = signedAck.decode(item.ack).fields.position;
     const verifier = this.#verifier(agent, local);
+    if (position <= verifier.position) {
+      await this.#checkRepeat(agent, local, item);
+      return;
+    }
     // A long message's push carries no text, so #settle fetches it.
     if (item.ciphertext !== null && position === verifier.position + 1 && (await this.#ingest(agent, local, item))) {
       await this.#deliver(agent, this.#store.session(agent.signer.id, sessionId) as SessionRow);
@@ -1354,7 +1357,10 @@ export class Engine {
     }
     const verifier = this.#verifier(agent, local);
     const position = landing.ack.position;
-    if (position <= verifier.position) return true;
+    if (position <= verifier.position) {
+      await this.#checkRepeat(agent, local, item);
+      return true;
+    }
     const fault: ChainFault | null = await verifier.check(landing);
     if (fault) {
       this.#hold(agent, local, fault, position);
@@ -1364,11 +1370,20 @@ export class Engine {
     const fromMe = equalBytes(entry.fields.authorId, agent.signer.id);
     const hash = structureHash(entry.bytes);
     let body: Uint8Array | undefined;
+    let unverifiable: Uint8Array | undefined;
 
     if (fromMe) {
       const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash);
       if (!own) {
         this.#hold(agent, local, "own_entry_unknown", position);
+        return false;
+      }
+      // Your daemon told you this was refused, and the server landed it anyway. It stays out of your record, and you're told.
+      if (own.state === "not_sent") {
+        this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "refused_entry_landed", position, entry: JSON.stringify(item.entry), ack: JSON.stringify(item.ack), other_ack: null, ciphertext: null });
+        logEvent("session.refused_entry_landed", { agent: agent.hex, session: toHex(local.session_id), position });
+        this.#notify(agent, local.session_id, `The server is claiming position ${position} for a message you were told was refused: "${parseBody(own.body)?.text.slice(0, 120) ?? ""}". This agent doesn't accept that, the proof is kept (see evidence), and the session stops here. Don't rely on this server for this conversation.`);
+        this.#hold(agent, local, "refused_entry_landed", position);
         return false;
       }
       body = own.body;
@@ -1378,12 +1393,19 @@ export class Engine {
         return false;
       }
       const ciphertext = fromB64(item.ciphertext, "ciphertext");
-      const opened = equalBytes(ciphertextHash(ciphertext), entry.fields.ciphertextHash) ? openSessionContent(local.session_key as Uint8Array, ciphertext) : null;
-      if (!opened || !equalBytes(saltedContentHash(local.salt as Uint8Array, opened), entry.fields.contentHash)) {
+      // Text that isn't what the author signed a hash of came from the server, which can send the right text next time.
+      if (!equalBytes(ciphertextHash(ciphertext), entry.fields.ciphertextHash)) {
         this.#hold(agent, local, "text_does_not_match_signature", position);
         return false;
       }
-      body = opened;
+      const opened = openSessionContent(local.session_key as Uint8Array, ciphertext);
+      if (opened && equalBytes(saltedContentHash(local.salt as Uint8Array, opened), entry.fields.contentHash)) body = opened;
+      else {
+        // The author signed text that can't be what it says, and those same bytes fail every time. Holding here would let one bad
+        // message stop the reader for good, so the bytes are kept as evidence, the words aren't shown, and reading carries on.
+        unverifiable = ciphertext;
+        body = new Uint8Array(0);
+      }
     }
 
     const ownClosed = local.own_closed === 1 || (closing && fromMe);
@@ -1391,7 +1413,7 @@ export class Engine {
     const nowClosed = ownClosed && peerClosed;
     // The words are this daemon's, not the other side's. A close by hand doesn't carry the mark, so it doesn't get them.
     const closedOnGreeting = closing && !fromMe && local.role === "caller" && parseBody(body as Uint8Array)?.one_message === true && !this.#store.lastPeerEntry(agent.signer.id, local.session_id) && (this.#away.greeting(agent.signer.id, local.session_id)?.verdict ?? "rejected") !== "rejected";
-    const counted = !fromMe && !closing ? this.#countBytes(agent, local, (body as Uint8Array).length, landing.ack.time) : undefined;
+    const counted = !fromMe && !closing && !unverifiable ? this.#countBytes(agent, local, (body as Uint8Array).length, landing.ack.time) : undefined;
     try {
       this.#store.transaction(() => {
         if (fromMe) {
@@ -1410,6 +1432,10 @@ export class Engine {
             // Nobody will read it, and the signed hashes are what the chain and a seal rest on, so past the limit a flood costs no disk for its words.
             body: counted?.withheld ? new Uint8Array(0) : (body as Uint8Array),
           });
+          if (unverifiable) {
+            this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: UNVERIFIABLE_REASON, score: null, ran: { deterministic: false, model: false } }));
+            this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "unverifiable_text", position, entry: JSON.stringify(item.entry), ack: JSON.stringify(item.ack), other_ack: null, ciphertext: unverifiable });
+          }
           if (counted?.withheld) this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: BYTE_LIMIT_REASON, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies VerdictDetail));
         }
         this.#store.updateSession(agent.signer.id, local.session_id, {
@@ -1432,7 +1458,11 @@ export class Engine {
     // Told once, and it rings no doorbell per message, so a flood past the limit can't keep waking anyone or cost a screen.
     if (counted?.tellNow) this.#notify(agent, local.session_id, `This conversation has passed its limit of ${counted.limit} bytes, so what it sends from now on isn't delivered. ${counted.resets ? "The count starts again after a quiet spell." : "The count doesn't reset at this tier."} The other side isn't told. Either side can start a new conversation.`);
     // Stored, but not deliverable until it has a verdict. Its doorbell rings then, from #onVerdict.
-    if (!fromMe && !counted?.withheld) {
+    if (unverifiable) {
+      logEvent("session.unverifiable_text", { agent: agent.hex, session: sessionHex, position });
+      this.#notify(agent, local.session_id, `The message at position ${position} from ${this.#who(agent, local)} isn't what its author signed, so it wasn't delivered. The bytes are kept (see evidence), and this agent won't sign that it received this message or anything after it. Later messages can still be read.`);
+    }
+    if (!fromMe && !counted?.withheld && !unverifiable) {
       const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
       this.#screening.add({ entryId, agentHex: agent.hex, sessionHex, position, senderHex: toHex(local.counterparty_id), bytes: (body as Uint8Array).length, arrived: Date.now() });
     }
@@ -1445,10 +1475,41 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
-    const written = counted?.withheld ? null : parseBody(body as Uint8Array);
+    const written = counted?.withheld || unverifiable ? null : parseBody(body as Uint8Array);
     const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, landing.ack.time) : undefined;
     if (due !== undefined) this.#armStandbyCheck(due);
     return true;
+  }
+
+  // A different signed ack at a position already held. An ack the server didn't sign is dropped, because anyone can send junk.
+  // Two it did sign is proof of misbehaviour: it's kept, the operator is told, and the session takes no more messages from this side.
+  async #checkRepeat(agent: AgentContext, local: SessionRow, item: WitnessedOnWire): Promise<void> {
+    const position = signedAck.decode(item.ack, "ack").fields.position;
+    const held = this.#store.ackAt(agent.signer.id, local.session_id, position);
+    if (!held) return;
+    const proved = await provesTwoAcks(this.#serverIdentity(this.#urlOf(local)), signedAck.decode(JSON.parse(held)), signedAck.decode(item.ack, "ack"));
+    if (!proved) return;
+    this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "two_acks", position, entry: JSON.stringify(item.entry), ack: held, other_ack: JSON.stringify(item.ack), ciphertext: null });
+    if (local.frozen === 1) return;
+    this.#store.updateSession(agent.signer.id, local.session_id, { frozen: 1 });
+    logEvent("session.frozen", { agent: agent.hex, session: toHex(local.session_id), position });
+    this.#notify(agent, local.session_id, `The server signed two different things at position ${position}, which it must never do. This session is frozen: you can still read and seal, and you can't send. The proof is kept (see evidence). Tell whoever runs this server.`);
+  }
+
+  evidence(agentHex: string, sessionHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    return {
+      frozen: local.frozen === 1,
+      evidence: this.#store.evidence(agent.signer.id, local.session_id).map((row) => ({
+        kind: row.kind,
+        position: row.position,
+        entry: row.entry === null ? null : JSON.parse(row.entry) as unknown,
+        ack: JSON.parse(row.ack) as unknown,
+        other_ack: row.other_ack === null ? null : JSON.parse(row.other_ack) as unknown,
+        ciphertext: row.ciphertext === null ? null : toB64(row.ciphertext),
+      })),
+    };
   }
 
   // ---- Standbys past their time. Only the two daemons can see these, so all of this is local, and it only tells. ----
@@ -1545,7 +1606,10 @@ export class Engine {
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
   // It also says how far screening has got, so it goes again when that moves, or when the screen is held up.
   async #deliver(agent: AgentContext, local: SessionRow, etaSeconds = 0): Promise<void> {
-    const through = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
+    const refused = this.#store.firstUnverifiableText(agent.signer.id, local.session_id);
+    const latest = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
+    // An ack covers everything before it, and this machine can't say it holds what the author signed at that position.
+    const through = refused === undefined ? latest : Math.min(latest, refused - 1);
     if (through === 0) return;
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
@@ -1945,6 +2009,7 @@ export class Engine {
       this.#refuseIfStopped(agent, this.#urlOf(local));
       if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
       if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
+      if (local.frozen === 1) throw new LocalError("session_frozen", "the server signed two different things at one position, so this session takes nothing more from you. You can still read and seal it. The proof is kept: see evidence.");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
       if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {
         const deliverable = this.#store.deliverableCount(agent.signer.id, local.session_id, local.read_position);

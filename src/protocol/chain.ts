@@ -144,6 +144,15 @@ export class ChainVerifier {
   }
 }
 
+// Two acks at one position, both signed by the server, are server misbehaviour anyone can check with its public key.
+export async function provesTwoAcks(server: PublicIdentity, a: Signed<AckFields>, b: Signed<AckFields>): Promise<boolean> {
+  if (equalBytes(a.bytes, b.bytes)) return false;
+  if (a.fields.position !== b.fields.position || !equalBytes(a.fields.sessionId, b.fields.sessionId)) return false;
+  const serverId = identityId(server);
+  if (!equalBytes(a.fields.serverId, serverId) || !equalBytes(b.fields.serverId, serverId)) return false;
+  return (await verifySignature(server, "cello-ack", a.bytes, a.signature)) && (await verifySignature(server, "cello-ack", b.bytes, b.signature));
+}
+
 export interface ChainReport {
   ok: boolean;
   position: number;

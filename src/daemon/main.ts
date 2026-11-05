@@ -285,6 +285,8 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       return engine.inbox(engine.resolveAgent(text(params, "agent")));
     case "transcript":
       return engine.transcript(engine.resolveAgent(text(params, "agent")), text(params, "session_id"), typeof params["after"] === "number" ? params["after"] : 0);
+    case "evidence":
+      return engine.evidence(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     case "verify_session":
       return engine.verifySession(engine.resolveAgent(text(params, "agent")), text(params, "session_id"));
     // What a person decides. Each of these judges which way a change goes, and refuses a loosening that no person agreed to.
