@@ -104,7 +104,7 @@ class Home {
     return new Promise((resolve) => {
       const started = performance.now();
       const child: ChildProcess = spawn(process.execPath, [CLI, ...argv], {
-        env: { ...process.env, CELLO_V2_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
+        env: { ...process.env, CELLO_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       const out: Buffer[] = [];

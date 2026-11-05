@@ -46,7 +46,7 @@ const ANY_DOORBELL = /<channel source="[^"]*cello"/;
 // Resolved, because macOS's /tmp is a link and Claude Code files its transcripts under the real path.
 const base = realpathSync(mkdtempSync("/tmp/cv2-"));
 const home = join(base, "home");
-const env = { ...process.env, CELLO_V2_HOME: home };
+const env = { ...process.env, CELLO_HOME: home };
 const startedAt = Date.now();
 const stamp = new Date(startedAt).toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", stamp);
@@ -77,7 +77,7 @@ async function until<T>(what: string, limitMs: number, check: () => T | undefine
 function prepareFolder(name: string): string {
   const folder = join(base, name);
   mkdirSync(folder);
-  writeFileSync(join(folder, "mcp.json"), JSON.stringify({ mcpServers: { "cello": { command: process.execPath, args: [MCP], env: { CELLO_V2_HOME: home } } } }));
+  writeFileSync(join(folder, "mcp.json"), JSON.stringify({ mcpServers: { "cello": { command: process.execPath, args: [MCP], env: { CELLO_HOME: home } } } }));
   // Only project settings and only this one server, so no personal instructions, hooks or plugins load and spend tokens.
   // Unscripted sessions read a file of their own and think for themselves, so they get Read and normal effort.
   const extra = args.unscripted ? "--allowedTools mcp__cello Read" : "--effort low --allowedTools mcp__cello";

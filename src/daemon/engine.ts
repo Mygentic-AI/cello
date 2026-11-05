@@ -344,7 +344,7 @@ export class Engine {
 
   async start(): Promise<void> {
     const pinned = this.#store.getConfig(CONFIG_SERVER_URL);
-    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_V2_HOME.`);
+    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_HOME.`);
     this.#store.setConfig(CONFIG_SERVER_URL, this.#url);
     for (const row of this.#store.agents()) {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });

@@ -8,10 +8,14 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
 import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
-import { celloHome, databasePath, socketPath } from "./paths.ts";
+import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
 
 const home = celloHome();
+if (holdsOldVersion(home)) {
+  logEvent("daemon.old_version_data", { message: oldVersionMessage(home) });
+  process.exit(1);
+}
 mkdirSync(home, { recursive: true, mode: 0o700 });
 const path = socketPath(home);
 

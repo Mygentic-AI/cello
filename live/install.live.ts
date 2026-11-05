@@ -123,7 +123,7 @@ before(async () => {
 }, { timeout: 600_000 });
 
 after(() => {
-  if (existsSync(join(home, ".cello-v2", "daemon.sock"))) cello(["logout"]);
+  if (existsSync(join(home, ".cello", "daemon.sock"))) cello(["logout"]);
   spawnSync("docker", ["compose", "down", "-v", "--remove-orphans"], { cwd: serverDir, env: compose });
   if (passed === TESTS) rmSync(work, { recursive: true, force: true });
   else process.stdout.write(`Kept for looking at: ${work}\n`);
@@ -169,7 +169,7 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   ok(["settings-set", "away.answering", "false", "--agent", "Hugo"]);
   await allOnline();
   // The real default home, and the database opens: this is the native SQLCipher loading from a plain npm install.
-  assert.ok(existsSync(join(home, ".cello-v2", "cello.db")));
+  assert.ok(existsSync(join(home, ".cello", "cello.db")));
 
   const started = ok(["initiate-session", hugo["agent_id"] as string, "--agent", "Gail"]);
   const session = started["session_id"] as string;

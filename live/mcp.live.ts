@@ -15,7 +15,7 @@ import { OPERATIONS } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-mcp-"));
-const env = { ...process.env, CELLO_V2_HOME: home } as Record<string, string>;
+const env = { ...process.env, CELLO_HOME: home } as Record<string, string>;
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const cli = (...args: string[]): string => execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env });

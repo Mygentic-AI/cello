@@ -2,7 +2,7 @@
 // What this can't show: the real issuer and waitlist, a server that requires the signal, and the real Concierge.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -31,7 +31,7 @@ function newHome(): string {
 function run(home: string, args: string[], input = ""): Promise<Run> {
   return new Promise((resolve, reject) => {
     // HOME moves too, so a real ~/.cello on this machine doesn't change what's printed.
-    const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, HOME: home, CELLO_V2_HOME: home, CELLO_CALLER: "" }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "" }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += String(chunk); });
@@ -81,7 +81,7 @@ sys.stdout.write(out.decode())
 `;
   // Not a blocking call: the stand-in issuer answers from this same process.
   return new Promise((resolve, reject) => {
-    const child = spawn("python3", ["-c", script, process.execPath, cli, ...args], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, HOME: home, CELLO_V2_HOME: home, CELLO_CALLER: "", PROMPT_WANTED: prompt, ANSWER: answer ?? "" } });
+    const child = spawn("python3", ["-c", script, process.execPath, cli, ...args], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", PROMPT_WANTED: prompt, ANSWER: answer ?? "" } });
     let out = "";
     child.stdout.on("data", (chunk: Buffer) => { out += String(chunk); });
     child.on("error", reject);
@@ -144,6 +144,28 @@ test("at a terminal it asks first: no leaves nothing behind, and yes goes ahead"
   assert.match(yes, /agent has its verified email signal/);
   assert.match(yes, /doesn't recognise that issuer/);
   await ok(home, ["logout"]);
+});
+
+test("old data: nothing starts over it, and it's moved only when a person says so", async () => {
+  const parent = newHome();
+  const home = join(parent, "h");
+  mkdirSync(home);
+  writeFileSync(join(home, "sessions.db"), "old");
+  const code = newCode();
+  const piped = await run(home, setupArgs(["--code", code]));
+  assert.equal(piped.status, 1);
+  assert.match(piped.stderr, /old version/);
+  assert.match((await run(home, ["login", "--server", url])).stderr, /old version/);
+  assert.equal(running(home), false);
+  const without = setupArgs(["--code", code]);
+  const no = await terminal(home, without, "[y/N] ", "n");
+  assert.match(no, /Nothing was moved/);
+  assert.equal(existsSync(join(home, "sessions.db")), true);
+  const yes = await terminal(home, without, "-old? [y/N] ", "y");
+  assert.match(yes, /Moved it to/);
+  assert.equal(readFileSync(join(`${home}-old`, "sessions.db"), "utf8"), "old");
+  assert.equal(existsSync(join(home, "sessions.db")), false);
+  if (running(home)) await run(home, ["logout"]);
 });
 
 test("a server it can't reach doesn't cost the code", async () => {
@@ -336,7 +358,7 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
 
   // Over MCP, the wallet is the same operations, with the agent named on each call, and the person's command isn't there.
   const client = new Client({ name: "setup-live", version: "0" });
-  const stderrFree = new StdioClientTransport({ command: process.execPath, args: [mcp], env: { ...process.env as Record<string, string>, HOME: home, CELLO_V2_HOME: home } });
+  const stderrFree = new StdioClientTransport({ command: process.execPath, args: [mcp], env: { ...process.env as Record<string, string>, HOME: home, CELLO_HOME: home } });
   await client.connect(stderrFree);
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
   for (const name of ["cello_signals_list", "cello_signals_view", "cello_signals_enable", "cello_signals_disable", "cello_signals_collect"]) assert.ok(tools.includes(name), name);

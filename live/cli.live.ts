@@ -36,7 +36,7 @@ function sql(query: string): string {
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
 function cello(args: string[], input?: string, caller?: string, inHome = home): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
+  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -448,7 +448,7 @@ test("a standby past its time tells each side once, across restarts, and changes
       },
       // A command that blocks, so this test can carry on while it does.
       wait: () => new Promise<Run>((resolve) => {
-        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
+        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
           resolve({ status: err ? (err.code as number) : 0, stdout, stderr, json: JSON.parse(stdout) as Record<string, unknown> });
         });
       }),
@@ -729,7 +729,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
 
   // A relative out starts from where the command runs.
   const relativeFolder = mkdtempSync(join(scratch, "relative-"));
-  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: nedHome } });
+  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_HOME: nedHome } });
   assert.equal(relative.status, 0, relative.stderr);
   assert.equal(realpathSync((JSON.parse(relative.stdout) as { file: string }).file), realpathSync(join(relativeFolder, "here.json")));
 
@@ -924,7 +924,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
   // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
   const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
-    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: liarHome } }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {
       let json: Record<string, unknown> = {};
       try {
         json = JSON.parse(stdout || stderr) as Record<string, unknown>;

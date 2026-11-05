@@ -1,9 +1,9 @@
 // `cello setup`: from nothing to an agent with its verified email, on a server, with a reply on screen.
 // Each step says what it did, and each failure says what to do next, with JSON behind a flag.
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { celloHome, databasePath, socketPath } from "./daemon/paths.ts";
+import { createConnection } from "node:net";
+import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DEFAULT_SERVER_URL } from "./daemon/settings.ts";
 import { HOW_TO_GET_A_CODE } from "./daemon/wallet.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -58,11 +58,32 @@ function options(args: string[]): Record<string, string | true> {
   return found;
 }
 
+const answers = (path: string): Promise<boolean> => new Promise((resolve) => {
+  const probe = createConnection(path);
+  probe.once("connect", () => { probe.destroy(); resolve(true); });
+  probe.once("error", () => resolve(false));
+});
+
+// Old data stays until a person says, and then it's moved whole, never deleted.
+async function moveOldVersion(host: SetupHost, say: (line: string) => void): Promise<void> {
+  const home = celloHome();
+  if (!holdsOldVersion(home)) return;
+  const target = `${home}-old`;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new SetupFailed("old_version_data", oldVersionMessage(home));
+  if (await answers(join(home, "daemon.sock")) || await answers(join(home, "gateway.sock"))) throw new SetupFailed("old_version_running", `The old version of CELLO is still running from ${home}. Stop it, or restart this machine, then run the same command again. Nothing changed.`);
+  if (existsSync(target)) throw new SetupFailed("old_version_data", `${home} holds data from the old version, and ${target} already exists, so it can't be moved there. Move one of them yourself, then run the same command again. Nothing changed.`);
+  say(`${home} holds data from the old version of CELLO, which this version can't read. Its agents don't carry over.`);
+  const answer = (await host.ask(`Move it to ${target}? [y/N] `)).toLowerCase();
+  if (answer !== "y" && answer !== "yes") throw new SetupFailed("declined", "Nothing was moved, and setup can't go on until it is.");
+  renameSync(home, target);
+  say(`Moved it to ${target}.`);
+}
+
 async function daemon(host: SetupHost, server: string | undefined, yes: boolean, say: (line: string) => void): Promise<IpcClient> {
   try {
     const running = await IpcClient.connect(socketPath());
     const status = await running.call("status") as { server: string };
-    if (server && status.server !== server) throw new SetupFailed("other_server", `CELLO is already running for ${status.server}, not ${server}. To change it, run cello logout, and use a separate CELLO_V2_HOME.`);
+    if (server && status.server !== server) throw new SetupFailed("other_server", `CELLO is already running for ${status.server}, not ${server}. To change it, run cello logout, and use a separate CELLO_HOME.`);
     return running;
   } catch (err: unknown) {
     if (!(err instanceof DaemonGone)) throw err;
@@ -128,8 +149,8 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
   try {
     const flags = options(args);
     const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
+    await moveOldVersion(host, say);
     if (!text("code") && !existsSync(databasePath())) return refuse("code_required", HOW_TO_GET_A_CODE);
-    if (existsSync(join(homedir(), ".cello"))) say("An older CELLO install is in ~/.cello. Its agents don't carry over, and this doesn't change it.");
 
     client = await daemon(host, text("server"), flags["yes"] === true, say);
     const server = await waitForServer(client);

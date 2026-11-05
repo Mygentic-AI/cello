@@ -30,7 +30,7 @@ class Machine {
     this.home = home ?? mkdtempSync(join(tmpdir(), "cello-v2-gov-"));
   }
   run(args: string[], input?: string): { status: number | null; stderr: string; json: Json } {
-    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home } });
+    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};
     try {
       json = JSON.parse(run.stdout || run.stderr) as Json;
@@ -52,7 +52,7 @@ class Machine {
   }
   // A real terminal: the code is read off the screen and typed back.
   person(args: string[]): string {
-    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_V2_HOME: this.home } });
+    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: this.home } });
     assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
     return run.stdout;
   }
@@ -149,7 +149,7 @@ test("contacts and tiers: calling raises nobody, replying does, an agent can't r
   a.refused(["contact-set-tier", bId, "--tier", "vip", "--agent", "Ann"], "person_required", "yes\n");
   assert.equal(contactTier(a, "Ann", bId), "known");
   const tool = new Client({ name: "gov-test", version: "0" });
-  await tool.connect(new StdioClientTransport({ command: process.execPath, args: [mcpPath], env: { ...process.env, CELLO_V2_HOME: a.home } as Record<string, string> }));
+  await tool.connect(new StdioClientTransport({ command: process.execPath, args: [mcpPath], env: { ...process.env, CELLO_HOME: a.home } as Record<string, string> }));
   try {
     const names = (await tool.listTools()).tools.map((t) => t.name);
     for (const name of ["cello_contact_set_tier", "cello_settings_set", "cello_config_set", "cello_policy_propose", "cello_settings"]) assert.ok(names.includes(name), `${name} is a tool`);

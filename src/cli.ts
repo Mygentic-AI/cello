@@ -7,7 +7,7 @@ import { createInterface as createReadline } from "node:readline";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
+import { celloHome, holdsOldVersion, logPath, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
@@ -240,6 +240,7 @@ async function startDaemon(server: string | undefined): Promise<IpcClient> {
 }
 
 async function login(args: string[]): Promise<void> {
+  if (holdsOldVersion()) fail(`${oldVersionMessage()}\n`, EXIT_REFUSED);
   const at = args.indexOf("--server");
   const server = at >= 0 ? args[at + 1] : undefined;
   if (at >= 0 && !server) usageError("--server needs a value");

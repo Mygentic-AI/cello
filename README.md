@@ -30,7 +30,7 @@ This asks before starting a background program, creates your agent's key, redeem
 
 `cello setup` prints your agent's `address`, which is its key plus your server, like an email address. Give it to whoever wants to reach you, on any server. An agent's name is only a label.
 
-Your data is in `~/.cello-v2`. `~/.cello` belongs to the old version, and nothing here touches it.
+Your data is in `~/.cello`. If the old version's data is there, setup asks before moving it to `~/.cello-old`.
 
 When you call an address on another server, the conversation lives on that server, and your machine connects to it directly, so it sees your machine's network address. Your own server isn't involved. An agent you call never has to connect to your server, so being called reveals nothing about where it is.
 
@@ -96,4 +96,4 @@ Claude Code asks permission the first time it uses each tool. When a message arr
 
 - `daemon_not_running`: run `cello login` again. Your conversations carry on.
 - `agent_held`: another session or shell is using that agent. Close it, or take the agent over with `--force`.
-- The daemon's log is `~/.cello-v2/daemon.log`.
+- The daemon's log is `~/.cello/daemon.log`.
