@@ -103,12 +103,18 @@ test("a missing root key fails loudly, and production trusts nothing until they 
   if (Object.values(PRODUCTION_ROOT_KEYS).includes(null)) assert.throws(() => productionRootKeys(), /isn't configured/);
 });
 
-test("only a listed issuer with both keys matching, and not expired from the list, is recognised", () => {
+test("only a listed issuer with both keys and its own domain matching, and not expired from the list, is recognised", () => {
   const l = list();
-  assert.equal(recognisedIssuer(l, issuer.publicIdentity, NOW)?.name, "trust.celloprotocol.com");
-  assert.equal(recognisedIssuer(l, stranger.publicIdentity, NOW), null);
-  assert.equal(recognisedIssuer(l, { ed: issuer.publicIdentity.ed, pq: stranger.publicIdentity.pq }, NOW), null);
-  assert.equal(recognisedIssuer(l, issuer.publicIdentity, NOW + 500), null);
+  const domain = "trust.celloprotocol.com";
+  assert.equal(recognisedIssuer(l, issuer.publicIdentity, domain, NOW)?.name, domain);
+  assert.equal(recognisedIssuer(l, stranger.publicIdentity, domain, NOW), null, "a stranger claiming our domain");
+  assert.equal(recognisedIssuer(l, { ed: issuer.publicIdentity.ed, pq: stranger.publicIdentity.pq }, domain, NOW), null);
+  assert.equal(recognisedIssuer(l, issuer.publicIdentity, domain, NOW + 500), null);
+  for (const other of ["other.celloprotocol.com", "TRUST.celloprotocol.com", `${domain}.`, `https://${domain}`, ""]) assert.equal(recognisedIssuer(l, issuer.publicIdentity, other, NOW), null, `a listed key signing as ${other}`);
+});
+
+test("a listed issuer's name has to be a domain, so a signal can match it", () => {
+  for (const name of ["Trust.celloprotocol.com", "CELLO issuer", "localhost", "https://trust.celloprotocol.com", "a..b", "-a.com"]) assert.throws(() => encodeIssuerEntry({ ...(list().issuers[0] as IssuerList["issuers"][number]), name }), /its domain/, name);
 });
 
 test("malformed lists are refused by name, nesting included", async () => {

@@ -18,6 +18,7 @@ const MAX_ENTRY_BYTES = 4_096;
 const P256_PUBLIC_KEY_BYTES = 65;
 const ROOT_SIGNATURE_BYTES = 64;
 const MAX_EPOCH_SECONDS = 100_000_000_000;
+const ISSUER_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
 // Slot order in the signed file, and in the configured keys.
 export const ROOT_NAMES = ["enclave", "kms", "paper"] as const;
@@ -74,7 +75,7 @@ const readSeconds = (name: string, value: unknown): number => {
 };
 
 export function encodeIssuerEntry(entry: IssuerEntry): Uint8Array {
-  if (typeof entry.name !== "string" || entry.name.length === 0 || entry.name.normalize("NFC") !== entry.name) throw new RangeError("an issuer's name must be non-empty NFC text");
+  if (typeof entry.name !== "string" || !ISSUER_DOMAIN.test(entry.name)) throw new RangeError("an issuer's name must be its domain, in lowercase");
   if (!(entry.ed instanceof Uint8Array) || entry.ed.length !== ED25519_PUBLIC_KEY_BYTES) throw new RangeError(`an issuer's Ed25519 key must be ${ED25519_PUBLIC_KEY_BYTES} bytes`);
   if (!(entry.pq instanceof Uint8Array) || entry.pq.length !== ML_DSA_PUBLIC_KEY_BYTES) throw new RangeError(`an issuer's ML-DSA key must be ${ML_DSA_PUBLIC_KEY_BYTES} bytes`);
   return new Uint8Array(encodeCbor([ISSUER_ENTRY_DOMAIN, entry.name, entry.ed, entry.pq, seconds("expires_at", entry.expires_at)]));
@@ -209,7 +210,8 @@ export async function verifyIssuerList(file: Uint8Array, roots: readonly RootKey
   return { ok: true, list };
 }
 
-// Matches both keys, so a known Ed25519 key beside a swapped ML-DSA key is a stranger. Null means unknown, or expired from the list.
-export function recognisedIssuer(list: IssuerList, issuer: PublicIdentity, now: number): IssuerEntry | null {
-  return list.issuers.find((entry) => equalBytes(entry.ed, issuer.ed) && equalBytes(entry.pq, issuer.pq) && entry.expires_at > now) ?? null;
+// Matches both keys and the domain the signal states, exactly, so a listed issuer can't sign under another's name.
+// Null means unknown, or expired from the list.
+export function recognisedIssuer(list: IssuerList, issuer: PublicIdentity, issuerAddress: string, now: number): IssuerEntry | null {
+  return list.issuers.find((entry) => entry.name === issuerAddress && equalBytes(entry.ed, issuer.ed) && equalBytes(entry.pq, issuer.pq) && entry.expires_at > now) ?? null;
 }
