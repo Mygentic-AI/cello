@@ -2459,7 +2459,7 @@ export class Engine {
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
       if (unread.length > 0) {
-        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
+        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || Boolean(held), finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
           guidance.push({ session_id: toHex(local.session_id), text });
         }
       }
