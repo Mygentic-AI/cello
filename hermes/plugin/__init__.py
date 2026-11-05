@@ -43,7 +43,7 @@ CHANNEL_NOTIFICATION_OPTIONS = ("on", "off")
 DEFAULT_CHANNEL_NOTIFICATIONS = "on"
 
 # Bells that mean something may be waiting to be read on a session.
-READABLE_BELLS = {"message", "peer_closed", "notice", "standby_overdue"}
+READABLE_BELLS = {"message", "peer_closed", "notice", "standby_overdue", "away_greeting"}
 
 # Each hook runs on a tool thread and finds its adapter here. One gateway can serve several profiles,
 # each with its own agent, so this is keyed by the agent's name and id.
@@ -173,6 +173,7 @@ class CelloAdapter(BasePlatformAdapter):
         self._channel_notifications: str = str(
             extra.get("channel_notifications") or _get_cello_env("CELLO_CHANNEL_NOTIFICATIONS") or DEFAULT_CHANNEL_NOTIFICATIONS
         ).strip().lower()
+        self._tools = {t.strip() for t in _get_cello_env("CELLO_TOOLS").split(",") if t.strip()}
         # Kept from v1's installs. This bridge only does explicit, so any other value must stop it rather than be ignored.
         self._legacy_delivery_mode: str = _get_cello_env("CELLO_DELIVERY_MODE").lower()
         # Pinned now, because a background reconnect runs outside the profile's scope.
@@ -555,10 +556,11 @@ class CelloAdapter(BasePlatformAdapter):
         kind = str(frame.get("notification", ""))
         raw = frame.get("data")
         data: Dict[str, Any] = raw if isinstance(raw, dict) else {}
-        checked = {k: v for k, v in data.items() if k != "policy"}
-        if _has_content_field(checked):
-            logger.error("[cello] Dropped a '%s' bell carrying a content field. The daemon must never push content.", kind)
-            return
+        # A bell only needs its ids. The words go, and the bell still rings, or what it announced would sit unnoticed.
+        stray = [k for k, v in data.items() if k != "policy" and (str(k).strip().lower() in _CONTENT_FIELD_NAMES or _has_content_field(v))]
+        if stray:
+            logger.error("[cello] A '%s' bell carried content in %s, which the daemon must never push. Removed it and carried on.", kind, stray)
+            data = {k: v for k, v in data.items() if k not in stray}
         if kind == "session_started":
             self._on_session_started(data)
         elif kind in READABLE_BELLS:
@@ -568,13 +570,18 @@ class CelloAdapter(BasePlatformAdapter):
         elif kind == "screening_delayed":
             logger.info("[cello] A long message on session %s is still being screened", data.get("session_id"))
         elif kind == "agent_status":
-            await self._start_turn(self._agent_name, "cello-daemon", "[CELLO] This agent's status has changed. See it with cello_agent_status(agent=\"" + self._agent_name + "\").", data, "status")
+            how = "See it with cello_agent_status(agent=\"" + self._agent_name + "\")." if self._has_tool("cello_agent_status") else "Tell your operator, who can see it with: cello-v2 agent-status --agent " + self._agent_name
+            await self._start_turn(self._agent_name, "cello-daemon", "[CELLO] This agent's status has changed. " + how, data, "status")
         elif kind == "agent_displaced":
             await self._on_displaced(data)
         elif kind in ("channel_post", "channel_notice", "channel_request"):
             await self._on_channel(kind, data)
         else:
             logger.warning("[cello] Ignoring a bell this bridge doesn't know: '%s'", kind)
+
+    def _has_tool(self, name: str) -> bool:
+        """A public agent's model reaches a short list, and a notice mustn't send it to a tool it lacks."""
+        return not self._tools or name in self._tools
 
     def _on_session_started(self, data: Dict[str, Any]) -> None:
         """No turn: a message follows, and a turn now would make the chat busy just when it arrives."""
@@ -621,7 +628,8 @@ class CelloAdapter(BasePlatformAdapter):
         elif kind == "channel_notice":
             text = "[CELLO] There's a notice about channel " + channel + ". See it with cello_channels(agent=\"" + self._agent_name + "\")."
         else:
-            text = "[CELLO] Someone has asked to join channel " + channel + ". See who with cello_channel_requests(agent=\"" + self._agent_name + "\", channel_id=\"" + channel + "\")."
+            how = "See who with cello_channel_requests(agent=\"" + self._agent_name + "\", channel_id=\"" + channel + "\")." if self._has_tool("cello_channel_requests") else "Tell your operator, who can see who with: cello-v2 channel-requests --agent " + self._agent_name
+            text = "[CELLO] Someone has asked to join channel " + channel + ". " + how
         # Under peer scope a channel gets its own conversation and never lands in a customer's.
         chat_id = self._agent_name if self._session_scope == "agent" else "channel-" + channel[:16]
         await self._start_turn(chat_id, channel, text, data, "channel", "CELLO channel", "CELLO channel " + channel[:12])
@@ -911,6 +919,10 @@ def _adapter_for(args: Any) -> Optional[CelloAdapter]:
     named = args.get("agent") if isinstance(args, dict) else None
     if isinstance(named, str) and named in _ADAPTERS:
         return _ADAPTERS[named]
+    # Hooks run inside the profile's scope, so a call that named no agent belongs to this profile's.
+    scoped = _ADAPTERS.get(_get_cello_env("CELLO_AGENT_NAME"))
+    if scoped is not None:
+        return scoped
     distinct = {id(a): a for a in _ADAPTERS.values()}
     return next(iter(distinct.values())) if len(distinct) == 1 else None
 
