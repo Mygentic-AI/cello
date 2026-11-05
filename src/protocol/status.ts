@@ -4,8 +4,8 @@ import { type PublicIdentity, identityId, verifySignature } from "./identity.ts"
 import { AgentStatus, StatusIssuer, StatusReason, type StatusStatementFields, structureHash } from "./structures.ts";
 import { type WireSigned, identityCodec, signedStatusStatement, signedStatusWitness } from "./wire.ts";
 
-export const STATUS_DOMAIN = "cello-v2-agent-status";
-export const STATUS_WITNESS_DOMAIN = "cello-v2-agent-status-witness";
+export const STATUS_DOMAIN = "cello-agent-status";
+export const STATUS_WITNESS_DOMAIN = "cello-agent-status-witness";
 // A statement dated further ahead than this could block every later one, so it's refused.
 export const STATUS_MAX_FUTURE_MS = 5 * 60 * 1000;
 

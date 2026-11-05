@@ -64,10 +64,10 @@ async function buildConversation(): Promise<Fixture> {
     const ack = { serverId: server.id, sessionId, position: i + 1, entryHash: hash, root, time: 1_000 + i };
     items.push({
       fields,
-      signature: await author.sign("cello-v2-entry", entryBytes(fields)),
+      signature: await author.sign("cello-entry", entryBytes(fields)),
       bytes: entryBytes(fields),
       ack,
-      ackSignature: await server.sign("cello-v2-ack", ackBytes(ack)),
+      ackSignature: await server.sign("cello-ack", ackBytes(ack)),
       ackBytes: ackBytes(ack),
     });
   }
@@ -84,7 +84,7 @@ test("an untouched conversation checks out", async () => {
 
 // Re-signs what a tamperer could re-sign, so each case reaches the check it is aimed at.
 async function resignAsServer(item: WitnessedEntry): Promise<WitnessedEntry> {
-  return { ...item, ackSignature: await fixture.server.sign("cello-v2-ack", ackBytes(item.ack)) };
+  return { ...item, ackSignature: await fixture.server.sign("cello-ack", ackBytes(item.ack)) };
 }
 
 async function faultWhen(change: (items: WitnessedEntry[]) => Promise<void> | void): Promise<string | undefined> {
@@ -114,7 +114,7 @@ test("each tampering is caught, and named", async () => {
   // The server forges a message from Bob, signing with its own key.
   assert.equal(await faultWhen(async (x) => {
     const item = at(x, 1);
-    x[1] = { ...item, signature: await fixture.server.sign("cello-v2-entry", entryBytes(item.fields)) };
+    x[1] = { ...item, signature: await fixture.server.sign("cello-entry", entryBytes(item.fields)) };
   }), "bad_entry_signature");
 
   // An outsider's entry.
@@ -137,7 +137,7 @@ test("an author can't skip or fork their own chain, or claim to have read what d
     const item = at(x, i);
     const fields = { ...item.fields, ...change };
     const author = toHex(fields.authorId) === toHex(fixture.alice.id) ? fixture.alice : fixture.bob;
-    x[i] = { ...item, fields, signature: await author.sign("cello-v2-entry", entryBytes(fields)), ack: { ...item.ack, entryHash: entryHash(fields) } };
+    x[i] = { ...item, fields, signature: await author.sign("cello-entry", entryBytes(fields)), ack: { ...item.ack, entryHash: entryHash(fields) } };
   };
   assert.equal(await faultWhen((x) => rebuilt(2, { authorSeq: 3 }, x)), "bad_author_seq");
   assert.equal(await faultWhen((x) => rebuilt(2, { prevOwnHash: hashOf("a fork") }, x)), "bad_author_chain");

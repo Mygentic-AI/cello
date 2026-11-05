@@ -111,8 +111,8 @@ const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
 
-const greetingKey = (contentKey: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/greeting").update(contentKey).digest());
-const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/refusal").update(sharedSecret).digest());
+const greetingKey = (contentKey: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-session-greeting").update(contentKey).digest());
+const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-session-refusal").update(sharedSecret).digest());
 
 // Only these words ever come out of a refusal, whatever the other side put in it.
 function refusalSentence(opened: Uint8Array | null): string {
@@ -386,7 +386,7 @@ export class Engine {
       if (route.home) {
         const clientNonce = new Uint8Array(randomBytes(32));
         const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
-        const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+        const signature = await agent.signer.sign("cello-agent-auth", proof);
         await route.longLink.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature), long: true }, LONG_CALL_TIMEOUT_MS);
       } else {
         await route.longLink.call("visit", { ...await this.#visitProof(agent, server), long: true }, LONG_CALL_TIMEOUT_MS);
@@ -522,8 +522,8 @@ export class Engine {
     return {
       identity: identityCodec.encode(identity),
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity }))),
-      signature: signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
+      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-visit", registerBytes({ serverId: server.id, identity }))),
+      signature: signatureCodec.encode(await agent.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
 
@@ -735,7 +735,7 @@ export class Engine {
         try {
           const clientNonce = new Uint8Array(randomBytes(32));
           const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
-          const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+          const signature = await agent.signer.sign("cello-agent-auth", proof);
           const answer = await this.#link.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) }) as { standing: Standing };
           agent.online = true;
           logEvent("agent.online", { agent: agent.hex });
@@ -761,7 +761,7 @@ export class Engine {
 
   async #register(agent: AgentContext): Promise<void> {
     const identity = agent.signer.publicIdentity;
-    const signature = await agent.signer.sign("cello-v2-register", registerBytes({ serverId: this.#serverId(), identity }));
+    const signature = await agent.signer.sign("cello-register", registerBytes({ serverId: this.#serverId(), identity }));
     await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature) });
     this.#store.markRegistered(agent.signer.id);
     agent.registered = true;
@@ -905,7 +905,7 @@ export class Engine {
       sealedReason: sealSessionContent(refusalKey(sharedSecret), new TextEncoder().encode(JSON.stringify(refusal))),
     };
     sharedSecret.fill(0);
-    const signature = await agent.signer.sign("cello-v2-session-refuse", refuseBytes(refuseFields));
+    const signature = await agent.signer.sign("cello-session-refuse", refuseBytes(refuseFields));
     await this.#link.call("session.refuse", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), refusal: signedRefuse.encode({ fields: refuseFields, signature }) });
     this.governance.noteRefusal(agent.signer.id, agent.hex, toHex(fields.callerId), refusal.code);
   }
@@ -915,7 +915,7 @@ export class Engine {
     const refusal = signedRefuse.decode(wire, "refusal");
     const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
     if (!equalBytes(refusal.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this refusal answers a different offer");
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-refuse", refusal.bytes, refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-session-refuse", refusal.bytes, refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
     const sharedSecret = await mlKemDecapsulate(local.mlkem_seed as Uint8Array, refusal.fields.mlKemCiphertext);
     const opened = openSessionContent(refusalKey(sharedSecret), refusal.fields.sealedReason);
     sharedSecret.fill(0);
@@ -935,7 +935,7 @@ export class Engine {
     const callerKeys = identityCodec.decode(wire.callerIdentity, "callerIdentity");
     if (!equalBytes(identityId(callerKeys), fields.callerId)) throw new Error("the caller's keys don't match the caller's id");
     if (!equalBytes(fields.serverId, this.#serverId())) throw new Error("this offer names a different server");
-    if (!(await verifySignature(callerKeys, "cello-v2-session-offer", offer.bytes, offer.signature))) throw new Error("this offer isn't signed by its caller");
+    if (!(await verifySignature(callerKeys, "cello-session-offer", offer.bytes, offer.signature))) throw new Error("this offer isn't signed by its caller");
     if (fields.expiresAt <= Date.now()) {
       logEvent("session.offer_expired", { session: toHex(fields.sessionId) });
       return;
@@ -973,7 +973,7 @@ export class Engine {
       sealedSalt: sealSessionContent(contentKey, salt),
       sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))),
     };
-    const signature = await agent.signer.sign("cello-v2-session-accept", acceptBytes(acceptFields));
+    const signature = await agent.signer.sign("cello-session-accept", acceptBytes(acceptFields));
     const accept = signedAccept.encode({ fields: acceptFields, signature });
     this.#store.insertSession({
       agent_id: agent.signer.id,
@@ -1008,7 +1008,7 @@ export class Engine {
     const keys = this.#counterpartyKeys(local);
     const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
     if (!equalBytes(accept.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this accept answers a different offer");
-    if (!(await verifySignature(keys, "cello-v2-session-accept", accept.bytes, accept.signature))) throw new Error("this accept isn't signed by the agent called");
+    if (!(await verifySignature(keys, "cello-session-accept", accept.bytes, accept.signature))) throw new Error("this accept isn't signed by the agent called");
     const seed = local.mlkem_seed;
     const secret = local.x25519_secret;
     if (!seed || !secret) throw new Error("this session's own key halves are missing");
@@ -1025,7 +1025,7 @@ export class Engine {
     const ownSalt = generateSaltContribution();
     this.#takeOfferedName(agent, local, contentKey, accept.fields.sealedName);
     const confirmFields = { acceptHash: structureHash(accept.bytes), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
-    const signature = await agent.signer.sign("cello-v2-session-confirm", confirmBytes(confirmFields));
+    const signature = await agent.signer.sign("cello-session-confirm", confirmBytes(confirmFields));
     this.#store.updateSession(agent.signer.id, local.session_id, {
       state: "accepted",
       accept: JSON.stringify(wireAccept),
@@ -1053,7 +1053,7 @@ export class Engine {
     const keys = this.#counterpartyKeys(local);
     const acceptFields = signedAccept.decode(JSON.parse(local.accept as string)).fields;
     if (!equalBytes(confirm.fields.acceptHash, structureHash(acceptBytes(acceptFields)))) throw new Error("this confirm answers a different accept");
-    if (!(await verifySignature(keys, "cello-v2-session-confirm", confirm.bytes, confirm.signature))) throw new Error("this confirm isn't signed by the caller");
+    if (!(await verifySignature(keys, "cello-session-confirm", confirm.bytes, confirm.signature))) throw new Error("this confirm isn't signed by the caller");
     const peerSalt = openSessionContent(local.session_key as Uint8Array, confirm.fields.sealedSalt);
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     this.#takeOfferedName(agent, local, local.session_key as Uint8Array, confirm.fields.sealedName);
@@ -1094,7 +1094,7 @@ export class Engine {
         offerHash: structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes),
         sealedText: sealSessionContent(greetingKey(local.session_key as Uint8Array), new TextEncoder().encode(screened)),
       };
-      const signature = await agent.signer.sign("cello-v2-session-greeting", greetingBytes(fields));
+      const signature = await agent.signer.sign("cello-session-greeting", greetingBytes(fields));
       wire = JSON.stringify(signedGreeting.encode({ fields, signature }));
       this.#away.setVisit(agent.signer.id, local.session_id, "due", wire);
     }
@@ -1131,7 +1131,7 @@ export class Engine {
       reject("answers_a_different_offer");
       return;
     }
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-greeting", greeting.bytes, greeting.signature))) {
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-session-greeting", greeting.bytes, greeting.signature))) {
       reject("bad_signature");
       return;
     }
@@ -1205,7 +1205,7 @@ export class Engine {
       confirmHash: structureHash(signedConfirm.decode(wireConfirm).bytes),
     };
     const matches = (Object.keys(expected) as (keyof typeof expected)[]).every((key) => equalBytes(assignment.fields[key], expected[key]));
-    if (!matches || !(await verifySignature(this.#serverIdentity(this.#urlOf(local)), "cello-v2-session-assignment", assignment.bytes, assignment.signature))) {
+    if (!matches || !(await verifySignature(this.#serverIdentity(this.#urlOf(local)), "cello-session-assignment", assignment.bytes, assignment.signature))) {
       throw new Error("the server's assignment doesn't match this session's setup");
     }
     this.#store.updateSession(agent.signer.id, local.session_id, {
@@ -1551,7 +1551,7 @@ export class Engine {
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
     const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
-    const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
+    const signature = await agent.signer.sign("cello-delivery-ack", deliveryAckBytes(fields));
     // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
     await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
     this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through, acked_screened: screened });
@@ -1563,7 +1563,7 @@ export class Engine {
     const { fields } = signed;
     const local = this.#store.session(agent.signer.id, fields.sessionId);
     if (!local || !equalBytes(fields.readerId, local.counterparty_id)) return;
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-delivery-ack", signed.bytes, signed.signature))) return;
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-delivery-ack", signed.bytes, signed.signature))) return;
     if (fields.screenedThrough > local.peer_screened_through) this.#store.updateSession(agent.signer.id, local.session_id, { peer_screened_through: fields.screenedThrough });
     const position = fields.screenedThrough + 1;
     // Nothing signs the time, so it's only ever a number in a notice, and only a whole one gets that far.
@@ -1776,7 +1776,7 @@ export class Engine {
       const server = route.home ? this.#server : route.server;
       if (!server) return { server: url, reachable: false, problem: "still connecting" };
       const clientNonce = new Uint8Array(randomBytes(32));
-      const signature = await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }));
+      const signature = await agent.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }));
       const answer = await this.#call(() => route.link.call("agent.status.read", { identity: identityCodec.encode(agent.signer.publicIdentity), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) })) as { status: string; reason: string; records: StatusRecordOnWire[] };
       const checked = await checkStatusLog(answer.records, agent.signer.id, this.#serverIdentity(url));
       if (!checked.ok) throw new LocalError("status_log_bad", `${url}: ${checked.message}`);
@@ -1886,7 +1886,7 @@ export class Engine {
       ciphertextHash: ciphertextHash(ciphertext),
       notAfter: Date.now() + SEND_WINDOW_MS,
     };
-    const signature = await agent.signer.sign("cello-v2-entry", entryBytes(fields));
+    const signature = await agent.signer.sign("cello-entry", entryBytes(fields));
     // On disk before it goes anywhere, so a crash after this point can only resend identical bytes.
     this.#store.insertEntry({
       agent_id: agent.signer.id,
@@ -2036,7 +2036,7 @@ export class Engine {
     const root = this.#verifier(agent, local).rootAt(through);
     if (!root) throw new Error(`no root is held for position ${through}`);
     const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
-    const signature = await agent.signer.sign("cello-v2-seal-request", sealRequestBytes(fields));
+    const signature = await agent.signer.sign("cello-seal-request", sealRequestBytes(fields));
     let answer: { record: SealRecordOnWire; logProof: string[] | null };
     try {
       answer = await route.link.call("seal.request", {
@@ -2280,7 +2280,7 @@ export class Engine {
       mlKemPublic: own.mlKemPublic,
       expiresAt: Date.now() + this.#settings.offer_lifetime_minutes * 60_000,
     };
-    const signature = await agent.signer.sign("cello-v2-session-offer", offerBytes(fields));
+    const signature = await agent.signer.sign("cello-session-offer", offerBytes(fields));
     const offer = signedOffer.encode({ fields, signature });
     const activated = new Promise<void>((resolve) => this.#activation.set(agent.hex + sessionHex, resolve));
     await this.#lane(agentHex, sessionHex, async () => {

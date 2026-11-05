@@ -86,16 +86,16 @@ async function record(c: Cast, n: number, ackThrough: number | null, certificate
   const proof = ack === null || ack.throughPosition === n ? [] : ack.throughPosition < n ? consistencyPath(hashes.slice(0, n), ack.throughPosition) : consistencyPath(hashes.slice(0, ack.throughPosition), n);
   return {
     format: SEAL_RECORD_FORMAT,
-    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-v2-seal-certificate", sealCertificateBytes(fields)) }),
-    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-v2-seal-request", requestBytes) }),
-    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-v2-delivery-ack", deliveryAckBytes(ack)) }) : null,
+    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }),
+    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-seal-request", requestBytes) }),
+    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-delivery-ack", deliveryAckBytes(ack)) }) : null,
     deliveryProof: encodeHashes(proof),
     sealer: identityCodec.encode(c.alice.publicIdentity),
     counterparty: identityCodec.encode(c.bob.publicIdentity),
     sealKey: identityCodec.encode(c.sealKey.publicIdentity),
     server: identityCodec.encode(c.server.publicIdentity),
-    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
-    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-v2-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
+    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
+    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
   };
 }
 
@@ -143,7 +143,7 @@ test("a stolen seal key still can't raise M", async () => {
   const honest = await record(c, 5, 3);
   const ackFields = signedDeliveryAck.decode(honest.deliveryAck).fields;
   const selfSigned = await record(c, 5, 3);
-  selfSigned.deliveryAck = signedDeliveryAck.encode({ fields: ackFields, signature: await c.alice.sign("cello-v2-delivery-ack", deliveryAckBytes(ackFields)) });
+  selfSigned.deliveryAck = signedDeliveryAck.encode({ fields: ackFields, signature: await c.alice.sign("cello-delivery-ack", deliveryAckBytes(ackFields)) });
   assert.equal(await faultOf(selfSigned, c), "bad_delivery_ack_signature");
 
   // A sealer and a thief together seal a rewritten history over a real ack. It can't be linked to what was signed.
@@ -165,10 +165,10 @@ test("every part of a record is checked", async () => {
     ["a closed that isn't 0 or 1", (r) => { r.certificate.bytes = "AA"; }, "malformed_record"],
     ["a swapped seal key", (r) => { r.sealKey = identityCodec.encode(c.alice.publicIdentity); }, "wrong_seal_key"],
     ["another server's name", (r) => { r.server = identityCodec.encode(c.alice.publicIdentity); }, "bad_seal_key_binding"],
-    ["a wrong binding", async (r) => { r.sealKeyBinding = signatureCodec.encode(await c.alice.sign("cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))); }, "bad_seal_key_binding"],
+    ["a wrong binding", async (r) => { r.sealKeyBinding = signatureCodec.encode(await c.alice.sign("cello-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))); }, "bad_seal_key_binding"],
     ["a swapped sealer", (r) => { r.sealer = identityCodec.encode(c.bob.publicIdentity); }, "wrong_sealer_keys"],
     ["a swapped counterparty", (r) => { r.counterparty = identityCodec.encode(c.alice.publicIdentity); }, "wrong_counterparty_keys"],
-    ["a request not signed by the sealer", async (r) => { const fields = signedSealRequest.decode(r.request).fields; r.request = signedSealRequest.encode({ fields, signature: await c.bob.sign("cello-v2-seal-request", sealRequestBytes(fields)) }); }, "bad_seal_request"],
+    ["a request not signed by the sealer", async (r) => { const fields = signedSealRequest.decode(r.request).fields; r.request = signedSealRequest.encode({ fields, signature: await c.bob.sign("cello-seal-request", sealRequestBytes(fields)) }); }, "bad_seal_request"],
     ["a removed ack", (r) => { r.deliveryAck = null; }, "delivery_ack_mismatch"],
     ["a broken link", (r) => { r.deliveryProof = encodeHashes([hashOf(1)]); }, "delivery_proof_failed"],
     ["a changed log head", (r) => { editSigned(r.log.head, signedSealLogHead, (s) => { s.size = 2; }); }, "bad_log_head_signature"],

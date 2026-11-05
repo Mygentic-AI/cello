@@ -339,7 +339,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   const forged = structuredClone(exported) as unknown as SealRecordOnWire;
   const certificate = signedSealCertificate.decode(forged.certificate).fields;
   certificate.receivedThrough = 4;
-  forged.certificate = signedSealCertificate.encode({ fields: certificate, signature: await thief.sign("cello-v2-seal-certificate", sealCertificateBytes(certificate)) });
+  forged.certificate = signedSealCertificate.encode({ fields: certificate, signature: await thief.sign("cello-seal-certificate", sealCertificateBytes(certificate)) });
   assert.equal(verify(saved(forged), sealKey)["fault"], "delivery_ack_mismatch", "a stolen seal key can't raise M");
 
   // ---- A daemon kill. The server is down, the seal is saved, the daemon dies, and it finishes by itself. ----

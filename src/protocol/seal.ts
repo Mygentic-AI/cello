@@ -14,7 +14,7 @@ import {
 } from "./structures.ts";
 import { type Signed, type WireSigned, WireError, fromB64, identityCodec, readInt, readObjectField, signatureCodec, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "./wire.ts";
 
-export const SEAL_RECORD_FORMAT = "cello-v2-seal";
+export const SEAL_RECORD_FORMAT = "cello-seal";
 
 export interface SealRecordOnWire {
   format: typeof SEAL_RECORD_FORMAT;
@@ -124,13 +124,13 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   const actualKeyId = identityId(record.sealKey);
   if (!equalBytes(actualKeyId, sealKeyId) || !equalBytes(cert.sealKeyId, sealKeyId)) return fail("wrong_seal_key", `it carries ${toHex(actualKeyId)}`);
   if (!equalBytes(identityId(record.server), cert.serverId)) return fail("bad_seal_key_binding");
-  if (!(await verifySignature(record.server, "cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: cert.serverId, sealKeyId }), record.sealKeyBinding))) return fail("bad_seal_key_binding");
-  if (!(await verifySignature(record.sealKey, "cello-v2-seal-certificate", record.certificate.bytes, record.certificate.signature))) return fail("bad_seal_signature");
+  if (!(await verifySignature(record.server, "cello-seal-key-binding", sealKeyBindingBytes({ serverId: cert.serverId, sealKeyId }), record.sealKeyBinding))) return fail("bad_seal_key_binding");
+  if (!(await verifySignature(record.sealKey, "cello-seal-certificate", record.certificate.bytes, record.certificate.signature))) return fail("bad_seal_signature");
 
   if (!equalBytes(identityId(record.sealer), cert.sealerId)) return fail("wrong_sealer_keys");
   const request = record.request.fields;
   const requestBytes = record.request.bytes;
-  if (!(await verifySignature(record.sealer, "cello-v2-seal-request", requestBytes, record.request.signature))) return fail("bad_seal_request");
+  if (!(await verifySignature(record.sealer, "cello-seal-request", requestBytes, record.request.signature))) return fail("bad_seal_request");
   const asked = equalBytes(structureHash(requestBytes), cert.requestHash)
     && equalBytes(request.sealerId, cert.sealerId)
     && equalBytes(request.sessionId, cert.sessionId)
@@ -148,7 +148,7 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   if (deliveryFault) return deliveryFault;
 
   const head = record.log.head;
-  if (!equalBytes(head.fields.sealKeyId, sealKeyId) || !(await verifySignature(record.sealKey, "cello-v2-seal-log-head", head.bytes, head.signature))) return fail("bad_log_head_signature");
+  if (!equalBytes(head.fields.sealKeyId, sealKeyId) || !(await verifySignature(record.sealKey, "cello-seal-log-head", head.bytes, head.signature))) return fail("bad_log_head_signature");
   if (!verifyInclusion(sealId(record.certificate.bytes), record.log.index, head.fields.size, head.fields.root, record.log.path)) return fail("log_proof_failed");
   return null;
 }
@@ -168,7 +168,7 @@ async function findDeliveryFault(record: SealRecord): Promise<SealCheck | null> 
   if (Math.min(ack.throughPosition, cert.throughPosition) !== cert.receivedThrough || cert.receivedThrough < 1) {
     return fail("delivery_ack_mismatch", `the certificate says ${cert.receivedThrough}, and the counterparty signed through ${ack.throughPosition}`);
   }
-  if (!(await verifySignature(record.counterparty, "cello-v2-delivery-ack", bytes, signed.signature))) return fail("bad_delivery_ack_signature");
+  if (!(await verifySignature(record.counterparty, "cello-delivery-ack", bytes, signed.signature))) return fail("bad_delivery_ack_signature");
   const linked = ack.throughPosition <= cert.throughPosition
     ? verifyConsistency(ack.throughPosition, cert.throughPosition, ack.root, cert.root, record.deliveryProof)
     : verifyConsistency(cert.throughPosition, ack.throughPosition, cert.root, ack.root, record.deliveryProof);

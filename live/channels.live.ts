@@ -131,10 +131,10 @@ class Raw {
   }
   async newAgent(): Promise<Signer> {
     const signer = await signerFromSeeds(generateIdentitySeeds());
-    const signature = await signer.sign("cello-v2-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
+    const signature = await signer.sign("cello-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
     await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature) });
     const clientNonce = new Uint8Array(randomBytes(32));
-    const proof = await signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
+    const proof = await signer.sign("cello-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
     await this.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(proof) });
     return signer;
   }
@@ -157,7 +157,7 @@ async function rawPost(raw: Raw, signer: Signer, channel: string, seq: number, t
   const title = new TextEncoder().encode("title");
   const body = new TextEncoder().encode(text);
   const fields: ChannelPostFields = { channelId, generation: 1, authorId: signer.id, authorSeq: seq, publishedAt: Date.now(), titleHash: hashBlob(title), bodyHash: hashBlob(body), ...over };
-  const signature = await signWith.sign("cello-v2-channel-post", channelPostBytes(fields));
+  const signature = await signWith.sign("cello-channel-post", channelPostBytes(fields));
   return raw.call("channel.post", {
     agent: toB64(signer.id), channel: toB64(channelId),
     post: channelPostCodec.encode({ fields, signature }), title: toB64(title), body: toB64(new TextEncoder().encode(sentBody ?? text)),
@@ -282,7 +282,7 @@ test("forged and replayed posts are refused by the server, with an honest poster
   const title = new TextEncoder().encode("title");
   const body = new TextEncoder().encode("Repeat me");
   const fields: ChannelPostFields = { channelId, generation: 1, authorId: pia.id, authorSeq: 2, publishedAt: Date.now(), titleHash: hashBlob(title), bodyHash: hashBlob(body) };
-  const signed = channelPostCodec.encode({ fields, signature: await pia.sign("cello-v2-channel-post", channelPostBytes(fields)) });
+  const signed = channelPostCodec.encode({ fields, signature: await pia.sign("cello-channel-post", channelPostBytes(fields)) });
   const params = { agent: toB64(pia.id), channel: toB64(channelId), post: signed, title: toB64(title), body: toB64(body) };
   const once = await raw.call("channel.post", params) as { ack: unknown };
   const twice = await raw.call("channel.post", params) as { ack: unknown };
@@ -437,7 +437,7 @@ test("a hostile server: an old post re-issued under a new number, a changed body
   const reissue = async (position: number): Promise<void> => {
     const { fields, bytes: postBytes } = channelPostCodec.decode(stored.post);
     const ackFields = { serverId: server.id, channelId: fields.channelId, position, postHash: postHash(postBytes), time: Date.now() };
-    const ack = channelPostAckCodec.encode({ fields: ackFields, signature: await server.sign("cello-v2-channel-post-ack", channelPostAckBytes(ackFields)) });
+    const ack = channelPostAckCodec.encode({ fields: ackFields, signature: await server.sign("cello-channel-post-ack", channelPostAckBytes(ackFields)) });
     // The post keeps its own signature. Only a unique constraint stands in the way, and a hostile server drops it.
     sql(`ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_post_hash_key; ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_author_id_author_seq_key;
          INSERT INTO channel_posts (channel_id, position, post_hash, author_id, author_seq, generation, post, ack, title, body) VALUES (${bytea(channel)}, ${position}, ${bytea(Buffer.from(postHash(postBytes)).toString("hex"))}, ${bytea(stored.a)}, ${stored.author_seq}, ${stored.generation}, '${JSON.stringify(stored.post)}', '${JSON.stringify(ack)}', ${bytea(stored.t)}, ${bytea(stored.b)});

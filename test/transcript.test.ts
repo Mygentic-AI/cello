@@ -61,8 +61,8 @@ async function chainOf(c: Cast, lines: readonly Line[], sessionId = SESSION, sal
     const ack = { serverId: c.server.id, sessionId, position, entryHash: hash, root, time: 1_000 + position };
     held.push({
       position,
-      entry: signedEntry.encode({ fields, signature: await line.author.sign("cello-v2-entry", entryBytes(fields)) }),
-      ack: signedAck.encode({ fields: ack, signature: await c.server.sign("cello-v2-ack", ackBytes(ack)) }),
+      entry: signedEntry.encode({ fields, signature: await line.author.sign("cello-entry", entryBytes(fields)) }),
+      ack: signedAck.encode({ fields: ack, signature: await c.server.sign("cello-ack", ackBytes(ack)) }),
       body: line.body,
     });
   }
@@ -115,16 +115,16 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   const proof = ack === null || ack.throughPosition === n ? [] : consistencyPath(hashes.slice(0, Math.max(n, ack.throughPosition)), Math.min(n, ack.throughPosition));
   return {
     format: SEAL_RECORD_FORMAT,
-    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-v2-seal-certificate", sealCertificateBytes(fields)) }),
-    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-v2-seal-request", requestBytes) }),
-    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-v2-delivery-ack", deliveryAckBytes(ack)) }) : null,
+    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }),
+    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-seal-request", requestBytes) }),
+    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-delivery-ack", deliveryAckBytes(ack)) }) : null,
     deliveryProof: encodeHashes(proof),
     sealer: identityCodec.encode(c.alice.publicIdentity),
     counterparty: identityCodec.encode(c.bob.publicIdentity),
     sealKey: identityCodec.encode(c.sealKey.publicIdentity),
     server: identityCodec.encode(c.server.publicIdentity),
-    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
-    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-v2-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
+    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
+    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
   };
 }
 
@@ -263,7 +263,7 @@ test("each forgery fails by name", async () => {
   await expect("malformed_transcript", (f) => { f.entries[0]!.entry.bytes = "AA"; });
 
   // Things nobody can read.
-  await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["format"] = "cello-v2-seal"; });
+  await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["format"] = "cello-seal"; });
   await expect("malformed_transcript", (f) => { (f as unknown as Record<string, number>)["salt"] = 1; });
   await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["verified"] = "yes"; });
   assert.equal(await faultOf(c, "not an object"), "malformed_transcript");

@@ -39,7 +39,7 @@ test("garbage pushes from the server leave the daemon running", async () => {
         const answer = (result: unknown): void => socket.send(JSON.stringify({ v: PROTOCOL_VERSION, id: frame.id, ok: true, result }));
         if (frame.method === "hello") {
           const clientNonce = fromB64(frame.params["clientNonce"], "clientNonce");
-          const signature = await signer.sign("cello-v2-server-auth", serverAuthBytes({ serverId: signer.id, clientNonce, serverNonce }));
+          const signature = await signer.sign("cello-server-auth", serverAuthBytes({ serverId: signer.id, clientNonce, serverNonce }));
           answer({ server: identityCodec.encode(signer.publicIdentity), serverNonce: toB64(serverNonce), signature: signatureCodec.encode(signature) });
         } else if (frame.method === "auth") {
           authedAgent = Buffer.from(fromB64(frame.params["agentId"], "agentId")).toString("hex");

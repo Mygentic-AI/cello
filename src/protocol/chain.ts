@@ -106,8 +106,8 @@ export class ChainVerifier {
     const next = RunningMerkle.fromBytes(this.position, this.#merkle.toBytes());
     if (!equalBytes(ack.root, next.append(hash))) return "ack_wrong_root";
 
-    if (!(await verifySignature(author, "cello-v2-entry", bytes, signature))) return "bad_entry_signature";
-    if (!(await verifySignature(this.#parties.server, "cello-v2-ack", ackBytes, ackSignature))) return "bad_ack_signature";
+    if (!(await verifySignature(author, "cello-entry", bytes, signature))) return "bad_entry_signature";
+    if (!(await verifySignature(this.#parties.server, "cello-ack", ackBytes, ackSignature))) return "bad_ack_signature";
 
     this.adopt(fields, hash);
     return null;

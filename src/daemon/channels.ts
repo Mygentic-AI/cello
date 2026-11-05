@@ -453,7 +453,7 @@ export class Channels {
     const titleBlob = this.#seal(key, title);
     const bodyBlob = this.#seal(key, body);
     const fields: ChannelPostFields = { channelId: channel, generation, authorId: signer.id, authorSeq: seq, publishedAt: Date.now(), titleHash: hashBlob(titleBlob), bodyHash: hashBlob(bodyBlob) };
-    const signature = await signer.sign("cello-v2-channel-post", channelPostBytes(fields));
+    const signature = await signer.sign("cello-channel-post", channelPostBytes(fields));
     return JSON.stringify({ post: channelPostCodec.encode({ fields, signature }), title: toB64(titleBlob), body: toB64(bodyBlob) });
   }
 

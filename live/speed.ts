@@ -548,7 +548,7 @@ async function ciphertextStillOffered(home: Home, url: string, agentName: string
     const server = await connected;
     const clientNonce = new Uint8Array(randomBytes(32));
     const proof = agentAuthBytes({ serverId: server.id, agentId: signer.id, serverNonce: server.nonce, clientNonce });
-    await link.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await signer.sign("cello-v2-agent-auth", proof)) });
+    await link.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await signer.sign("cello-agent-auth", proof)) });
     let offered = 0;
     for (const hex of sessions) {
       let after = 0;
@@ -1047,10 +1047,10 @@ async function anatomy(): Promise<void> {
     for (let i = 0; i < times; i++) await work();
     return Number(((performance.now() - started) / times).toFixed(3));
   };
-  const signature = await signer.sign("cello-v2-entry", small);
+  const signature = await signer.sign("cello-entry", small);
   const primitives: Record<string, number> = {
-    signTwiceMs: await timed(() => signer.sign("cello-v2-entry", small)),
-    verifyTwiceMs: await timed(() => verifySignature(signer.publicIdentity, "cello-v2-entry", small, signature)),
+    signTwiceMs: await timed(() => signer.sign("cello-entry", small)),
+    verifyTwiceMs: await timed(() => verifySignature(signer.publicIdentity, "cello-entry", small, signature)),
   };
   const key = new Uint8Array(randomBytes(32));
   const salt = new Uint8Array(randomBytes(32));

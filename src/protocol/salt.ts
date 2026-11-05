@@ -7,7 +7,7 @@ export const SALT_CONTRIBUTION_BYTES = 32;
 export const SESSION_SALT_BYTES = 32;
 
 const ENC = new TextEncoder();
-const INFO_SESSION_SALT = ENC.encode("cello-v2/session/salt");
+const INFO_SESSION_SALT = ENC.encode("cello-session-salt");
 
 export function generateSaltContribution(): Uint8Array {
   return new Uint8Array(randomBytes(SALT_CONTRIBUTION_BYTES));

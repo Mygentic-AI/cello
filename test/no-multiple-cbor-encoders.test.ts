@@ -64,3 +64,9 @@ test("three hostile bytes are refused fast, and the array limit holds at its bou
   }
   assert.throws(() => decodeCbor(Buffer.from("9a00040000", "hex")));
 });
+
+test("no signature label, domain tag or format name says v2", () => {
+  for (const file of productionSources().filter((f) => f.includes("/protocol/"))) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /["'`]cello-v2/, relative(ROOT, file));
+  }
+});

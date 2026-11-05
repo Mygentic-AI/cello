@@ -8,7 +8,7 @@ import { type SealCheck, type SealFault, type SealRecord, type SealRecordOnWire,
 import { EntryKind, readBodyBytes, structureHash } from "./structures.ts";
 import { type WireSigned, fromB64, readInt, readObjectField, signedAck, signedEntry, toB64 } from "./wire.ts";
 
-export const TRANSCRIPT_FORMAT = "cello-v2-transcript";
+export const TRANSCRIPT_FORMAT = "cello-transcript";
 
 export interface TranscriptOnWire {
   format: typeof TRANSCRIPT_FORMAT;
