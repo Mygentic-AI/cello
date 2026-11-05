@@ -134,13 +134,14 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
   const sourceFiles = (readdirSync(join(repo, "src"), { recursive: true }) as string[]).filter((path) => path.endsWith(".ts"));
   const expected = [
     ...sourceFiles.map((path) => join("dist", path.replace(/\.ts$/, ".js"))),
+    ...sourceFiles.map((path) => join("dist", path.replace(/\.ts$/, ".d.ts"))),
     ".claude-plugin/marketplace.json",
     "README.md",
     "package.json",
     "plugins/cello-v2/.claude-plugin/plugin.json",
     "plugins/cello-v2/.mcp.json",
   ].sort();
-  assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file per source file, plus these");
+  assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file and its types per source file, plus these");
 
   const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { private?: boolean; engines?: { node?: string }; bin?: Record<string, string> };
   assert.equal(manifest.private, true, "nothing can publish this by accident");
