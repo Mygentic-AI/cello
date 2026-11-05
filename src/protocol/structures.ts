@@ -13,7 +13,8 @@ type Slot = "int" | "intOrNull" | "text" | "textOrNull" | number | "bytes";
 
 // Every structure here is a flat array, so this walks every item before cbor-x sees it. That decoder allocates an array's declared
 // length before reading it: measured, 8 KB of nested headers costs 1 GB. Floats and tags fail here too, so a signed number is never a float.
-function assertFlat(bytes: Uint8Array, arity: number): void {
+// Booleans are refused unless a format asks for them, and a null arity means any length: the caller checks each slot.
+export function assertFlat(bytes: Uint8Array, arity: number | null, options: { booleans?: boolean } = {}): void {
   const fail = (): never => { throw new RangeError("this isn't a flat CBOR array of the expected length"); };
   const head = (at: number): { major: number; value: number; next: number } => {
     const first = bytes[at] ?? fail();
@@ -28,10 +29,10 @@ function assertFlat(bytes: Uint8Array, arity: number): void {
     return { major, value, next: at + 1 + width };
   };
   const top = head(0);
-  if (top.major !== 4 || top.value !== arity) fail();
+  if (top.major !== 4 || (arity !== null && top.value !== arity)) fail();
   let at = top.next;
-  for (let i = 0; i < arity; i++) {
-    if (bytes[at] === 0xf6) { at += 1; continue; }
+  for (let i = 0; i < top.value; i++) {
+    if (bytes[at] === 0xf6 || (options.booleans && (bytes[at] === 0xf4 || bytes[at] === 0xf5))) { at += 1; continue; }
     const item = head(at);
     if (item.major === 0) at = item.next;
     else if (item.major === 2 || item.major === 3) at = item.next + item.value;

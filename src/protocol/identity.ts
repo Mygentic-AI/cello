@@ -47,6 +47,8 @@ export const CONTEXTS = [
   "cello-channel-member-key",
   "cello-channel-roster",
   "cello-channel-key-entry",
+  "cello-signal",
+  "cello-issuer-list",
 ] as const;
 
 export type SigningContext = (typeof CONTEXTS)[number];
@@ -72,7 +74,7 @@ export interface Signer {
   sign(context: SigningContext, bytes: Uint8Array): Promise<DualSignature>;
 }
 
-function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+export function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   if (!(CONTEXTS as readonly string[]).includes(context)) throw new Error(`unknown signing context: ${String(context)}`);
   const ctx = new TextEncoder().encode(context);
   const framed = new Uint8Array(ctx.length + 1 + bytes.length);

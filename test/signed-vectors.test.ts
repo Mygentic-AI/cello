@@ -1,7 +1,9 @@
 // Fails on any change to a signed byte. Tests that build and check with the same code can't see an encoder change, and records would stop verifying.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { SIGNED_SIGNAL_DOMAIN, TRUST_SIGNAL_DOMAIN, type TrustSignalEnvelope, checkSignal, decodeTrustSignalEnvelope, encodeTrustSignalEnvelope } from "../src/protocol/signal.ts";
 import { checkTranscript } from "../src/protocol/transcript.ts";
 import * as structures from "../src/protocol/structures.ts";
 import { PROTOCOL_VERSION, type WireSigned, signedEntry, toB64 } from "../src/protocol/wire.ts";
@@ -19,6 +21,8 @@ function readCbor(bytes: Buffer): unknown[] {
     const major = first >> 5;
     const info = first & 0x1f;
     if (first === 0xf6) return null;
+    if (first === 0xf4) return false;
+    if (first === 0xf5) return true;
     let value = BigInt(info);
     if (info >= 24) {
       const width = 2 ** (info - 24);
@@ -100,6 +104,36 @@ test("another structure's bytes can't pass as this one, even at the same shape",
   const b = structures.sealKeyBindingBytes({ serverId: new Uint8Array(32), sealKeyId: new Uint8Array(32) });
   assert.notDeepEqual(a, b, "these two were byte-identical under the old encoding");
   assert.throws(() => structures.greetingStructure.decode(b), structures.UnknownFormat);
+});
+
+interface SignalVector { inputs: Omit<TrustSignalEnvelope, "payload" | "signal_id" | "supersedes_hash"> & { payload: { hex: string }; signal_id: { hex: string }; supersedes_hash: { hex: string } | null }; expected_cbor_hex: string }
+const signalFormats = (file as unknown as { signal_format: { envelopes: Record<string, SignalVector>; signed_signal: { subject: string; now: number; expected_cbor_hex: string } } }).signal_format;
+const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
+
+test("a signal's bytes are pinned, and a reader without cbor-x gets every field back", () => {
+  assert.ok(Object.keys(signalFormats.envelopes).length >= 2);
+  for (const [name, vector] of Object.entries(signalFormats.envelopes)) {
+    const inputs = vector.inputs;
+    const envelope: TrustSignalEnvelope = { ...inputs, payload: fromHex(inputs.payload.hex), signal_id: fromHex(inputs.signal_id.hex), supersedes_hash: inputs.supersedes_hash === null ? null : fromHex(inputs.supersedes_hash.hex) };
+    assert.equal(Buffer.from(encodeTrustSignalEnvelope(envelope)).toString("hex"), vector.expected_cbor_hex, `${name} changed`);
+    assert.deepEqual(decodeTrustSignalEnvelope(fromHex(vector.expected_cbor_hex)), envelope, name);
+    assert.deepEqual(readCbor(Buffer.from(vector.expected_cbor_hex, "hex")), [
+      TRUST_SIGNAL_DOMAIN, inputs.subject_kind, inputs.subject, inputs.issuer_kind, inputs.issuer_pubkey, inputs.type, BigInt(inputs.schema_version), inputs.payload.hex, BigInt(inputs.issued_at),
+      inputs.expires_at === null ? null : BigInt(inputs.expires_at), inputs.supersedes_hash === null ? null : inputs.supersedes_hash.hex, inputs.same_operator, inputs.issuer_address, inputs.signal_id.hex,
+    ], `${name}, read without cbor-x`);
+  }
+  assert.ok(signalFormats.envelopes["uint64_times"]?.expected_cbor_hex.includes(`1b${(4_920_000_000).toString(16).padStart(16, "0")}`), "above 2^32 it's a uint64");
+});
+
+test("a signed signal made today still verifies, with its signatures outside what's hashed", async () => {
+  const vector = signalFormats.signed_signal;
+  const check = await checkSignal(fromHex(vector.expected_cbor_hex), { subject: vector.subject, now: vector.now });
+  assert.ok(check.ok, check.ok ? "" : check.message);
+  const [tag, envelope, ed, pq] = readCbor(Buffer.from(vector.expected_cbor_hex, "hex")) as [string, string, string, string];
+  assert.equal(tag, SIGNED_SIGNAL_DOMAIN);
+  assert.equal(ed.length, 128);
+  assert.equal(pq.length, 4840);
+  assert.equal(Buffer.from(check.signal.hash).toString("hex"), createHash("sha256").update(Buffer.from(envelope, "hex")).digest("hex"));
 });
 
 const kept = JSON.parse(readFileSync(new URL("vectors/record-format-1.json", import.meta.url), "utf8")) as { seal_key: string; transcript: { entries: { entry: WireSigned }[]; seal: { certificate: WireSigned } } };
