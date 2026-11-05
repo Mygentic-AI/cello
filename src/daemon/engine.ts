@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { refusedGuidance, sessionGuidance, unreadWarning } from "../guidance.ts";
+import { SIGNAL_ERROR, refusedGuidance, sessionGuidance, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -2003,7 +2003,7 @@ export class Engine {
     const rate = this.#rateFor(agent);
     const limited = rate?.peek(agent.hex);
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
-    if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
+    if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", SIGNAL_ERROR);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
     const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.

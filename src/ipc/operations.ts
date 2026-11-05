@@ -11,6 +11,8 @@ export interface Param {
   // Given by position on the command line, rather than as a --flag.
   positional?: boolean;
   allowed?: readonly string[];
+  // The daemon refuses without it, in words that say how to fix it. A schema's refusal wouldn't.
+  daemonEnforced?: boolean;
 }
 
 interface Definition {
@@ -355,7 +357,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [
       SESSION,
       { name: "text", kind: "string", required: true, positional: true, description: "The message. On the command line, - reads it from standard input, and -- before it allows text that starts with dashes." },
-      { name: "signal", kind: "string", required: true, allowed: ["over", "standby", "wrap"], description: "over: your turn is done. standby: you'll follow up, and est_minutes is required. wrap: your final message." },
+      { name: "signal", kind: "string", required: true, daemonEnforced: true, allowed: ["over", "standby", "wrap"], description: "REQUIRED. over: your turn is done. standby: you'll follow up, and est_minutes is required. wrap: your final message." },
       { name: "est_minutes", kind: "number", description: "With standby: minutes until your follow-up. If you haven't sent anything by then, both sides are told once." },
       { name: "notice", kind: "boolean", description: "Send even if something has arrived that you haven't read, for example to say stop. Your signature records what you had read." },
       { name: "allow_flagged", kind: "boolean", description: "Send a value a guard held. Needs a person at a terminal, unless the autonomous_override guard is on." },

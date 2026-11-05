@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 
+import { SIGNAL_ERROR } from "../src/guidance.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
@@ -121,9 +122,8 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   assert.deepEqual(read.messages.map((m) => [m.text, m.signal]), [[secret, "over"]]);
 
   // A missing signal or a blind reply is refused, and says what to do.
-  await assert.rejects(one.client.callTool({ name: "cello_send", arguments: { session_id: sessionId, text: "x" } }).then((r) => {
-    if (r.isError) throw new Error("refused");
-  }));
+  const noSignal = await one.tool("cello_send", { session_id: sessionId, text: "x" });
+  assert.deepEqual([noSignal["isError"], noSignal["error"], noSignal["message"]], [true, "missing_signal", SIGNAL_ERROR]);
   await two.tool("cello_send", { session_id: sessionId, text: "second", signal: "standby", est_minutes: 2 });
   await one.bell("message");
   const blind = await one.tool("cello_send", { session_id: sessionId, text: "blind", signal: "over" });
