@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { type WitnessedEntry, verifyTranscript } from "../src/protocol/chain.ts";
+import { ChainVerifier, type WitnessedEntry, verifyTranscript } from "../src/protocol/chain.ts";
 import { ZERO_HASH, toHex } from "../src/protocol/encode.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { EMPTY_ROOT, RunningMerkle, leafHash, nodeHash } from "../src/protocol/merkle.ts";
@@ -156,4 +156,28 @@ test("entries can't be re-witnessed on a second server, because each names the s
   }));
   const report = await verifyTranscript({ ...parties, server: hostile.publicIdentity }, items);
   assert.equal(report.fault, "entry_wrong_server");
+});
+
+// A hostile server re-acks a real signed entry: its own key, its own time. Only the signed window and the order stop it.
+async function reack(items: WitnessedEntry[], i: number, time: number): Promise<void> {
+  const item = items[i] as WitnessedEntry;
+  items[i] = await resignAsServer({ ...item, ack: { ...item.ack, time } });
+}
+
+test("a server can't witness a message after its author's window closed, or backdate to get under it", async () => {
+  assert.equal(await faultWhen(async (x) => { await reack(x, 2, 2_000_000_000_001); }), "entry_expired");
+  assert.equal(await faultWhen(async (x) => { await reack(x, 2, 1_001 - 1); }), "ack_time_backwards");
+  assert.equal(await faultWhen(async (x) => { await reack(x, 4, 2_000_000_000_000); }), undefined, "exactly at the window is still inside it");
+});
+
+test("nobody can write after closing", async () => {
+  const closing = fixture.items[4] as WitnessedEntry;
+  const author = toHex(closing.fields.authorId) === toHex(fixture.alice.id) ? fixture.alice : fixture.bob;
+  const verifier = new ChainVerifier(parties);
+  for (const item of fixture.items) assert.equal(await verifier.check(item), null);
+  const fields = { ...closing.fields, kind: EntryKind.message, authorSeq: closing.fields.authorSeq + 1, prevOwnHash: closing.ack.entryHash, readPosition: 5, readRoot: verifier.root };
+  const hash = entryHash(fields);
+  const ack = { ...closing.ack, position: 6, entryHash: hash, root: hash };
+  const after = { fields, signature: await author.sign("cello-entry", entryBytes(fields)), bytes: entryBytes(fields), ack, ackBytes: ackBytes(ack), ackSignature: await fixture.server.sign("cello-ack", ackBytes(ack)) };
+  assert.equal(await verifier.check(after), "entry_after_close");
 });

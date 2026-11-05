@@ -1242,7 +1242,7 @@ export class Engine {
     });
     for (const row of this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position)) {
       const entry = signedEntry.decode(JSON.parse(row.entry));
-      verifier.adopt(entry.fields, structureHash(entry.bytes));
+      verifier.adopt(entry.fields, structureHash(entry.bytes), signedAck.decode(JSON.parse(row.ack as string)).fields.time);
     }
     this.#verifiers.set(key, verifier);
     return verifier;

@@ -26,6 +26,8 @@ export type TranscriptFault =
   | "truncated_chain"
   | "entries_beyond_seal"
   | "root_mismatch"
+  | "seal_predates_entries"
+  | "closed_without_close_entries"
   | "delivery_ack_off_chain"
   | "bad_salt"
   | "reveal_out_of_range"
@@ -37,6 +39,9 @@ const CHAIN_FAULT_MESSAGES: Record<ChainFault, string> = {
   entry_wrong_server: "An entry's author named a different server to witness it",
   not_participant: "An entry's author isn't one of this session's two parties",
   bad_entry_signature: "An entry wasn't signed by its author",
+  entry_after_close: "An author's entry comes after that author had closed",
+  entry_expired: "An entry was witnessed after its author's send window had passed, which a server must refuse",
+  ack_time_backwards: "An entry's witnessed time is earlier than the entry before it",
   bad_author_seq: "An author's entries are out of sequence, so one is missing or repeated",
   bad_author_chain: "An entry doesn't follow its author's previous entry",
   read_beyond_tip: "An entry claims to have read further than the chain had reached",
@@ -200,6 +205,13 @@ async function findTranscript(decoded: DecodedTranscript, record: SealRecord): P
     if (fault) return fail(fault, `${CHAIN_FAULT_MESSAGES[fault]}: at place ${verifier.position + 1} in the file`);
   }
   if (!equalBytes(verifier.root, cert.root)) return fail("root_mismatch", "This chain's root isn't the one the seal covers, so the seal is for a different history");
+
+  if (cert.time < verifier.lastAckTime) return fail("seal_predates_entries", "This seal is dated before the messages it covers");
+  // Past N, the close entries aren't in this file. Where the file reaches the tip, closed can be checked for free.
+  const bothClosed = verifier.hasClosed(cert.sealerId) && verifier.hasClosed(cert.counterpartyId);
+  if ((cert.closed === 1 && cert.tip === n && !bothClosed) || (cert.closed === 0 && bothClosed)) {
+    return fail("closed_without_close_entries", `This seal says closed=${cert.closed}, and the entries say otherwise`);
+  }
 
   const ack = record.deliveryAck?.fields;
   if (ack && ack.throughPosition <= n) {

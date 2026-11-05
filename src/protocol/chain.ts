@@ -3,7 +3,7 @@
 import { ZERO_HASH, equalBytes, toHex } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, identityId, verifySignature } from "./identity.ts";
 import { EMPTY_ROOT, RunningMerkle } from "./merkle.ts";
-import { type AckFields, type EntryFields, structureHash } from "./structures.ts";
+import { type AckFields, type EntryFields, EntryKind, structureHash } from "./structures.ts";
 import type { Signed } from "./wire.ts";
 
 export interface WitnessedEntry {
@@ -25,6 +25,9 @@ export type ChainFault =
   | "entry_wrong_server"
   | "not_participant"
   | "bad_entry_signature"
+  | "entry_after_close"
+  | "entry_expired"
+  | "ack_time_backwards"
   | "bad_author_seq"
   | "bad_author_chain"
   | "read_beyond_tip"
@@ -62,6 +65,8 @@ export class ChainVerifier {
   readonly #authors = new Map<string, AuthorHead>();
   readonly #roots: Uint8Array[] = [EMPTY_ROOT];
   readonly #merkle = new RunningMerkle();
+  readonly #closed = new Set<string>();
+  #lastAckTime = 0;
 
   constructor(parties: ChainParties) {
     this.#parties = parties;
@@ -75,6 +80,14 @@ export class ChainVerifier {
 
   get root(): Uint8Array {
     return this.#merkle.root();
+  }
+
+  get lastAckTime(): number {
+    return this.#lastAckTime;
+  }
+
+  hasClosed(authorId: Uint8Array): boolean {
+    return this.#closed.has(toHex(authorId));
   }
 
   rootAt(position: number): Uint8Array | undefined {
@@ -99,6 +112,12 @@ export class ChainVerifier {
     if (!equalBytes(ack.sessionId, this.#parties.sessionId)) return "ack_wrong_session";
     if (!equalBytes(ack.entryHash, hash)) return "ack_wrong_entry";
 
+    if (this.#closed.has(toHex(fields.authorId))) return "entry_after_close";
+    // The author's not_after binds the server, whose ack carries the time. A refused message can't be landed later,
+    // and the time can't be pushed back to get under it, because acks never go backwards.
+    if (ack.time < this.#lastAckTime) return "ack_time_backwards";
+    if (ack.time > fields.notAfter) return "entry_expired";
+
     const chainFault = authorChainFault(fields, this.#authors.get(toHex(fields.authorId)));
     if (chainFault) return chainFault;
     if (fields.readPosition > this.position) return "read_beyond_tip";
@@ -111,15 +130,17 @@ export class ChainVerifier {
     if (!(await verifySignature(author, "cello-entry", bytes, signature))) return "bad_entry_signature";
     if (!(await verifySignature(this.#parties.server, "cello-ack", ackBytes, ackSignature))) return "bad_ack_signature";
 
-    this.adopt(fields, hash);
+    this.adopt(fields, hash, ack.time);
     return null;
   }
 
   // Rebuilds state from rows this machine already checked and stored, without repeating the signature work.
-  adopt(fields: EntryFields, hash: Uint8Array): void {
+  adopt(fields: EntryFields, hash: Uint8Array, ackTime: number): void {
     const root = this.#merkle.append(hash);
     this.#roots.push(root);
     this.#authors.set(toHex(fields.authorId), { seq: fields.authorSeq, hash });
+    if (fields.kind === EntryKind.close) this.#closed.add(toHex(fields.authorId));
+    this.#lastAckTime = ackTime;
   }
 }
 
