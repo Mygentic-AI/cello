@@ -89,6 +89,7 @@ export class StandInIssuer {
       res.end(JSON.stringify(body));
     };
     const refuse = (status: number, reason: string, guidance: string): void => send(status, { ok: false, reason, guidance });
+    if (req.method === "GET") return refuse(404, "not_found", "No list here.");
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
     const route = (req.url ?? "").replace("/api/issuer/", "");

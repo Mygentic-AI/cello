@@ -61,6 +61,8 @@ export function agentRequestToWire(bytes: Uint8Array, signature: DualSignature, 
 
 // Long enough for the issuer's own call to the waitlist, and short enough that a person isn't left waiting on nothing.
 const ISSUER_WAIT_MS = 30_000;
+// A newer list is optional, so a slow issuer costs a person only this long.
+const LIST_WAIT_MS = 5_000;
 const MAX_ANSWER_BYTES = 8_000_000;
 const REQUEST_LIFETIME_SECONDS = 120;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -136,7 +138,7 @@ export class IssuerClient {
   // Null when this issuer serves none. A list proves itself by its root signatures, so who hands it over doesn't matter.
   async latestIssuerList(): Promise<Uint8Array | null> {
     try {
-      const response = await this.#fetch(new URL("/api/issuer/list", this.#base), { redirect: "error", signal: AbortSignal.timeout(ISSUER_WAIT_MS) });
+      const response = await this.#fetch(new URL("/api/issuer/list", this.#base), { redirect: "error", signal: AbortSignal.timeout(LIST_WAIT_MS) });
       if (!response.ok) return null;
       const answer = JSON.parse(await response.text()) as { list?: unknown };
       return typeof answer.list === "string" ? new Uint8Array(Buffer.from(answer.list, "base64")) : null;
