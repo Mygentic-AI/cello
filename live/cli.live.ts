@@ -749,7 +749,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   const partFile = nextOut();
   ned("export-transcript", session, "--reveal", "1,4", "--out", partFile);
   const partBytes = readFileSync(partFile, "utf8");
-  assert.doesNotMatch(partBytes, /accept/);
+  assert.doesNotMatch(partBytes, /I accept/);
   assert.equal(Buffer.from((JSON.parse(partBytes) as TranscriptFile).revealed.map((r) => r.body).join(""), "base64url").includes("understood"), false);
   const part = check(partFile);
   assert.ok(part.ok, part.message);

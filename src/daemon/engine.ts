@@ -1149,7 +1149,7 @@ export class Engine {
     const agent = this.#agents.get(agentHex);
     if (!agent) return;
     this.#nextChannelJob -= 1;
-    const bytes = new TextEncoder().encode(JSON.stringify({ text: new TextDecoder().decode(row.body as Uint8Array) }));
+    const bytes = bodyBytes({ n: new Uint8Array(0), text: new TextDecoder().decode(row.body as Uint8Array), signal: null, est_minutes: null });
     const sessionHex = toHex(row.session_id);
     this.#screening.add({
       entryId: this.#nextChannelJob, agentHex, sessionHex: `greeting:${sessionHex}`, position: 0, senderHex: toHex(row.sender_id), bytes: bytes.length, arrived: Date.now(),

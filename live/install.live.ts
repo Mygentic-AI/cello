@@ -139,6 +139,7 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
     "package.json",
     "plugins/cello-v2/.claude-plugin/plugin.json",
     "plugins/cello-v2/.mcp.json",
+    "plugins/cello-v2/skills/cello/SKILL.md",
   ].sort();
   assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file per source file, plus these");
 

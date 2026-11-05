@@ -425,7 +425,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "evidence",
     group: "Sessions",
-    summary: "Show what this agent kept as proof in a session: refused messages, and anything a server signed twice.",
+    summary: "Show the proof kept in a session: refused messages, and acks signed twice.",
     scoped: true,
     acts: false,
     description: "Show what this agent kept as proof in a session: messages whose text isn't what their author signed, a refused message a server landed anyway, and two different acks the server signed at one position. Each is exactly as received, so someone else can check it with public keys.",
