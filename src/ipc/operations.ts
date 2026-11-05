@@ -326,7 +326,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Take hold of an agent, for this and later commands.",
     scoped: true,
     acts: true,
-    description: "Take hold of an agent, so that you act as it and are told what happens for it. One caller holds an agent at a time.",
+    description: "Take hold of an agent, so that you act as it and are told what happens for it. One caller holds an agent at a time. NOTE: attending an agent SUPPRESSES its away message — a counterparty gets your live reply instead, no matter how away.* is configured. Release it with cello_stop_using_agent.",
     params: [],
   },
   {
