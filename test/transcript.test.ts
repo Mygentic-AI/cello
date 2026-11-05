@@ -1,7 +1,7 @@
 // A forged file or a wrong statement wouldn't show against honest parties, so these lie on purpose.
 // Some forgeries use stolen server and seal keys: the worst case for what the file claims is bound.
 import { type Body, bodyBytes, readBodyBytes } from "../src/protocol/structures.ts";
-import { editSigned } from "./edit-signed.ts";
+import { editSigned, sessionOpening } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -92,7 +92,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   const ackThrough = options.ackThrough === undefined ? n : options.ackThrough;
   const hashes = chain.hashes;
   const acked = options.ackedHashes ?? hashes;
-  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, throughPosition: n, root: rootOf(hashes, n) };
+  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, counterpartyId: c.bob.id, throughPosition: n, root: rootOf(hashes, n) };
   const requestBytes = sealRequestBytes(request);
   const ack = ackThrough === null ? null : { serverId: c.server.id, sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0 };
   const fields: SealCertificateFields = {
@@ -118,6 +118,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
     format: SEAL_RECORD_FORMAT,
     certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }),
     request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-seal-request", requestBytes) }),
+    ...(await sessionOpening(c.server, sessionId, c.alice, c.bob)),
     deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-delivery-ack", deliveryAckBytes(ack)) }) : null,
     deliveryProof: encodeHashes(proof),
     sealer: identityCodec.encode(c.alice.publicIdentity),

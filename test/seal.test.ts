@@ -1,6 +1,6 @@
 // A bad proof or a forged number wouldn't show against an honest server, so these lie on purpose.
 // The forgeries are signed with a key the reader trusts: that's a stolen seal key, the worst case for M.
-import { editSigned } from "./edit-signed.ts";
+import { editSigned, sessionOpening } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ZERO_HASH, toHex } from "../src/protocol/encode.ts";
@@ -8,7 +8,7 @@ import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/prot
 import { RunningMerkle, consistencyPath, verifyConsistency, verifyInclusion } from "../src/protocol/merkle.ts";
 import { type SealRecordOnWire, SEAL_RECORD_FORMAT, checkSealRecord, describeSeal, encodeHashes, sealId } from "../src/protocol/seal.ts";
 import { type SealCertificateFields, deliveryAckBytes, sealCertificateBytes, sealKeyBindingBytes, sealLogHeadBytes, sealRequestBytes, structureHash } from "../src/protocol/structures.ts";
-import { identityCodec, signatureCodec, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest } from "../src/protocol/wire.ts";
+import { identityCodec, signatureCodec, signedAccept, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest } from "../src/protocol/wire.ts";
 
 const hashOf = (n: number): Uint8Array => structureHash(Uint8Array.of(n));
 
@@ -60,7 +60,7 @@ function rootOf(size: number): Uint8Array {
 }
 
 async function record(c: Cast, n: number, ackThrough: number | null, certificate: Partial<SealCertificateFields> = {}): Promise<SealRecordOnWire> {
-  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, throughPosition: n, root: certificate.root ?? rootOf(n) };
+  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, counterpartyId: c.bob.id, throughPosition: n, root: certificate.root ?? rootOf(n) };
   const requestBytes = sealRequestBytes(request);
   const ack = ackThrough === null ? null : { serverId: c.server.id, sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: hashes[ackThrough - 1] as Uint8Array, root: rootOf(ackThrough), screenedThrough: Math.max(0, ackThrough - 1) };
   const fields: SealCertificateFields = {
@@ -88,6 +88,7 @@ async function record(c: Cast, n: number, ackThrough: number | null, certificate
     format: SEAL_RECORD_FORMAT,
     certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }),
     request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-seal-request", requestBytes) }),
+    ...(await sessionOpening(c.server, sessionId, c.alice, c.bob)),
     deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-delivery-ack", deliveryAckBytes(ack)) }) : null,
     deliveryProof: encodeHashes(proof),
     sealer: identityCodec.encode(c.alice.publicIdentity),
@@ -169,6 +170,11 @@ test("every part of a record is checked", async () => {
     ["a swapped sealer", (r) => { r.sealer = identityCodec.encode(c.bob.publicIdentity); }, "wrong_sealer_keys"],
     ["a swapped counterparty", (r) => { r.counterparty = identityCodec.encode(c.alice.publicIdentity); }, "wrong_counterparty_keys"],
     ["a request not signed by the sealer", async (r) => { const fields = signedSealRequest.decode(r.request).fields; r.request = signedSealRequest.encode({ fields, signature: await c.bob.sign("cello-seal-request", sealRequestBytes(fields)) }); }, "bad_seal_request"],
+    // Attack: a real seal request, and a certificate naming someone else. The request says who it was with.
+    ["a counterparty the sealer never named", async (r) => { const fields = { ...signedSealCertificate.decode(r.certificate).fields, counterpartyId: c.sealKey.id }; r.counterparty = identityCodec.encode(c.sealKey.publicIdentity); r.certificate = signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }); }, "seal_request_mismatch"],
+    ["an accept the callee never signed", async (r) => { const a = signedAccept.decode(r.accept); r.accept = signedAccept.encode({ fields: a.fields, signature: await c.alice.sign("cello-session-accept", a.bytes) }); }, "no_session_agreement"],
+    ["an accept of a different offer", async (r) => { r.accept = (await sessionOpening(c.server, new Uint8Array(16).fill(9), c.alice, c.bob)).accept; }, "no_session_agreement"],
+    ["an opening between other parties", async (r) => { const other = await sessionOpening(c.server, sessionId, c.alice, c.sealKey); r.offer = other.offer; r.accept = other.accept; }, "no_session_agreement"],
     ["a removed ack", (r) => { r.deliveryAck = null; }, "delivery_ack_mismatch"],
     ["a broken link", (r) => { r.deliveryProof = encodeHashes([hashOf(1)]); }, "delivery_proof_failed"],
     ["a changed log head", (r) => { editSigned(r.log.head, signedSealLogHead, (s) => { s.size = 2; }); }, "bad_log_head_signature"],
@@ -176,6 +182,17 @@ test("every part of a record is checked", async () => {
     ["a broken log path", (r) => { r.log.path = encodeHashes([hashOf(1)]); }, "log_proof_failed"],
     ["a wrong format", (r) => { (r as { format: string }).format = "x"; }, "malformed_record"],
   ];
+  // A sealer who signs a request naming a stranger, with a server to match, still has no accept from that stranger.
+  edits.push(["a colluding sealer naming a stranger", async (r) => {
+    const req = { ...signedSealRequest.decode(r.request).fields, counterpartyId: c.sealKey.id };
+    const reqBytes = sealRequestBytes(req);
+    r.request = signedSealRequest.encode({ fields: req, signature: await c.alice.sign("cello-seal-request", reqBytes) });
+    const fields = { ...signedSealCertificate.decode(r.certificate).fields, counterpartyId: c.sealKey.id, requestHash: structureHash(reqBytes), receivedThrough: 0, deliveryAckHash: ZERO_HASH };
+    r.counterparty = identityCodec.encode(c.sealKey.publicIdentity);
+    r.deliveryAck = null;
+    r.deliveryProof = [];
+    r.certificate = signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) });
+  }, "no_session_agreement"]);
   for (const [name, edit, fault] of edits) {
     const raw = await record(c, 5, 3);
     await edit(raw);

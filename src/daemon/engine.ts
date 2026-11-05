@@ -2036,7 +2036,7 @@ export class Engine {
     if (!this.#isOnline(agent, route)) return notSealedYet(route.link.problem ?? "this agent isn't online yet");
     const root = this.#verifier(agent, local).rootAt(through);
     if (!root) throw new Error(`no root is held for position ${through}`);
-    const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
+    const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, counterpartyId: local.counterparty_id, throughPosition: through, root };
     const signature = await agent.signer.sign("cello-seal-request", sealRequestBytes(fields));
     let answer: { record: SealRecordOnWire; logProof: string[] | null };
     try {

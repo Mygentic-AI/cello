@@ -5,14 +5,16 @@ import { ZERO_HASH, equalBytes, toHex } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, identityId, verifySignature } from "./identity.ts";
 import { verifyConsistency, verifyInclusion } from "./merkle.ts";
 import {
+  type AcceptFields,
   type DeliveryAckFields,
+  type OfferFields,
   type SealCertificateFields,
   type SealLogHeadFields,
   type SealRequestFields,
   sealKeyBindingBytes,
   structureHash,
 } from "./structures.ts";
-import { type Signed, type WireSigned, WireError, fromB64, identityCodec, readInt, readObjectField, signatureCodec, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "./wire.ts";
+import { type Signed, type WireSigned, WireError, fromB64, identityCodec, readInt, readObjectField, signatureCodec, signedAccept, signedDeliveryAck, signedOffer, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "./wire.ts";
 
 export const SEAL_RECORD_FORMAT = "cello-seal";
 
@@ -20,6 +22,10 @@ export interface SealRecordOnWire {
   format: typeof SEAL_RECORD_FORMAT;
   certificate: WireSigned;
   request: WireSigned;
+  // How the session began: the caller's offer and the callee's signed accept. They hold only public keys, ciphertext and hashes,
+  // and they prove the named counterparty really joined this session.
+  offer: WireSigned;
+  accept: WireSigned;
   // Null when the counterparty has acknowledged nothing.
   deliveryAck: WireSigned | null;
   // Links the root the counterparty signed to the sealed root. Empty when the two are the same position.
@@ -35,6 +41,8 @@ export interface SealRecordOnWire {
 export interface SealRecord {
   certificate: Signed<SealCertificateFields>;
   request: Signed<SealRequestFields>;
+  offer: Signed<OfferFields>;
+  accept: Signed<AcceptFields>;
   deliveryAck: Signed<DeliveryAckFields> | null;
   deliveryProof: Uint8Array[];
   sealer: PublicIdentity;
@@ -62,6 +70,8 @@ export function decodeSealRecord(raw: unknown): SealRecord {
   return {
     certificate: signedSealCertificate.decode(value["certificate"], "certificate"),
     request: signedSealRequest.decode(value["request"], "request"),
+    offer: signedOffer.decode(value["offer"], "offer"),
+    accept: signedAccept.decode(value["accept"], "accept"),
     deliveryAck: value["deliveryAck"] === null ? null : signedDeliveryAck.decode(value["deliveryAck"], "deliveryAck"),
     deliveryProof: readHashes(value["deliveryProof"], "deliveryProof"),
     sealer: identityCodec.decode(value["sealer"], "sealer"),
@@ -88,6 +98,7 @@ export type SealFault =
   | "bad_seal_request"
   | "seal_request_mismatch"
   | "wrong_counterparty_keys"
+  | "no_session_agreement"
   | "impossible_positions"
   | "delivery_ack_mismatch"
   | "bad_delivery_ack_signature"
@@ -105,6 +116,7 @@ const FAULT_MESSAGES: Record<SealFault, string> = {
   bad_seal_request: "The sealer didn't sign the request behind this certificate",
   seal_request_mismatch: "The certificate differs from what the sealer asked to have sealed",
   wrong_counterparty_keys: "The counterparty's keys in this record don't match the certificate",
+  no_session_agreement: "The named counterparty's signed accept of this session isn't in this record, so nothing shows they ever joined it",
   impossible_positions: "The certificate's positions can't be true together",
   delivery_ack_mismatch: "The number received doesn't match the counterparty's signed delivery ack",
   bad_delivery_ack_signature: "The counterparty didn't sign this delivery ack",
@@ -133,6 +145,7 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   if (!(await verifySignature(record.sealer, "cello-seal-request", requestBytes, record.request.signature))) return fail("bad_seal_request");
   const asked = equalBytes(structureHash(requestBytes), cert.requestHash)
     && equalBytes(request.sealerId, cert.sealerId)
+    && equalBytes(request.counterpartyId, cert.counterpartyId)
     && equalBytes(request.sessionId, cert.sessionId)
     && equalBytes(request.serverId, cert.serverId)
     && equalBytes(request.root, cert.root)
@@ -141,6 +154,8 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
 
   if (!equalBytes(identityId(record.counterparty), cert.counterpartyId)) return fail("wrong_counterparty_keys");
   if (equalBytes(cert.sealerId, cert.counterpartyId)) return fail("impossible_positions", "the sealer and the counterparty are the same");
+  const agreementFault = await findAgreementFault(record);
+  if (agreementFault) return agreementFault;
   const positionsPossible = cert.throughPosition >= 1 && cert.tip >= cert.throughPosition && cert.receivedThrough <= cert.throughPosition;
   if (!positionsPossible) return fail("impossible_positions");
 
@@ -150,6 +165,20 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   const head = record.log.head;
   if (!equalBytes(head.fields.sealKeyId, sealKeyId) || !(await verifySignature(record.sealKey, "cello-seal-log-head", head.bytes, head.signature))) return fail("bad_log_head_signature");
   if (!verifyInclusion(sealId(record.certificate.bytes), record.log.index, head.fields.size, head.fields.root, record.log.path)) return fail("log_proof_failed");
+  return null;
+}
+
+// The two parties' own signatures on how this session began, so a counterparty named in a seal is one who took part.
+async function findAgreementFault(record: SealRecord): Promise<SealCheck | null> {
+  const cert = record.certificate.fields;
+  const offer = record.offer.fields;
+  const sealerCalled = equalBytes(offer.callerId, cert.sealerId) && equalBytes(offer.calleeId, cert.counterpartyId);
+  const sealerAnswered = equalBytes(offer.callerId, cert.counterpartyId) && equalBytes(offer.calleeId, cert.sealerId);
+  if ((!sealerCalled && !sealerAnswered) || !equalBytes(offer.sessionId, cert.sessionId) || !equalBytes(offer.serverId, cert.serverId)) return fail("no_session_agreement", "the offer is for another session or other parties");
+  if (!equalBytes(record.accept.fields.offerHash, structureHash(record.offer.bytes))) return fail("no_session_agreement", "the accept answers a different offer");
+  const [caller, callee] = sealerCalled ? [record.sealer, record.counterparty] : [record.counterparty, record.sealer];
+  if (!(await verifySignature(caller, "cello-session-offer", record.offer.bytes, record.offer.signature))) return fail("no_session_agreement", "the caller didn't sign the offer");
+  if (!(await verifySignature(callee, "cello-session-accept", record.accept.bytes, record.accept.signature))) return fail("no_session_agreement", "the callee didn't sign the accept");
   return null;
 }
 

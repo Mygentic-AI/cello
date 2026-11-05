@@ -286,11 +286,13 @@ export interface SealRequestFields {
   serverId: Uint8Array;
   sessionId: Uint8Array;
   sealerId: Uint8Array;
+  // Who the sealer says this was with. Without it, a server can name anyone it likes in the certificate.
+  counterpartyId: Uint8Array;
   throughPosition: number;
   root: Uint8Array;
 }
 
-export const sealRequestStructure = structure<SealRequestFields>("cello-seal-request-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, sealerId: HASH_BYTES, throughPosition: "int", root: HASH_BYTES });
+export const sealRequestStructure = structure<SealRequestFields>("cello-seal-request-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, sealerId: HASH_BYTES, counterpartyId: HASH_BYTES, throughPosition: "int", root: HASH_BYTES });
 export const sealRequestBytes = (fields: SealRequestFields): Uint8Array => sealRequestStructure.encode(fields);
 
 // Signed by the seal key, and neutral on agreement: it attests that this conversation took place.
