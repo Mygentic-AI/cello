@@ -171,7 +171,9 @@ export class Wallet {
       throw err;
     }
     const checked = await verifyIssuerList(new Uint8Array(Buffer.from(stored, "base64")), roots, nowSec());
-    return checked.ok ? checked.list : null;
+    if (checked.ok) return checked.list;
+    logEvent("issuer.list.rejected", { fault: checked.fault, message: checked.message });
+    return null;
   }
 
   // Needs two of the three root signatures, so it needs no person: it can only add what the roots said.

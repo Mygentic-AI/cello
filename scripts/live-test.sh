@@ -14,8 +14,21 @@ fi
 cd "$server_dir"
 # A test's own cleanup is skipped when it times out or is force-exited, which left daemons running. Only this run's
 # daemons carry these ports in their command, so a person's real daemon is never touched. The install test's runs as .js.
-trap 'pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "daemon/main.js ws://127.0.0.1:${CELLO_INSTALL_PORT:-18095}/v1" 2>/dev/null || true; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+held=""
+trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "daemon/main.js ws://127.0.0.1:${CELLO_INSTALL_PORT:-18095}/v1" 2>/dev/null || true; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+# Builds running at once have frozen this machine, so only the build takes the shared lock.
+lock="$HOME/cello-v2-live-runs/.heavy-lock"
+mkdir -p "$HOME/cello-v2-live-runs"
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+  waited=$((waited + 5))
+  if [ "$waited" -ge 900 ]; then echo "Another run held the build lock for 15 minutes, so this one stopped." >&2; exit 75; fi
+  sleep 5
+done
+held=1
 docker compose up -d --build --wait server || { docker compose logs migrate postgres 2>&1 | tail -30; exit 1; }
+rmdir "$lock"
+held=""
 cd "$here"
 # One file at a time, because the daemon test stops the shared server on purpose. The install test starts its own server.
 CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-concurrency=1 --test-force-exit --test-timeout=240000 ${CELLO_LIVE_FILES:-live/daemon.live.ts live/mcp.live.ts live/cli.live.ts live/screening.live.ts live/governance.live.ts live/away.live.ts live/install.live.ts}
