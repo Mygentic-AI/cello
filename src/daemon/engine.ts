@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { SIGNAL_ERROR, refusedGuidance, sessionGuidance, unreadWarning } from "../guidance.ts";
+import { SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, refusedGuidance, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -1931,7 +1931,7 @@ export class Engine {
   async #append(agent: AgentContext, local: SessionRow, kind: EntryFields["kind"], mode: EntryFields["mode"], body: Body): Promise<AttemptOutcome> {
     const encodedBody = bodyBytes(body);
     const ciphertext = sealSessionContent(local.session_key as Uint8Array, encodedBody);
-    if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", `this message is ${encodedBody.length} bytes, over the limit of about 1 MB`);
+    if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", tooLargeMessage(encodedBody.length));
 
     const verifier = this.#verifier(agent, local);
     const firstUnread = this.#store.firstUnreadToAnswer(agent.signer.id, local.session_id, local.read_position);
@@ -2011,8 +2011,8 @@ export class Engine {
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
       this.#refuseIfStopped(agent, this.#urlOf(local));
-      if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
-      if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
+      if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", local.state === "closed" ? SESSION_CLOSED_GUIDANCE : `this session is ${local.state}`);
+      if (local.own_closed) throw new LocalError("session_closed", `you've already closed this session. ${SESSION_CLOSED_GUIDANCE}`);
       if (local.frozen === 1) throw new LocalError("session_frozen", "the server signed two different things at one position, so this session takes nothing more from you. You can still read and seal it. The proof is kept: see evidence.");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
       if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {

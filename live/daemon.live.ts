@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
+import { OVER_GUIDANCE, SESSION_CLOSED_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
@@ -216,10 +216,15 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.deepEqual([closedA.closed, closedA.state], [true, "active"]);
   await alice.bell("peer_closed");
   assert.deepEqual((await alice.receive()).messages.map((m) => m.closed_their_side), [true]);
-  await assert.rejects(bob.send(sessionId, "after my close", "over"), { code: "session_closed" });
+  await assert.rejects(bob.send(sessionId, "after my close", "over"), (err: Error & { code: string }) => err.code === "session_closed" && err.message.includes(SESSION_CLOSED_GUIDANCE));
   const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
+
+  // Too big says to split it, and the session carries on.
+  const roomy = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await assert.rejects(alice.send(roomy.session_id, "words ".repeat(250_000), "over"), (err: Error & { code: string }) => err.code === "too_large" && /Split it.*Nothing was sent/.test(err.message));
 
   // A notice skips the read-first rule, so it can answer something older. The reader is told.
   const crossing = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
@@ -245,7 +250,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await alice.bell("peer_closed");
   const closedRead = await alice.call("close_session", { session_id: second.session_id }) as { unread_warning?: string };
   assert.equal(closedRead.unread_warning, undefined, "their close alone isn't an unread message");
-  await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed" });
+  await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed", message: SESSION_CLOSED_GUIDANCE });
 
   // The encrypted text is gone from the server, and the chain is kept.
   await until("the encrypted text to go", () => sql(`SELECT count(*) FROM entries WHERE session_id = '\\x${sessionId}' AND ciphertext IS NOT NULL`) === "0");
