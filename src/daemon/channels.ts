@@ -17,6 +17,7 @@ import {
   namedToPost,
   openKeyEntry,
   openSealed,
+  channelMemberKeyCodec,
   postHash,
   readInfo,
   readMemberKey,
@@ -519,7 +520,7 @@ export class Channels {
       throw new LocalError(err.code, err.message);
     }
     const ack = await readPostAck(answer.ack, this.#host.serverIdentity(), channel);
-    const posted = channelPostCodec.decode((JSON.parse(wire) as { post: unknown }).post).fields;
+    const posted = channelPostCodec.decode((JSON.parse(wire) as { post: unknown }).post).bytes;
     if (!ack || !equalBytes(ack.postHash, postHash(posted))) throw new LocalError("bad_ack", "the server's answer to this post doesn't verify, so it can't be counted as posted. It'll be tried again.");
     this.#db.landLog(signer.id, channel, seq, ack.position, JSON.stringify(answer.ack));
     return { posted: true, position: ack.position, your_number: seq };
@@ -759,9 +760,9 @@ export class Channels {
     }
     const checked = await checkPost(item, author, channel);
     if (typeof checked === "string") return refuse(`it isn't signed by its author, or its text isn't what was signed (${checked})`);
-    const { fields } = checked;
+    const { fields, bytes: postBytes } = checked;
     const ack = await readPostAck(item.ack, this.#host.serverIdentity(), channel);
-    if (!ack || ack.position !== item.position || !equalBytes(ack.postHash, postHash(fields))) return refuse("the server's number on it doesn't verify");
+    if (!ack || ack.position !== item.position || !equalBytes(ack.postHash, postHash(postBytes))) return refuse("the server's number on it doesn't verify");
     if (!namedToPost(info, record.fields.adminId, fields.authorId)) return refuse("this channel's signed settings don't let its author post");
     const isPrivate = record.fields.visibility === ChannelVisibility.private;
     if (isPrivate && !this.#db.wasOnRoster(agent, channel, fields.generation, fields.authorId)) return refuse("its author isn't on the channel's signed roster for that key generation");
@@ -1072,5 +1073,5 @@ export class Channels {
 }
 
 function identityIdOf(member: RosterMemberFile): Uint8Array {
-  return fromB64(member.memberKey.fields["agentId"], "agentId");
+  return channelMemberKeyCodec.decode(member.memberKey).fields.agentId;
 }

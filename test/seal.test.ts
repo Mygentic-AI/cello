@@ -1,5 +1,6 @@
 // A bad proof or a forged number wouldn't show against an honest server, so these lie on purpose.
 // The forgeries are signed with a key the reader trusts: that's a stolen seal key, the worst case for M.
+import { editSigned } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ZERO_HASH, toHex } from "../src/protocol/encode.ts";
@@ -78,7 +79,7 @@ async function record(c: Cast, n: number, ackThrough: number | null, certificate
     time: 1000,
     ...certificate,
   };
-  const leaf = sealId(fields);
+  const leaf = sealId(sealCertificateBytes(fields));
   const log = new RunningMerkle();
   const path = log.nextLeafPath();
   const head = { sealKeyId: c.sealKey.id, size: 1, root: log.append(leaf), time: 1000 };
@@ -157,11 +158,11 @@ test("a stolen seal key still can't raise M", async () => {
 test("every part of a record is checked", async () => {
   const c = await cast();
   const edits: [string, (r: SealRecordOnWire) => Promise<void> | void, string][] = [
-    ["a changed N", (r) => { (r.certificate.fields as { throughPosition: number }).throughPosition = 4; }, "bad_seal_signature"],
-    ["a changed M", (r) => { (r.certificate.fields as { receivedThrough: number }).receivedThrough = 5; }, "bad_seal_signature"],
-    ["a changed tip", (r) => { (r.certificate.fields as { tip: number }).tip = 5; }, "bad_seal_signature"],
-    ["a changed closed", (r) => { (r.certificate.fields as { closed: number }).closed = 1; }, "bad_seal_signature"],
-    ["a closed that isn't 0 or 1", (r) => { (r.certificate.fields as { closed: number }).closed = 2; }, "malformed_record"],
+    ["a changed N", (r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.throughPosition = 4; }); }, "bad_seal_signature"],
+    ["a changed M", (r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.receivedThrough = 5; }); }, "bad_seal_signature"],
+    ["a changed tip", (r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.tip = 5; }); }, "bad_seal_signature"],
+    ["a changed closed", (r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.closed = 1; }); }, "bad_seal_signature"],
+    ["a closed that isn't 0 or 1", (r) => { r.certificate.bytes = "AA"; }, "malformed_record"],
     ["a swapped seal key", (r) => { r.sealKey = identityCodec.encode(c.alice.publicIdentity); }, "wrong_seal_key"],
     ["another server's name", (r) => { r.server = identityCodec.encode(c.alice.publicIdentity); }, "bad_seal_key_binding"],
     ["a wrong binding", async (r) => { r.sealKeyBinding = signatureCodec.encode(await c.alice.sign("cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))); }, "bad_seal_key_binding"],
@@ -170,7 +171,7 @@ test("every part of a record is checked", async () => {
     ["a request not signed by the sealer", async (r) => { const fields = signedSealRequest.decode(r.request).fields; r.request = signedSealRequest.encode({ fields, signature: await c.bob.sign("cello-v2-seal-request", sealRequestBytes(fields)) }); }, "bad_seal_request"],
     ["a removed ack", (r) => { r.deliveryAck = null; }, "delivery_ack_mismatch"],
     ["a broken link", (r) => { r.deliveryProof = encodeHashes([hashOf(1)]); }, "delivery_proof_failed"],
-    ["a changed log head", (r) => { (r.log.head.fields as { size: number }).size = 2; }, "bad_log_head_signature"],
+    ["a changed log head", (r) => { editSigned(r.log.head, signedSealLogHead, (s) => { s.size = 2; }); }, "bad_log_head_signature"],
     ["a wrong log index", (r) => { r.log.index = 5; }, "log_proof_failed"],
     ["a broken log path", (r) => { r.log.path = encodeHashes([hashOf(1)]); }, "log_proof_failed"],
     ["a wrong format", (r) => { (r as { format: string }).format = "x"; }, "malformed_record"],

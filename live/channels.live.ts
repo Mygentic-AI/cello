@@ -1,5 +1,7 @@
 // Channels with real processes: a real server, three daemons in their own homes, and a bare socket playing the attacker.
 // The hostile cases work on the real database as its owner, and with the server's real signing key. Run it with scripts/live-channels.sh.
+import { channelInfoCodec, channelMemberKeyCodec } from "../src/protocol/channel.ts";
+import type { WireSigned } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -433,12 +435,12 @@ test("a hostile server: an old post re-issued under a new number, a changed body
   const server = await signerFromSeeds({ ed: fromB64(keyFile.ed, "ed"), pq: fromB64(keyFile.pq, "pq") });
   const stored = JSON.parse(sql(`SELECT row_to_json(p) FROM (SELECT post, encode(post_hash, 'hex') AS h, encode(title, 'hex') AS t, encode(body, 'hex') AS b, encode(author_id, 'hex') AS a, author_seq, generation FROM channel_posts WHERE channel_id = ${bytea(channel)} AND position = 1) p`)) as { post: never; t: string; b: string; a: string; author_seq: number; generation: number };
   const reissue = async (position: number): Promise<void> => {
-    const fields = channelPostCodec.decode(stored.post).fields;
-    const ackFields = { serverId: server.id, channelId: fields.channelId, position, postHash: postHash(fields), time: Date.now() };
+    const { fields, bytes: postBytes } = channelPostCodec.decode(stored.post);
+    const ackFields = { serverId: server.id, channelId: fields.channelId, position, postHash: postHash(postBytes), time: Date.now() };
     const ack = channelPostAckCodec.encode({ fields: ackFields, signature: await server.sign("cello-v2-channel-post-ack", channelPostAckBytes(ackFields)) });
     // The post keeps its own signature. Only a unique constraint stands in the way, and a hostile server drops it.
     sql(`ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_post_hash_key; ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_author_id_author_seq_key;
-         INSERT INTO channel_posts (channel_id, position, post_hash, author_id, author_seq, generation, post, ack, title, body) VALUES (${bytea(channel)}, ${position}, ${bytea(Buffer.from(postHash(fields)).toString("hex"))}, ${bytea(stored.a)}, ${stored.author_seq}, ${stored.generation}, '${JSON.stringify(stored.post)}', '${JSON.stringify(ack)}', ${bytea(stored.t)}, ${bytea(stored.b)});
+         INSERT INTO channel_posts (channel_id, position, post_hash, author_id, author_seq, generation, post, ack, title, body) VALUES (${bytea(channel)}, ${position}, ${bytea(Buffer.from(postHash(postBytes)).toString("hex"))}, ${bytea(stored.a)}, ${stored.author_seq}, ${stored.generation}, '${JSON.stringify(stored.post)}', '${JSON.stringify(ack)}', ${bytea(stored.t)}, ${bytea(stored.b)});
          UPDATE channels SET tip = ${position} WHERE channel_id = ${bytea(channel)}`);
   };
   await reissue(2);
@@ -510,7 +512,7 @@ test("eject: the next read is refused, a new key starts, and a member offline ac
   const member = await signMemberKey(temp, new Uint8Array(Buffer.from(channel, "hex")), { x25519Public: keys.x25519.getPublicKey(secret), mlKemPublic: (await mlKemKeypairFromSeed(mlKemGenerateSeed())).publicKey }, Date.now());
   const info = await raw.call("channel.get", { agent: toB64(temp.id), channel: channelBytes }) as { info: { fields: { x25519Public: string; mlKemPublic: string } } };
   const { sealTo } = await import("../src/protocol/channel.ts");
-  const request = await sealTo({ x25519Public: fromB64(info.info.fields.x25519Public, "x"), mlKemPublic: fromB64(info.info.fields.mlKemPublic, "m") }, new TextEncoder().encode(JSON.stringify({ ...member, note: "" })));
+  const request = await sealTo({ x25519Public: channelInfoCodec.decode(info.info).fields.x25519Public, mlKemPublic: channelInfoCodec.decode(info.info).fields.mlKemPublic }, new TextEncoder().encode(JSON.stringify({ ...member, note: "" })));
   await raw.call("channel.join", { agent: toB64(temp.id), channel: channelBytes, request });
   const tempHex = Buffer.from(temp.id).toString("hex");
   ok("ada", "channel-approve", channel, tempHex);
@@ -526,8 +528,8 @@ test("eject: the next read is refused, a new key starts, and a member offline ac
   // A member who left can come back, with the admin's say-so, and the roster drops them meanwhile.
   ok("cyd", "channel-leave", channel);
   await until("Cyd off the roster", () => {
-    const roster = JSON.parse(sql(`SELECT roster FROM channel_rosters WHERE channel_id = ${bytea(channel)} ORDER BY revision DESC LIMIT 1`)) as { members: { memberKey: { fields: { agentId: string } } }[] };
-    return !roster.members.some((m) => Buffer.from(m.memberKey.fields.agentId, "base64url").toString("hex") === ids.cyd);
+    const roster = JSON.parse(sql(`SELECT roster FROM channel_rosters WHERE channel_id = ${bytea(channel)} ORDER BY revision DESC LIMIT 1`)) as { members: { memberKey: WireSigned }[] };
+    return !roster.members.some((m) => Buffer.from(channelMemberKeyCodec.decode(m.memberKey).fields.agentId).toString("hex") === ids.cyd);
   });
   assert.equal(ok("cyd", "channel-join", channel)["state"], "waiting");
   ok("ada", "channel-refuse", channel, ids.cyd);

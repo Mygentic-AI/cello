@@ -1,7 +1,7 @@
 // An agent's status: the rules for changing it, and the check a later reader runs on its log.
 import { ZERO_HASH, equalBytes } from "./encode.ts";
 import { type PublicIdentity, identityId, verifySignature } from "./identity.ts";
-import { AgentStatus, StatusIssuer, StatusReason, type StatusStatementFields, statusStatementBytes, statusWitnessBytes, structureHash } from "./structures.ts";
+import { AgentStatus, StatusIssuer, StatusReason, type StatusStatementFields, structureHash } from "./structures.ts";
 import { type WireSigned, identityCodec, signedStatusStatement, signedStatusWitness } from "./wire.ts";
 
 export const STATUS_DOMAIN = "cello-v2-agent-status";
@@ -62,7 +62,7 @@ export async function checkStatusLog(records: readonly StatusRecordOnWire[], age
     const witness = signedStatusWitness.decode(raw.witness, "witness");
     const keys = identityCodec.decode(raw.issuerKeys, "issuerKeys");
     const f = statement.fields;
-    const bytes = statusStatementBytes(f);
+    const { bytes } = statement;
     if (!equalBytes(f.agentId, agentId) || !equalBytes(witness.fields.agentId, agentId)) return fail("it's about another agent");
     if (!equalBytes(identityId(keys), f.issuerId)) return fail("the keys carried aren't the issuer's");
     if (f.issuer === StatusIssuer.agent && !equalBytes(f.issuerId, agentId)) return fail("it says the agent signed it, and names other keys");
@@ -70,7 +70,7 @@ export async function checkStatusLog(records: readonly StatusRecordOnWire[], age
     if (!(await verifySignature(keys, STATUS_DOMAIN, bytes, statement.signature))) return fail("the statement's signature doesn't verify");
     const w = witness.fields;
     if (!equalBytes(w.serverId, serverId) || w.seq !== seq || !equalBytes(w.prevHash, prev) || !equalBytes(w.statementHash, structureHash(bytes))) return fail("the log's links don't hold");
-    const witnessBytes = statusWitnessBytes(w);
+    const witnessBytes = witness.bytes;
     if (!(await verifySignature(server, STATUS_WITNESS_DOMAIN, witnessBytes, witness.signature))) return fail("the server's signature doesn't verify");
     prev = structureHash(witnessBytes);
     log.push({ seq, status: statusName(f.status), reason: reasonName(f.reason), issuer: issuerName(f.issuer), issuer_id: Buffer.from(f.issuerId).toString("hex"), issued_at: new Date(f.issuedAt).toISOString(), witnessed_at: new Date(w.time).toISOString() });

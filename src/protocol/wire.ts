@@ -1,10 +1,10 @@
 // How signed things travel: JSON frames over WebSockets, with bytes as base64url.
-// Nothing signed depends on this encoding, so it can change without touching a signature.
+// Nothing signed depends on this envelope: signed things travel as the exact CBOR bytes that were signed, in a base64url string.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
-import { PROTOCOL_VERSION } from "./structures.ts";
-import type { AcceptFields, AckFields, AssignmentFields, ConfirmFields, DeliveryAckFields, EntryFields, GreetingFields, OfferFields, RefuseFields, SealCertificateFields, SealLogHeadFields, SealRequestFields, StatusStatementFields, StatusWitnessFields } from "./structures.ts";
+import { UnknownFormat, type Structure, acceptStructure, ackStructure, assignmentStructure, confirmStructure, deliveryAckStructure, entryStructure, greetingStructure, offerStructure, refuseStructure, sealCertificateStructure, sealLogHeadStructure, sealRequestStructure, statusStatementStructure, statusWitnessStructure } from "./structures.ts";
 
-export { PROTOCOL_VERSION };
+// The version of these frames. It's no part of any signed record: those carry their own format in their tag.
+export const PROTOCOL_VERSION = 1;
 
 export const MAX_CIPHERTEXT_BYTES = 1_100_000;
 export const MAX_FRAME_BYTES = 2_000_000;
@@ -126,68 +126,36 @@ export function codec<T>(shape: Record<keyof T & string, FieldKind>): Codec<T> {
 export const identityCodec = codec<PublicIdentity>({ ed: "bytes", pq: "bytes" });
 export const signatureCodec = codec<DualSignature>({ ed: "bytes", pq: "bytes" });
 
-export const entryCodec = codec<Omit<EntryFields, "kind" | "mode"> & { kind: number; mode: number }>({
-  sessionId: "bytes",
-  authorId: "bytes",
-  authorSeq: "int",
-  prevOwnHash: "bytes",
-  readPosition: "int",
-  readRoot: "bytes",
-  kind: "int",
-  mode: "int",
-  contentHash: "bytes",
-  ciphertextHash: "bytes",
-  notAfter: "int",
-}) as Codec<EntryFields>;
-
-
-
-export const ackCodec = codec<AckFields>({ serverId: "bytes", sessionId: "bytes", position: "int", entryHash: "bytes", root: "bytes", time: "int" });
-export const deliveryAckCodec = codec<DeliveryAckFields>({ sessionId: "bytes", readerId: "bytes", throughPosition: "int", entryHash: "bytes", root: "bytes", screenedThrough: "int" });
-export const offerCodec = codec<OfferFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", x25519Public: "bytes", mlKemPublic: "bytes", expiresAt: "int" });
-export const acceptCodec = codec<AcceptFields>({ offerHash: "bytes", x25519Public: "bytes", mlKemCiphertext: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
-export const confirmCodec = codec<ConfirmFields>({ acceptHash: "bytes", sealedSalt: "bytes", sealedName: "bytes" });
-export const refuseCodec = codec<RefuseFields>({ offerHash: "bytes", mlKemCiphertext: "bytes", sealedReason: "bytes" });
-export const greetingCodec = codec<GreetingFields>({ offerHash: "bytes", sealedText: "bytes" });
-export const assignmentCodec = codec<AssignmentFields>({ serverId: "bytes", sessionId: "bytes", callerId: "bytes", calleeId: "bytes", confirmHash: "bytes", time: "int" });
-export const sealRequestCodec = codec<SealRequestFields>({ serverId: "bytes", sessionId: "bytes", sealerId: "bytes", throughPosition: "int", root: "bytes" });
-export const sealCertificateCodec = codec<SealCertificateFields>({
-  sealKeyId: "bytes",
-  serverId: "bytes",
-  sessionId: "bytes",
-  sealerId: "bytes",
-  counterpartyId: "bytes",
-  requestHash: "bytes",
-  root: "bytes",
-  throughPosition: "int",
-  tip: "int",
-  closed: "int",
-  receivedThrough: "int",
-  deliveryAckHash: "bytes",
-  time: "int",
-});
-export const statusStatementCodec = codec<StatusStatementFields>({ agentId: "bytes", status: "int", reason: "int", issuer: "int", issuerId: "bytes", issuedAt: "int" } as never) as Codec<StatusStatementFields>;
-export const statusWitnessCodec = codec<StatusWitnessFields>({ serverId: "bytes", agentId: "bytes", seq: "int", prevHash: "bytes", statementHash: "bytes", time: "int" });
-export const sealLogHeadCodec = codec<SealLogHeadFields>({ sealKeyId: "bytes", size: "int", root: "bytes", time: "int" });
-
 export interface Signed<T> {
   fields: T;
   signature: DualSignature;
-}
-
-export function signedCodec<T>(inner: Codec<T>): { encode(value: Signed<T>): WireSigned; decode(value: unknown, name?: string): Signed<T> } {
-  return {
-    encode: (value) => ({ fields: inner.encode(value.fields), signature: signatureCodec.encode(value.signature) }),
-    decode(value, name = "frame") {
-      const raw = readObject(value, name);
-      return { fields: inner.decode(raw["fields"], `${name}.fields`), signature: signatureCodec.decode(raw["signature"], `${name}.signature`) };
-    },
-  };
+  // The exact bytes the signature covers. For anything from outside, these are the bytes as received, and a verifier checks over them.
+  bytes: Uint8Array;
 }
 
 export interface WireSigned {
-  fields: Record<string, string | number>;
+  bytes: string;
   signature: Record<string, string | number>;
+}
+
+export function readStructure<T>(structure: Structure<T>, bytes: Uint8Array, name: string): T {
+  try {
+    return structure.decode(bytes);
+  } catch (err: unknown) {
+    if (err instanceof UnknownFormat) throw new WireError("unsupported_version", `${name}: ${err.message}`);
+    throw new WireError("bad_request", `${name}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function signedCodec<T>(structure: Structure<T>): { encode(value: { fields: T; signature: DualSignature; bytes?: Uint8Array }): WireSigned; decode(value: unknown, name?: string): Signed<T> } {
+  return {
+    encode: (value) => ({ bytes: toB64(value.bytes ?? structure.encode(value.fields)), signature: signatureCodec.encode(value.signature) }),
+    decode(value, name = "frame") {
+      const raw = readObject(value, name);
+      const bytes = fromB64(raw["bytes"], `${name}.bytes`);
+      return { fields: readStructure(structure, bytes, name), signature: signatureCodec.decode(raw["signature"], `${name}.signature`), bytes };
+    },
+  };
 }
 
 // A landed entry as it travels. The ciphertext is absent once the reader has confirmed storing it,
@@ -198,20 +166,20 @@ export interface WitnessedOnWire {
   ciphertext: string | null;
 }
 
-export const signedEntry = signedCodec(entryCodec);
-export const signedAck = signedCodec(ackCodec);
-export const signedDeliveryAck = signedCodec(deliveryAckCodec);
-export const signedOffer = signedCodec(offerCodec);
-export const signedAccept = signedCodec(acceptCodec);
-export const signedConfirm = signedCodec(confirmCodec);
-export const signedRefuse = signedCodec(refuseCodec);
-export const signedGreeting = signedCodec(greetingCodec);
-export const signedAssignment = signedCodec(assignmentCodec);
-export const signedSealRequest = signedCodec(sealRequestCodec);
-export const signedSealCertificate = signedCodec(sealCertificateCodec);
-export const signedSealLogHead = signedCodec(sealLogHeadCodec);
-export const signedStatusStatement = signedCodec(statusStatementCodec);
-export const signedStatusWitness = signedCodec(statusWitnessCodec);
+export const signedEntry = signedCodec(entryStructure);
+export const signedAck = signedCodec(ackStructure);
+export const signedDeliveryAck = signedCodec(deliveryAckStructure);
+export const signedOffer = signedCodec(offerStructure);
+export const signedAccept = signedCodec(acceptStructure);
+export const signedConfirm = signedCodec(confirmStructure);
+export const signedRefuse = signedCodec(refuseStructure);
+export const signedGreeting = signedCodec(greetingStructure);
+export const signedAssignment = signedCodec(assignmentStructure);
+export const signedSealRequest = signedCodec(sealRequestStructure);
+export const signedSealCertificate = signedCodec(sealCertificateStructure);
+export const signedSealLogHead = signedCodec(sealLogHeadStructure);
+export const signedStatusStatement = signedCodec(statusStatementStructure);
+export const signedStatusWitness = signedCodec(statusWitnessStructure);
 
 // The longest away greeting a server carries or a caller opens: the longest text a setting allows, in the widest encoding.
 export const MAX_GREETING_BYTES = 400_100;

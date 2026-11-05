@@ -1,11 +1,11 @@
 // A provable transcript: a seal, the signed chain it covers, and the plaintext of the positions one party chose to show.
 // Anyone can check one with public keys only. It shows what was passed, never that it's true or agreed.
 // Bodies travel as their exact bytes, because the signed hash is over those bytes and JSON can't be re-encoded safely.
-import { type ChainFault, ChainVerifier, type WitnessedEntry } from "./chain.ts";
+import { type ChainFault, ChainVerifier, type WitnessedEntry, witnessed } from "./chain.ts";
 import { equalBytes, toHex } from "./encode.ts";
 import { SESSION_SALT_BYTES, saltedContentHash } from "./salt.ts";
 import { type SealCheck, type SealFault, type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, readableTime, sealId, sealSummary } from "./seal.ts";
-import { EntryKind, entryHash } from "./structures.ts";
+import { EntryKind, readBodyBytes, structureHash } from "./structures.ts";
 import { type WireSigned, fromB64, readInt, readObjectField, signedAck, signedEntry, toB64 } from "./wire.ts";
 
 export const TRANSCRIPT_FORMAT = "cello-v2-transcript";
@@ -33,7 +33,6 @@ export type TranscriptFault =
   | "body_does_not_match";
 
 const CHAIN_FAULT_MESSAGES: Record<ChainFault, string> = {
-  malformed_entry: "An entry can't be read",
   wrong_session: "An entry belongs to a different session from the one this seal covers",
   not_participant: "An entry's author isn't one of this session's two parties",
   bad_entry_signature: "An entry wasn't signed by its author",
@@ -86,7 +85,7 @@ function decodeTranscript(raw: unknown): DecodedTranscript {
       onlyKeys(fields, ["entry", "ack"], `entries[${i}]`);
       const entry = signedEntry.decode(fields["entry"], `entries[${i}].entry`);
       const ack = signedAck.decode(fields["ack"], `entries[${i}].ack`);
-      return { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };
+      return witnessed(entry, ack);
     }),
     salt: fromB64(value["salt"], "salt"),
     revealed: readList(value["revealed"], "revealed").map((item, i) => {
@@ -107,23 +106,12 @@ export interface ReadBody {
 }
 
 const RANDOM_VALUE_BYTES = 16;
-const BODY_SIGNALS: readonly (string | null)[] = ["over", "standby", "wrap", null];
 
-// Null for anything that isn't exactly what a CELLO client writes. Re-encoding must give the same bytes,
-// which rules out a repeated key: two parsers could otherwise show one signed body as two different texts.
+// Null for anything that isn't exactly what a CELLO client writes.
 export function readBody(bytes: Uint8Array): ReadBody | null {
-  try {
-    const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    const body = JSON.parse(decoded) as Record<string, unknown>;
-    if (typeof body !== "object" || body === null || Array.isArray(body) || JSON.stringify(body) !== decoded) return null;
-    const { n, text, signal = null, est_minutes: estMinutes = null } = body;
-    if (typeof text !== "string" || !BODY_SIGNALS.includes(signal as string | null)) return null;
-    if (estMinutes !== null && typeof estMinutes !== "number") return null;
-    const hasRandomValue = typeof n === "string" && /^[A-Za-z0-9_-]+$/.test(n) && Buffer.from(n, "base64url").length >= RANDOM_VALUE_BYTES;
-    return { text, signal: signal as string | null, estMinutes: estMinutes as number | null, hasRandomValue };
-  } catch {
-    return null;
-  }
+  const body = readBodyBytes(bytes);
+  if (!body) return null;
+  return { text: body.text, signal: body.signal, estMinutes: body.est_minutes, hasRandomValue: body.n.length >= RANDOM_VALUE_BYTES };
 }
 
 // "1-3, 5", so a statement stays readable however long the conversation.
@@ -214,7 +202,7 @@ async function findTranscript(decoded: DecodedTranscript, record: SealRecord): P
 
   const ack = record.deliveryAck?.fields;
   if (ack && ack.throughPosition <= n) {
-    const onChain = equalBytes(verifier.rootAt(ack.throughPosition) as Uint8Array, ack.root) && equalBytes(entryHash((items[ack.throughPosition - 1] as WitnessedEntry).fields), ack.entryHash);
+    const onChain = equalBytes(verifier.rootAt(ack.throughPosition) as Uint8Array, ack.root) && equalBytes(structureHash((items[ack.throughPosition - 1] as WitnessedEntry).bytes), ack.entryHash);
     if (!onChain) return fail("delivery_ack_off_chain", `What the counterparty signed at position ${ack.throughPosition} isn't this chain`);
   }
 
@@ -295,7 +283,7 @@ function parsePositions(text: string): [number, number][] | null {
 }
 
 function chooseSeal(seals: readonly SealRecordOnWire[], wanted: string | undefined): SealRecordOnWire | undefined {
-  if (wanted !== undefined) return seals.find((seal) => toHex(sealId(decodeSealRecord(seal).certificate.fields)) === wanted.toLowerCase());
+  if (wanted !== undefined) return seals.find((seal) => toHex(sealId(decodeSealRecord(seal).certificate.bytes)) === wanted.toLowerCase());
   // Sorting one seal compares nothing, so this reads every one, and a corrupt one can't slip through unnoticed.
   for (const seal of seals) decodeSealRecord(seal);
   const reach = (seal: SealRecordOnWire): [number, number, number] => {
@@ -365,7 +353,7 @@ export async function buildTranscript(request: TranscriptRequest): Promise<Trans
     file,
     summary: {
       session_id: toHex(cert.sessionId),
-      seal_id: toHex(sealId(cert)),
+      seal_id: toHex(sealId(decodeSealRecord(seal).certificate.bytes)),
       seal_key: toHex(cert.sealKeyId),
       witnessed_through: n,
       received_through: cert.receivedThrough,

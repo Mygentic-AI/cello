@@ -1,5 +1,7 @@
 // A forged file or a wrong statement wouldn't show against honest parties, so these lie on purpose.
 // Some forgeries use stolen server and seal keys: the worst case for what the file claims is bound.
+import { type Body, bodyBytes, readBodyBytes } from "../src/protocol/structures.ts";
+import { editSigned } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -23,7 +25,7 @@ const SESSION = new Uint8Array(16).fill(7);
 const SALT = new Uint8Array(randomBytes(32));
 
 function bodyOf(text: string, signal: string | null = "over"): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ n: toB64(new Uint8Array(randomBytes(16))), text, signal, est_minutes: null }));
+  return bodyBytes({ n: new Uint8Array(randomBytes(16)), text, signal: signal as Body["signal"], est_minutes: null });
 }
 
 interface Line { author: Signer; body: Uint8Array; kind?: EntryKind }
@@ -109,7 +111,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   };
   const log = new RunningMerkle();
   const path = log.nextLeafPath();
-  const head = { sealKeyId: c.sealKey.id, size: 1, root: log.append(sealId(fields)), time: 5_000 };
+  const head = { sealKeyId: c.sealKey.id, size: 1, root: log.append(sealId(sealCertificateBytes(fields))), time: 5_000 };
   const proof = ack === null || ack.throughPosition === n ? [] : consistencyPath(hashes.slice(0, Math.max(n, ack.throughPosition)), Math.min(n, ack.throughPosition));
   return {
     format: SEAL_RECORD_FORMAT,
@@ -234,8 +236,8 @@ test("each forgery fails by name", async () => {
 
   // A body attributed to the wrong author, three ways. The file carries no author beside a body.
   await expect("malformed_transcript", (f) => { (f.revealed[0] as unknown as Record<string, string>)["author"] = "someone else"; });
-  await expect("ack_wrong_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.bob.id); });
-  await expect("not_participant", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.carol.id); });
+  await expect("ack_wrong_entry", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = c.bob.id; }); });
+  await expect("not_participant", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = c.carol.id; }); });
 
   // An entry from another session, with the same parties.
   const elsewhere = await chainOf(c, conversation(c), new Uint8Array(16).fill(8));
@@ -257,8 +259,8 @@ test("each forgery fails by name", async () => {
 
   // A wrong salt can't open anything. A bad seal is still caught by the seal's own checks.
   await expect("body_does_not_match", (f) => { f.salt = toB64(new Uint8Array(32).fill(1)); });
-  await expect("bad_seal_signature", (f) => { (f.seal.certificate.fields as Record<string, number>)["receivedThrough"] = 5; });
-  await expect("malformed_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, number>)["kind"] = 9; });
+  await expect("bad_seal_signature", (f) => { editSigned(f.seal.certificate, signedSealCertificate, (s) => { s.receivedThrough = 5; }); });
+  await expect("malformed_transcript", (f) => { f.entries[0]!.entry.bytes = "AA"; });
 
   // Things nobody can read.
   await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["format"] = "cello-v2-seal"; });
@@ -309,7 +311,7 @@ test("stolen server and seal keys can't touch what the counterparty signed, and 
 
   // Words with Bob's name on them need Bob's key, even above M.
   const asBob = structuredClone(await exported(rewritten, above));
-  (asBob.entries[4]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.bob.id);
+  editSigned(asBob.entries[4]!.entry, signedEntry, (s) => { s.authorId = c.bob.id; });
   assert.equal(await faultOf(c, asBob), "ack_wrong_entry");
 });
 
@@ -330,16 +332,16 @@ test("the salt: an exact length, and guesses about a hidden body need its random
   const hidden = chain.held[1] as HeldEntry;
   const target = signedEntry.decode(hidden.entry).fields.contentHash;
   const salt = fromB64(file.salt, "salt");
-  const guess = (n: string): Uint8Array => saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "I offer $1M", signal: "over", est_minutes: null })));
-  assert.notDeepEqual(guess(toB64(new Uint8Array(16))), target);
+  const guess = (n: Uint8Array): Uint8Array => saltedContentHash(salt, bodyBytes({ n, text: "I offer $1M", signal: "over", est_minutes: null }));
+  assert.notDeepEqual(guess(new Uint8Array(16)), target);
   // With the random value the same guess does match, which is what shows this test can fail.
-  assert.deepEqual(guess((JSON.parse(new TextDecoder().decode(hidden.body as Uint8Array)) as { n: string }).n), target);
+  assert.deepEqual(guess(readBodyBytes(hidden.body as Uint8Array)!.n), target);
 });
 
 test("a hidden body with no random value can be guessed at, so it's refused until it's shown", async () => {
   const c = await cast();
-  const noValue = new TextEncoder().encode(JSON.stringify({ text: "yes", signal: "over", est_minutes: null }));
-  const shortValue = new TextEncoder().encode(JSON.stringify({ n: "AAAA", text: "no", signal: "over", est_minutes: null }));
+  const noValue = bodyBytes({ n: new Uint8Array(0), text: "yes", signal: "over", est_minutes: null });
+  const shortValue = bodyBytes({ n: new Uint8Array(3), text: "no", signal: "over", est_minutes: null });
   const chain = await chainOf(c, [
     { author: c.alice, body: bodyOf("Do you accept?") },
     { author: c.bob, body: noValue },
@@ -358,7 +360,7 @@ test("a hidden body with no random value can be guessed at, so it's refused unti
 test("a body that can't be parsed is still a body its author signed, and it's shown as it is", async () => {
   const c = await cast();
   const repeated = new TextEncoder().encode(`{"n":"${toB64(new Uint8Array(16))}","text":"yes","text":"no","signal":"over"}`);
-  const closeWithWords = new TextEncoder().encode(JSON.stringify({ n: toB64(new Uint8Array(16)), text: "and another thing", signal: null, est_minutes: null }));
+  const closeWithWords = bodyBytes({ n: new Uint8Array(16), text: "and another thing", signal: null, est_minutes: null });
   const raw = [
     new Uint8Array([0xff, 0xfe, 0x00]),
     new TextEncoder().encode("not json"),
@@ -407,7 +409,7 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
     return built.file.entries.length;
   };
   assert.equal(await pick({ reveal: "1" }), 5);
-  const partId = Buffer.from(sealId(signedSealCertificate.decode(part.certificate).fields)).toString("hex");
+  const partId = Buffer.from(sealId(signedSealCertificate.decode(part.certificate).bytes)).toString("hex");
   assert.equal(await pick({ reveal: "1", sealId: partId }), 3);
   assert.equal(await pick({ all: true, sealId: partId }), 3, "all with a named seal means all that seal covers");
 

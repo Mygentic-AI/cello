@@ -7,6 +7,7 @@
 // It fails only on what the protocol must guarantee. How the agents behaved is for a person to read.
 //
 // Watch it with: tmux attach -r -t cello-live
+import { type Body, readBodyBytes } from "../src/protocol/structures.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -261,7 +262,7 @@ function conversation(alphaId: string): { position: number | null; author: strin
     assert.ok(alpha);
     return store.sessionsOf(alpha.agent_id).flatMap((s) => store.verifiedEntries(alpha.agent_id, s.session_id, s.verified_position)).map((row) => {
       const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
-      const body = JSON.parse(new TextDecoder().decode(row.body)) as { text: string; signal: string | null; est_minutes: number | null };
+      const body = readBodyBytes(row.body) as Body;
       return { position: row.position, author: toHex(fields.authorId) === alphaId ? "Alpha" : "Beta", kind: fields.kind === 2 ? "close" : "message", text: body.text, signal: body.signal, est_minutes: body.est_minutes };
     });
   } finally {

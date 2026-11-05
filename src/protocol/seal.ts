@@ -9,14 +9,10 @@ import {
   type SealCertificateFields,
   type SealLogHeadFields,
   type SealRequestFields,
-  deliveryAckBytes,
-  sealCertificateBytes,
   sealKeyBindingBytes,
-  sealLogHeadBytes,
-  sealRequestBytes,
   structureHash,
 } from "./structures.ts";
-import { type Signed, type WireSigned, fromB64, identityCodec, readInt, readObjectField, signatureCodec, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "./wire.ts";
+import { type Signed, type WireSigned, WireError, fromB64, identityCodec, readInt, readObjectField, signatureCodec, signedDeliveryAck, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "./wire.ts";
 
 export const SEAL_RECORD_FORMAT = "cello-v2-seal";
 
@@ -78,12 +74,13 @@ export function decodeSealRecord(raw: unknown): SealRecord {
 }
 
 // A seal's id is its place in the seal log: the hash of what the seal key signed.
-export function sealId(fields: SealCertificateFields): Uint8Array {
-  return structureHash(sealCertificateBytes(fields));
+export function sealId(certificateBytes: Uint8Array): Uint8Array {
+  return structureHash(certificateBytes);
 }
 
 export type SealFault =
   | "malformed_record"
+  | "unknown_format"
   | "wrong_seal_key"
   | "bad_seal_key_binding"
   | "bad_seal_signature"
@@ -100,6 +97,7 @@ export type SealFault =
 
 const FAULT_MESSAGES: Record<SealFault, string> = {
   malformed_record: "This file isn't a readable seal record",
+  unknown_format: "This record is in a format this reader doesn't know. That says nothing about whether it's genuine, so use a newer reader",
   wrong_seal_key: "This record's seal key isn't the one you named, so it says nothing about that server",
   bad_seal_key_binding: "The server's identity doesn't vouch for this seal key",
   bad_seal_signature: "The certificate has been changed, or wasn't signed by this seal key",
@@ -127,11 +125,11 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   if (!equalBytes(actualKeyId, sealKeyId) || !equalBytes(cert.sealKeyId, sealKeyId)) return fail("wrong_seal_key", `it carries ${toHex(actualKeyId)}`);
   if (!equalBytes(identityId(record.server), cert.serverId)) return fail("bad_seal_key_binding");
   if (!(await verifySignature(record.server, "cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: cert.serverId, sealKeyId }), record.sealKeyBinding))) return fail("bad_seal_key_binding");
-  if (!(await verifySignature(record.sealKey, "cello-v2-seal-certificate", sealCertificateBytes(cert), record.certificate.signature))) return fail("bad_seal_signature");
+  if (!(await verifySignature(record.sealKey, "cello-v2-seal-certificate", record.certificate.bytes, record.certificate.signature))) return fail("bad_seal_signature");
 
   if (!equalBytes(identityId(record.sealer), cert.sealerId)) return fail("wrong_sealer_keys");
   const request = record.request.fields;
-  const requestBytes = sealRequestBytes(request);
+  const requestBytes = record.request.bytes;
   if (!(await verifySignature(record.sealer, "cello-v2-seal-request", requestBytes, record.request.signature))) return fail("bad_seal_request");
   const asked = equalBytes(structureHash(requestBytes), cert.requestHash)
     && equalBytes(request.sealerId, cert.sealerId)
@@ -150,8 +148,8 @@ async function findFault(record: SealRecord, sealKeyId: Uint8Array): Promise<Sea
   if (deliveryFault) return deliveryFault;
 
   const head = record.log.head;
-  if (!equalBytes(head.fields.sealKeyId, sealKeyId) || !(await verifySignature(record.sealKey, "cello-v2-seal-log-head", sealLogHeadBytes(head.fields), head.signature))) return fail("bad_log_head_signature");
-  if (!verifyInclusion(sealId(cert), record.log.index, head.fields.size, head.fields.root, record.log.path)) return fail("log_proof_failed");
+  if (!equalBytes(head.fields.sealKeyId, sealKeyId) || !(await verifySignature(record.sealKey, "cello-v2-seal-log-head", head.bytes, head.signature))) return fail("bad_log_head_signature");
+  if (!verifyInclusion(sealId(record.certificate.bytes), record.log.index, head.fields.size, head.fields.root, record.log.path)) return fail("log_proof_failed");
   return null;
 }
 
@@ -164,7 +162,7 @@ async function findDeliveryFault(record: SealRecord): Promise<SealCheck | null> 
     return record.deliveryProof.length === 0 ? null : fail("delivery_proof_failed");
   }
   const ack = signed.fields;
-  const bytes = deliveryAckBytes(ack);
+  const { bytes } = signed;
   if (!equalBytes(structureHash(bytes), cert.deliveryAckHash)) return fail("delivery_ack_mismatch", "the certificate names a different ack");
   if (!equalBytes(ack.readerId, cert.counterpartyId) || !equalBytes(ack.sessionId, cert.sessionId)) return fail("delivery_ack_mismatch", "this ack isn't the counterparty's, for this session");
   if (Math.min(ack.throughPosition, cert.throughPosition) !== cert.receivedThrough || cert.receivedThrough < 1) {
@@ -182,15 +180,12 @@ export async function checkSealRecord(raw: unknown, sealKeyId: Uint8Array): Prom
   let record: SealRecord;
   try {
     record = decodeSealRecord(raw);
-    sealCertificateBytes(record.certificate.fields);
-    sealRequestBytes(record.request.fields);
-    if (record.deliveryAck) deliveryAckBytes(record.deliveryAck.fields);
-    sealLogHeadBytes(record.log.head.fields);
     identityId(record.sealKey);
     identityId(record.server);
     identityId(record.sealer);
     identityId(record.counterparty);
   } catch (err: unknown) {
+    if (err instanceof WireError && err.code === "unsupported_version") return fail("unknown_format", err.message);
     return fail("malformed_record", err instanceof Error ? err.message : String(err));
   }
   return (await findFault(record, sealKeyId)) ?? { ok: true, record };
@@ -226,7 +221,7 @@ export function readableTime(time: number): string | null {
 export function sealSummary(record: SealRecord): Record<string, unknown> {
   const cert = record.certificate.fields;
   return {
-    seal_id: toHex(sealId(cert)),
+    seal_id: toHex(sealId(record.certificate.bytes)),
     seal_key: toHex(cert.sealKeyId),
     session_id: toHex(cert.sessionId),
     sealer_id: toHex(cert.sealerId),

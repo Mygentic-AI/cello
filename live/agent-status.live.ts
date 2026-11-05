@@ -1,4 +1,5 @@
 // The kill switch, with real daemons on two real servers. Run it with scripts/status-test.sh, which cleans up whatever happens.
+import { signedAck } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -309,7 +310,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(logged?.verified, true);
   const began = logged?.log.at(-1);
   assert.deepEqual([began?.status, began?.issuer], ["suspended", "server"]);
-  const lastAck = Number(sql(A, `SELECT ack->'fields'->>'time' FROM entries WHERE session_id = '\\x${session}' ORDER BY position DESC LIMIT 1`));
+  const lastAck = signedAck.decode(JSON.parse(sql(A, `SELECT ack FROM entries WHERE session_id = '\\x${session}' ORDER BY position DESC LIMIT 1`))).fields.time;
   assert.ok(lastAck <= Date.parse(began?.witnessed_at as string), "the last message is dated after the suspension");
   report["suspension_witnessed_at"] = began?.witnessed_at;
   say("the signed log shows when it began, and all the witnessed messages are before it");

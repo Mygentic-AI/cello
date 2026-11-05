@@ -11,7 +11,8 @@ import {
   mlDsaGenerateSeed,
   mlDsaProviderFromSeed,
 } from "./ml-dsa.ts";
-import { encodeFields, exact } from "./encode.ts";
+import { exact } from "./encode.ts";
+import { identityBytes } from "./structures.ts";
 
 export const ED25519_SEED_BYTES = 32;
 export const ED25519_PUBLIC_KEY_BYTES = 32;
@@ -84,7 +85,7 @@ function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuff
 export function identityId(pub: PublicIdentity): Uint8Array {
   exact("Ed25519 public key", pub.ed, ED25519_PUBLIC_KEY_BYTES);
   exact("ML-DSA public key", pub.pq, ML_DSA_PUBLIC_KEY_BYTES);
-  return sha256(encodeFields([new TextEncoder().encode("cello-v2/identity"), pub.ed, pub.pq]));
+  return sha256(identityBytes(pub));
 }
 
 export function generateIdentitySeeds(): IdentitySeeds {

@@ -65,8 +65,10 @@ async function buildConversation(): Promise<Fixture> {
     items.push({
       fields,
       signature: await author.sign("cello-v2-entry", entryBytes(fields)),
+      bytes: entryBytes(fields),
       ack,
       ackSignature: await server.sign("cello-v2-ack", ackBytes(ack)),
+      ackBytes: ackBytes(ack),
     });
   }
   return { sessionId, alice, bob, server, items };
@@ -88,14 +90,15 @@ async function resignAsServer(item: WitnessedEntry): Promise<WitnessedEntry> {
 async function faultWhen(change: (items: WitnessedEntry[]) => Promise<void> | void): Promise<string | undefined> {
   const items = fixture.items.map((item) => ({ ...item }));
   await change(items);
-  return (await verifyTranscript(parties, items)).fault;
+  // What was changed in the fields is what the bytes now say, because the check runs over the bytes.
+  return (await verifyTranscript(parties, items.map((item) => ({ ...item, bytes: entryBytes(item.fields), ackBytes: ackBytes(item.ack) })))).fault;
 }
 
 test("each tampering is caught, and named", async () => {
   const at = (items: WitnessedEntry[], i: number): WitnessedEntry => items[i] as WitnessedEntry;
 
-  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, fields: { ...i.fields, contentHash: new Uint8Array(5) } }; }), "malformed_entry");
-  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, ack: { ...i.ack, position: -1 } }; }), "malformed_entry");
+  assert.throws(() => entryBytes({ ...at(fixture.items, 2).fields, contentHash: new Uint8Array(5) }), RangeError);
+  assert.throws(() => ackBytes({ ...at(fixture.items, 2).ack, position: -1 }), RangeError);
   assert.equal(await faultWhen((x) => { x.splice(1, 1); }), "bad_position");
   assert.equal(await faultWhen((x) => { const a = at(x, 1); x[1] = at(x, 2); x[2] = a; }), "bad_position");
 

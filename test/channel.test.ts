@@ -106,7 +106,7 @@ test("the roster keeps a server out: a swapped member key, an added member or a 
   assert.equal(await readRoster(await signRoster(channel, null, 1, [await signMemberKey(alice, (await newSigner()).id, aliceKeys, 1)]), channel.publicIdentity), null, "a member key signed for another channel");
 
   // Key order must not matter: the database reorders stored JSON.
-  const reordered = JSON.parse(JSON.stringify({ members: first.members.map((m) => ({ memberKey: { signature: m.memberKey.signature, fields: m.memberKey.fields }, identity: m.identity })), roster: first.roster })) as unknown;
+  const reordered = JSON.parse(JSON.stringify({ members: first.members.map((m) => ({ memberKey: { signature: m.memberKey.signature, bytes: m.memberKey.bytes }, identity: m.identity })), roster: first.roster })) as unknown;
   assert.ok(await readRoster(reordered, channel.publicIdentity), "the same roster with its JSON keys reordered");
 
   const second = await readRoster(await signRoster(channel, { revision: checked.fields.revision, hash: checked.hash }, 1, []), channel.publicIdentity);

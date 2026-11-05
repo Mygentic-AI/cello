@@ -3,17 +3,24 @@
 import { ZERO_HASH, equalBytes, toHex } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, identityId, verifySignature } from "./identity.ts";
 import { EMPTY_ROOT, RunningMerkle } from "./merkle.ts";
-import { type AckFields, type EntryFields, ackBytes, entryBytes, entryHash } from "./structures.ts";
+import { type AckFields, type EntryFields, structureHash } from "./structures.ts";
+import type { Signed } from "./wire.ts";
 
 export interface WitnessedEntry {
   fields: EntryFields;
   signature: DualSignature;
+  // The bytes each signature covers, as received. Verifying over these means a later encoder can't turn an old record into a forgery.
+  bytes: Uint8Array;
   ack: AckFields;
   ackSignature: DualSignature;
+  ackBytes: Uint8Array;
+}
+
+export function witnessed(entry: Signed<EntryFields>, ack: Signed<AckFields>): WitnessedEntry {
+  return { fields: entry.fields, signature: entry.signature, bytes: entry.bytes, ack: ack.fields, ackSignature: ack.signature, ackBytes: ack.bytes };
 }
 
 export type ChainFault =
-  | "malformed_entry"
   | "wrong_session"
   | "not_participant"
   | "bad_entry_signature"
@@ -78,20 +85,12 @@ export class ChainVerifier {
   }
 
   // Runs every check, and advances only if all of them pass.
-  // Records come from outside, so a row that can't be encoded is a fault to report, not an exception.
   async check(item: WitnessedEntry): Promise<ChainFault | null> {
-    try {
-      entryBytes(item.fields);
-      ackBytes(item.ack);
-    } catch (err: unknown) {
-      if (err instanceof RangeError) return "malformed_entry";
-      throw err;
-    }
-    const { fields, signature, ack, ackSignature } = item;
+    const { fields, signature, bytes, ack, ackSignature, ackBytes } = item;
     if (!equalBytes(fields.sessionId, this.#parties.sessionId)) return "wrong_session";
     const author = this.#keysById.get(toHex(fields.authorId));
     if (!author) return "not_participant";
-    const hash = entryHash(fields);
+    const hash = structureHash(bytes);
 
     if (ack.position !== this.position + 1) return "bad_position";
     if (!equalBytes(ack.serverId, this.#serverId)) return "ack_wrong_server";
@@ -107,15 +106,15 @@ export class ChainVerifier {
     const next = RunningMerkle.fromBytes(this.position, this.#merkle.toBytes());
     if (!equalBytes(ack.root, next.append(hash))) return "ack_wrong_root";
 
-    if (!(await verifySignature(author, "cello-v2-entry", entryBytes(fields), signature))) return "bad_entry_signature";
-    if (!(await verifySignature(this.#parties.server, "cello-v2-ack", ackBytes(ack), ackSignature))) return "bad_ack_signature";
+    if (!(await verifySignature(author, "cello-v2-entry", bytes, signature))) return "bad_entry_signature";
+    if (!(await verifySignature(this.#parties.server, "cello-v2-ack", ackBytes, ackSignature))) return "bad_ack_signature";
 
     this.adopt(fields, hash);
     return null;
   }
 
   // Rebuilds state from rows this machine already checked and stored, without repeating the signature work.
-  adopt(fields: EntryFields, hash: Uint8Array = entryHash(fields)): void {
+  adopt(fields: EntryFields, hash: Uint8Array): void {
     const root = this.#merkle.append(hash);
     this.#roots.push(root);
     this.#authors.set(toHex(fields.authorId), { seq: fields.authorSeq, hash });

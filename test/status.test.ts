@@ -66,9 +66,9 @@ test("a reader catches a log that's been altered, reordered or cut from the fron
   assert.equal((await checkStatusLog([first.record], agentId, portal.publicIdentity)).ok, false, "another server's");
 
   const decoded = signedStatusStatement.decode(first.record.statement);
-  const altered = { ...first.record, statement: signedStatusStatement.encode({ ...decoded, fields: { ...decoded.fields, status: AgentStatus.retired } }) };
+  const altered = { ...first.record, statement: signedStatusStatement.encode({ signature: decoded.signature, fields: { ...decoded.fields, status: AgentStatus.retired } }) };
   assert.equal((await checkStatusLog([altered], agentId, server.publicIdentity)).ok, false, "a statement changed after signing");
   const wrongTime = signedStatusWitness.decode(first.record.witness);
-  const backdated = { ...first.record, witness: signedStatusWitness.encode({ ...wrongTime, fields: { ...wrongTime.fields, time: 1 } }) };
+  const backdated = { ...first.record, witness: signedStatusWitness.encode({ signature: wrongTime.signature, fields: { ...wrongTime.fields, time: 1 } }) };
   assert.equal((await checkStatusLog([backdated], agentId, server.publicIdentity)).ok, false, "a witness time changed after signing");
 });

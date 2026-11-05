@@ -1,5 +1,9 @@
 // A whole conversation by command line alone, with no MCP anywhere: real processes, one call each.
 // This is what any agent that can run a shell command gets. Run it with scripts/live-test.sh.
+import { editSigned } from "../test/edit-signed.ts";
+import type { WireSigned } from "../src/protocol/wire.ts";
+import { signedEntry } from "../src/protocol/wire.ts";
+import { bodyBytes, readBodyBytes } from "../src/protocol/structures.ts";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -320,9 +324,8 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
     edit(copy);
     return saved(copy);
   };
-  const fieldsOf = (r: SealRecordOnWire) => r.certificate.fields as Record<string, string | number>;
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey)["fault"], "bad_seal_signature", "a changed certificate");
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["receivedThrough"] = 4; }), sealKey)["fault"], "bad_seal_signature", "a forged M");
+    assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.tip = 3; }); }), sealKey)["fault"], "bad_seal_signature", "a changed certificate");
+  assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.receivedThrough = 4; }); }), sealKey)["fault"], "bad_seal_signature", "a forged M");
   assert.equal(verify(tampered((r) => { r.deliveryAck = null; }), sealKey)["fault"], "delivery_ack_mismatch", "M with no ack behind it");
   assert.equal(verify(wholeFile, "00".repeat(32))["fault"], "wrong_seal_key", "a wrong key");
   assert.equal(verify(saved("not json"), sealKey)["fault"], "unreadable_file");
@@ -406,7 +409,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
   const offline = verify(wholeFile, sealKey, stranger) as unknown as SealOutput;
   assert.deepEqual([offline.witnessed_through, offline.received_through], [4, 3]);
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey, stranger)["fault"], "bad_seal_signature");
+  assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.tip = 3; }); }), sealKey, stranger)["fault"], "bad_seal_signature");
   compose("start", "server");
 });
 
@@ -634,7 +637,7 @@ interface TranscriptOutput {
 
 interface TranscriptFile {
   seal: SealRecordOnWire;
-  entries: { entry: { fields: Record<string, string> }; ack: unknown }[];
+  entries: { entry: WireSigned; ack: unknown }[];
   salt: string;
   revealed: { position: number; body: string }[];
 }
@@ -759,10 +762,10 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   const partOnDisk = JSON.parse(partBytes) as TranscriptFile;
   assert.equal(partOnDisk.salt, wholeOnDisk.salt, "one salt for the whole session");
   const salt = fromB64(partOnDisk.salt, "salt");
-  const target = (partOnDisk.entries[1]?.entry.fields as Record<string, string>)["contentHash"];
-  const guess = (n: string): string => toB64(saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "understood, and I accept", signal: "over", est_minutes: null }))));
-  assert.notEqual(guess(toB64(new Uint8Array(16))), target);
-  const realValue = (JSON.parse(Buffer.from(wholeOnDisk.revealed[1]?.body as string, "base64url").toString()) as { n: string }).n;
+  const target = toB64(signedEntry.decode(partOnDisk.entries[1]?.entry).fields.contentHash);
+  const guess = (n: Uint8Array): string => toB64(saltedContentHash(salt, bodyBytes({ n, text: "understood, and I accept", signal: "over", est_minutes: null })));
+  assert.notEqual(guess(new Uint8Array(16)), target);
+  const realValue = readBodyBytes(fromB64(wholeOnDisk.revealed[1]?.body, "body"))!.n;
   assert.equal(guess(realValue), target, "with the random value the same guess matches, so this check can fail");
 
   // Ora comes back. She exports with her messages unread, and with another caller holding her: neither stands in the way.
@@ -822,12 +825,12 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   expectFault("wrong_session", (f) => { f.seal = elsewhere.seal; f.entries = f.entries.slice(0, 1); f.revealed = []; });
   // A body attributed to the wrong author: a label beside it, then the entry's own author.
   expectFault("malformed_transcript", (f) => { (f.revealed[1] as unknown as Record<string, string>)["author"] = oraAgent["agent_id"] as string; });
-  expectFault("ack_wrong_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(Buffer.from(oraAgent["agent_id"] as string, "hex")); });
+  expectFault("ack_wrong_entry", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = Buffer.from(oraAgent["agent_id"] as string, "hex"); }); });
   // A truncated chain, and a seal that covers less than the file holds, so it's for a different root.
   expectFault("truncated_chain", (f) => { f.entries.pop(); });
   expectFault("entries_beyond_seal", (f) => { f.seal = shortSeal; });
   // The seal's own checks still run. The same checks on the seal record as verify-seal.
-  expectFault("bad_seal_signature", (f) => { (f.seal.certificate.fields as Record<string, number>)["receivedThrough"] = 4; });
+  expectFault("bad_seal_signature", (f) => { editSigned(f.seal.certificate, signedSealCertificate, (s) => { s.receivedThrough = 4; }); });
   expectFault("bad_salt", (f) => { f.salt = `${f.salt}AA`; });
   expectFault("body_does_not_match", (f) => { f.salt = toB64(new Uint8Array(32).fill(1)); });
   assert.equal(check(wholeFile, "00".repeat(32)).fault, "wrong_seal_key");
@@ -853,7 +856,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   assert.match(closed.statement["hidden"] as string, /Nothing is hidden/);
 
   // The salt question, on real bodies: every one has its random value, closes included, and no two share one.
-  const values = (JSON.parse(readFileSync(closedFile, "utf8")) as TranscriptFile).revealed.map((r) => (JSON.parse(Buffer.from(r.body, "base64url").toString()) as { n: string }).n);
+  const values = (JSON.parse(readFileSync(closedFile, "utf8")) as TranscriptFile).revealed.map((r) => toB64(readBodyBytes(fromB64(r.body, "body"))!.n));
   assert.equal(values.length, 6);
   assert.ok(values.every((n) => Buffer.from(n, "base64url").length === 16));
   assert.equal(new Set(values).size, 6);
@@ -955,7 +958,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
     rewrite.current = (answer) => { answer.record.log.path = encodeHashes([new Uint8Array(32)]); };
     await refusedWith("log_proof_failed");
     // A certificate that doesn't match what this agent asked to have sealed.
-    rewrite.current = (answer) => { (answer.record.certificate.fields as Record<string, unknown>)["root"] = Buffer.alloc(32, 9).toString("base64url"); };
+    rewrite.current = (answer) => { editSigned(answer.record.certificate, signedSealCertificate, (s) => { s.root = new Uint8Array(32).fill(9); }); };
     await refusedWith("bad_seal_signature");
 
     // An honest one goes through, and pins the log's state.
