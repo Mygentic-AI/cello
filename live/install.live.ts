@@ -165,6 +165,7 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   assertDaemonIsInstalled();
   const gail = ok(["create-agent", "Gail"]);
   const hugo = ok(["create-agent", "Hugo"]);
+  ok(["settings-set", "away.answering", "false", "--agent", "Hugo"]);
   await allOnline();
   // The real default home, and the database opens: this is the native SQLCipher loading from a plain npm install.
   assert.ok(existsSync(join(home, ".cello-v2", "cello.db")));

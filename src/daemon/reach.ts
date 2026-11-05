@@ -47,7 +47,7 @@ const TIER_DEFAULTS: Record<SettableTier, { max_sessions: number; max_bytes: num
 export const CALLING_RAISES_KEY = "contacts.calling_raises_to_known";
 
 // loosensWhen: which way needs a person. Text settings go neither way. A switch loosens when it's turned on.
-interface AgentSetting { default: string; kind: "number" | "text" | "switch"; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
+interface AgentSetting { default: string; kind: "number" | "text" | "switch"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
 
 export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // Ruled off on 4 November: a lure could get itself raised just by persuading an agent to dial it.
@@ -55,6 +55,7 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "limits.stranger_pool": { default: "50", kind: "number", min: 1, max: 100_000, loosensWhen: "higher", description: "Open sessions all strangers together can have with this agent." },
   "limits.quiet_minutes": { default: "120", kind: "number", min: 1, max: 5_256_000, loosensWhen: "lower", description: "A session stops counting toward its caller's limit after this long with nothing new. It stays open." },
   "limits.cap_alarm_minutes": { default: "10", kind: "number", min: 0, max: 100_000, description: "The shortest gap between two notices that one caller keeps hitting a limit." },
+  "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },
   "away.system.known": { default: "{name} is currently away. Leave a message (send with signal: wrap to close) and it will be read when they return.", kind: "text", description: "The away text of last resort, for a known caller. {name} is this agent's name." },
@@ -155,7 +156,7 @@ export class Reach {
     const write = (): void => { this.#store.prepare("UPDATE agent_settings SET value = ?, updated_at = ? WHERE agent_id = ? AND key = ?").run(to, Date.now(), agentId, key); };
     if (setting.kind === "switch") {
       if (to !== "true" && to !== "false") throw new LocalError("bad_setting", `${key} must be exactly "true" or "false"`);
-      return { direction: from === to ? "neutral" : to === "true" ? "loosen" : "tighten", from, to, apply: write };
+      return { direction: from === to || setting.neutral ? "neutral" : to === "true" ? "loosen" : "tighten", from, to, apply: write };
     }
     if (setting.kind === "number") {
       const value = Number(to);

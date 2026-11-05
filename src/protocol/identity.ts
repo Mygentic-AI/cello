@@ -26,6 +26,7 @@ export const CONTEXTS = [
   "cello-v2-session-offer",
   "cello-v2-session-accept",
   "cello-v2-session-refuse",
+  "cello-v2-session-greeting",
   "cello-v2-session-confirm",
   "cello-v2-session-assignment",
   "cello-v2-entry",

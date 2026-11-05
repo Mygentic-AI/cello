@@ -38,7 +38,10 @@ class Daemon {
     process.kill(this.status().pid, "SIGKILL");
   }
   createAgent(name: string): string {
-    return (JSON.parse(this.cli("create-agent", name)) as { agent_id: string }).agent_id;
+    const id = (JSON.parse(this.cli("create-agent", name)) as { agent_id: string }).agent_id;
+    // These tests hold conversations with agents nobody has selected, so nothing answers for them.
+    this.cli("settings-set", "away.answering", "false", "--agent", name);
+    return id;
   }
   log(): string {
     return readFileSync(join(this.home, "daemon.log"), "utf8");
