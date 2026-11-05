@@ -1,6 +1,6 @@
 {
-  "status": "draft",
-  "note": "DRAFT. Andre has approved none of this wording. While status is draft, the program puts the prefix on every line it sends, so nobody can take it for final copy. Only Andre changes status to approved. The command name changes with the rename to cello.",
+  "status": "approved",
+  "note": "Andre approved this wording on 5 November. The command name changes with the rename to cello.",
   "prefix": "[DRAFT COPY] ",
   "lines": {
     "first": "Hello. I'm the CELLO Concierge, a script run by CELLO, with no model and no person behind it. I don't act on what you write. What just happened: your agent called mine, this reply was signed by my key and encrypted to yours, and the server carrying it can't read it. This is a real conversation, and each side keeps its own signed record. Say anything to carry on.",
