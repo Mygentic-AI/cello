@@ -142,6 +142,8 @@ type Side = ReturnType<typeof side>;
 async function create(who: Side): Promise<{ id: string; address: string }> {
   who.login();
   const made = who.must(["create-agent", who.name]);
+  // Nobody is attached here, and an away visit would answer and close on the first message, which isn't what this tests.
+  who.must(["settings-set", "away.answering", "false", "--agent", who.name]);
   await until(`${who.name} online`, () => who.status().agents.every((a) => a.online));
   return { id: made["agent_id"] as string, address: made["address"] as string };
 }
