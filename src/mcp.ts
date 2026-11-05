@@ -6,13 +6,13 @@ import "./require-node.ts";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
-import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
-import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { IpcClient } from "./ipc/client.ts";
+import type { Operation } from "./ipc/operations.ts";
 import type { IpcNotification } from "./ipc/protocol.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { TOOL_OPERATIONS, asResult, callLimitMs, inputSchema, toolParams } from "./mcp-tools.ts";
 
 const RECONNECT_MS = 1000;
 
@@ -135,44 +135,10 @@ function scheduleReconnect(): void {
   }, RECONNECT_MS);
 }
 
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
-
-async function asResult(work: () => Promise<unknown>): Promise<ToolResult> {
-  try {
-    return { content: [{ type: "text", text: JSON.stringify(await work()) }] };
-  } catch (err: unknown) {
-    const code = err instanceof DaemonGone || err instanceof DaemonRefused ? err.code : "internal_error";
-    const message = err instanceof Error ? err.message : String(err);
-    return { content: [{ type: "text", text: JSON.stringify({ error: code, message }) }], isError: true };
-  }
-}
-
-function schemaOf(param: Param): z.ZodType {
-  const base = param.allowed
-    ? z.enum(param.allowed as [string, ...string[]])
-    : param.kind === "number" ? z.number() : param.kind === "boolean" ? z.boolean() : z.string();
-  const described = base.describe(param.description);
-  return param.required ? described : described.optional();
-}
-
-function inputSchema(op: Operation): Record<string, z.ZodType> {
-  const shape: Record<string, z.ZodType> = {};
-  if (op.scoped) {
-    shape["agent"] = z.string().describe("Your agent's name or agent_id. Every call names it.");
-  }
-  if (op.acts) {
-    shape["force"] = z.boolean().optional().describe("Take the agent from another caller that holds it. Only when your operator means to move it here.");
-  }
-  for (const param of op.params) shape[param.name] = schemaOf(param);
-  return shape;
-}
-
 async function run(op: Operation, args: Record<string, unknown>): Promise<unknown> {
   if (op.local) return runLocal(op.method, args);
   const connected = await connect();
-  // A tool can never say a person agreed: only the command line asks one.
-  const params: Record<string, unknown> = { ...args, caller: CALLER };
-  delete params["person_confirmed"];
+  const params = toolParams(args, CALLER);
   if (op.method === "use_agent") {
     const result = await connected.call("subscribe", params);
     heldAgents.add(args["agent"] as string);
@@ -180,12 +146,10 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
   }
   if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
   if (op.method === "stop_using_agent") heldAgents.delete(args["agent"] as string);
-  const waited = op.method === "wait" ? ((args["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
-  return connected.call(op.method, params, waited);
+  return connected.call(op.method, params, callLimitMs(op, args));
 }
 
-for (const op of OPERATIONS) {
-  if (op.personOnly) continue;
+for (const op of TOOL_OPERATIONS) {
   server.registerTool(op.tool, { description: op.description, inputSchema: inputSchema(op) }, (args: Record<string, unknown>) => asResult(() => run(op, args)));
 }
 

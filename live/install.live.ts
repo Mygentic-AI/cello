@@ -223,7 +223,7 @@ test("the installed cello-v2-mcp speaks real stdio, starts before login, lists e
   try {
     assert.ok(client.getServerCapabilities()?.experimental?.["claude/channel"], "it declares itself as a channel");
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
-    assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly).map((op) => op.tool).sort());
+    assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly && !op.programOnly).map((op) => op.tool).sort());
 
     const call = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       const result = await client.callTool({ name, arguments: args }) as { content: { text: string }[] };

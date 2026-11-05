@@ -81,7 +81,7 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   assert.ok(one.client.getServerCapabilities()?.experimental?.["claude/channel"], "it declares itself as a channel");
   const tools = (await one.client.listTools()).tools.map((t) => t.name).sort();
   // The tools are the same operations as the command line, one for one.
-  assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly).map((op) => op.tool).sort());
+  assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly && !op.programOnly).map((op) => op.tool).sort());
   assert.ok(!tools.includes("cello_screening"), "weakening screening is never an agent's tool");
   const help = cli("--help");
   for (const op of OPERATIONS) {
