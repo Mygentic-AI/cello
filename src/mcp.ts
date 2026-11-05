@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DAEMON_STOPPED_DOORBELL, policyDoorbell } from "./guidance.ts";
+import { DAEMON_STOPPED_DOORBELL, channelNoticeDoorbell, policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -68,7 +68,7 @@ function doorbellText(frame: IpcNotification): string {
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
     case "channel_post": return "CELLO: a channel you follow has new posts. Call cello_channel_read to read them.";
-    case "channel_notice": return "CELLO: there's a notice about a channel. Call cello_channels to see it.";
+    case "channel_notice": return channelNoticeDoorbell(frame.data["notice_kind"], frame.data["channel_id"]) ?? "CELLO: there's a notice about a channel. Call cello_channels to see it.";
     case "channel_request": return "CELLO: someone has asked to join a channel you administer. Call cello_channel_requests to see who.";
     case "screening_delayed": return "CELLO: a long message is still being screened, so there's nothing new to read yet. Another doorbell rings when it's ready. To say something now, such as stop, send it as a notice.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";

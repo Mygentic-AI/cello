@@ -1,5 +1,6 @@
 // Channels on this machine: a producer and many consumers, with a position each. A number shows a gap and the reader asks
 // for it, and order isn't otherwise proved. Conversations share nothing with this but the agent's keys and the server link.
+import type { ChannelNoticeKind } from "../guidance.ts";
 import { randomBytes } from "node:crypto";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { openSessionContent, sealSessionContent } from "../protocol/aead.ts";
@@ -593,9 +594,9 @@ export class Channels {
     }
   }
 
-  #fault(agentHex: string, channel: Uint8Array, text: string): void {
+  #fault(agentHex: string, channel: Uint8Array, text: string, kind?: ChannelNoticeKind): void {
     this.#db.addNotice(this.#host.signer(agentHex).id, channel, text);
-    this.#host.ring(agentHex, { type: "channel_notice", agent: agentHex, channel_id: toHex(channel) });
+    this.#host.ring(agentHex, { type: "channel_notice", agent: agentHex, channel_id: toHex(channel), ...(kind ? { notice_kind: kind } : {}) });
   }
 
   // Runs on every check: what's changed, then a read only where there's something new.
@@ -624,9 +625,9 @@ export class Channels {
   }
 
   #stateChanged(agentHex: string, channel: Uint8Array, was: FollowRow["state"], now: FollowRow["state"]): void {
-    if (was === "pending" && now === "active") this.#fault(agentHex, channel, "You've been approved for this channel.");
-    else if (was === "pending" && now === "refused") this.#fault(agentHex, channel, "The admin refused your request to join this channel.");
-    else if (now === "ejected") this.#fault(agentHex, channel, "You've been ejected from this channel. What you already hold stays here, and nothing new will reach you.");
+    if (was === "pending" && now === "active") this.#fault(agentHex, channel, "You've been approved for this channel.", "admitted");
+    else if (was === "pending" && now === "refused") this.#fault(agentHex, channel, "The admin refused your request to join this channel.", "refused");
+    else if (now === "ejected") this.#fault(agentHex, channel, "You've been ejected from this channel. What you already hold stays here, and nothing new will reach you.", "removed");
   }
 
   // Ruled: when a reader gives up on a post, its publisher is told. The admin always hears, and so does the post's own author.
