@@ -761,16 +761,6 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     description: "For a person at a terminal. Takes the issuer of a signal you hold back off this machine's trusted list.",
     params: [SIGNAL_HASH],
   },
-  {
-    command: "issuer-list-load",
-    group: "Signals",
-    summary: "Load a newer signed issuer list from a file.",
-    scoped: false,
-    acts: false,
-    personOnly: true,
-    description: "Load a signed issuer list from a file. It's kept only if two of the three root keys signed it and it hasn't expired.",
-    params: [{ name: "file", kind: "string", required: true, positional: true, description: "The signed list." }],
-  },
 ];
 
 export const OPERATIONS: readonly Operation[] = DEFINITIONS.map((definition) => {

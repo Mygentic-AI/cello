@@ -38,6 +38,7 @@ export interface WalletHooks {
   screen(agentHex: string, issuerHex: string, text: string): Promise<InboundVerdict>;
   notify(agentId: Uint8Array, text: string): void;
   roots(): readonly RootKey[];
+  shippedList: string | null;
 }
 
 export interface SignalRefusal { fault: string; message: string }
@@ -62,6 +63,21 @@ export function readClaim(payload: Uint8Array): string | null {
 export function issuerStanding(row: Pick<WalletRow, "issuer_address" | "issuer_pubkey">, keys: PublicIdentity, list: IssuerList | null, trusted: readonly { issuer_address: string; issuer_pubkey: string }[], now: number): IssuerStanding {
   if (list && recognisedIssuer(list, keys, row.issuer_address, now)) return "recognised";
   return trusted.some((t) => t.issuer_address === row.issuer_address && t.issuer_pubkey === row.issuer_pubkey) ? "trusted_by_owner" : "unknown";
+}
+
+// With no valid list there's no recognised issuer, so every signal shows as unknown.
+export async function newestValidList(files: readonly Uint8Array[], roots: readonly RootKey[] | null, now: number): Promise<IssuerList | null> {
+  if (!roots) return null;
+  let newest: IssuerList | null = null;
+  for (const file of files) {
+    const checked = await verifyIssuerList(file, roots, now);
+    if (!checked.ok) {
+      logEvent("issuer.list.rejected", { fault: checked.fault, message: checked.message });
+      continue;
+    }
+    if (!newest || checked.list.issued_at > newest.issued_at) newest = checked.list;
+  }
+  return newest;
 }
 
 export class Wallet {
@@ -114,6 +130,7 @@ export class Wallet {
   async collect(agentHex: string): Promise<Collected> {
     try {
       const client = this.#client();
+      await this.#refreshList(client);
       return await this.#keep(agentHex, (await client.collect(this.#hooks.keys(agentHex))).signals);
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
@@ -162,33 +179,29 @@ export class Wallet {
 
   async #list(): Promise<IssuerList | null> {
     const stored = this.#store.getConfig(CONFIG_ISSUER_LIST);
-    if (!stored) return null;
-    let roots: readonly RootKey[];
+    return newestValidList([stored, this.#hooks.shippedList].filter((list): list is string => Boolean(list)).map((list) => new Uint8Array(Buffer.from(list, "base64"))), this.#roots(), nowSec());
+  }
+
+  #roots(): readonly RootKey[] | null {
     try {
-      roots = this.#hooks.roots();
+      return this.#hooks.roots();
     } catch (err: unknown) {
       if (err instanceof RootKeysNotConfigured) return null;
       throw err;
     }
-    const checked = await verifyIssuerList(new Uint8Array(Buffer.from(stored, "base64")), roots, nowSec());
-    if (checked.ok) return checked.list;
-    logEvent("issuer.list.rejected", { fault: checked.fault, message: checked.message });
-    return null;
   }
 
-  // Needs two of the three root signatures, so it needs no person: it can only add what the roots said.
-  async loadIssuerList(file: Uint8Array): Promise<unknown> {
-    let roots: readonly RootKey[];
-    try {
-      roots = this.#hooks.roots();
-    } catch (err: unknown) {
-      if (err instanceof RootKeysNotConfigured) throw new LocalError(err.code, `${err.message}. This client has no root keys built in yet, so nothing was loaded.`);
-      throw err;
-    }
-    const checked = await verifyIssuerList(file, roots, nowSec());
-    if (!checked.ok) throw new LocalError(`issuer_list_${checked.fault}`, `${checked.message}. Nothing was loaded.`);
-    this.#store.setConfig(CONFIG_ISSUER_LIST, Buffer.from(file).toString("base64"));
-    return { loaded: true, issuers: checked.list.issuers.map((entry) => entry.name), expires_at: checked.list.expires_at };
+  // Asked for each time signals are collected. It's kept only if it's valid and newer, so a server can't hand back an old one, and failing to get one costs nothing.
+  async #refreshList(client: IssuerClient): Promise<void> {
+    const offered = await client.latestIssuerList();
+    if (!offered) return;
+    const roots = this.#roots();
+    const fresh = await newestValidList([offered], roots, nowSec());
+    if (!fresh) return;
+    const current = await this.#list();
+    if (current && current.issued_at >= fresh.issued_at) return;
+    this.#store.setConfig(CONFIG_ISSUER_LIST, Buffer.from(offered).toString("base64"));
+    logEvent("issuer.list.updated", { issued_at: fresh.issued_at, expires_at: fresh.expires_at });
   }
 
   // The claim is quoted and screened, and never joins our words. Blocked text doesn't come through at all.

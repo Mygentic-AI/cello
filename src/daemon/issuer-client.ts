@@ -133,6 +133,18 @@ export class IssuerClient {
     return this.#send("agents", "add_agent", agent, { code: null, target: null, holder: holder.identity, holderSignal }, holder.seeds);
   }
 
+  // Null when this issuer serves none. A list proves itself by its root signatures, so who hands it over doesn't matter.
+  async latestIssuerList(): Promise<Uint8Array | null> {
+    try {
+      const response = await this.#fetch(new URL("/api/issuer/list", this.#base), { redirect: "error", signal: AbortSignal.timeout(ISSUER_WAIT_MS) });
+      if (!response.ok) return null;
+      const answer = JSON.parse(await response.text()) as { list?: unknown };
+      return typeof answer.list === "string" ? new Uint8Array(Buffer.from(answer.list, "base64")) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds): Promise<IssuerAnswer> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const bytes = encodeAgentRequest({

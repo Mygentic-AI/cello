@@ -1,5 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
@@ -105,14 +105,6 @@ function acting(params: Record<string, unknown>): string {
 // Naming an agent is enough for its own wallet: it doesn't act as the agent, so it takes no hold.
 function named(params: Record<string, unknown>): string {
   return engine.resolveAgent(text(params, "agent"));
-}
-
-function readIssuerFile(path: string): Uint8Array {
-  try {
-    return new Uint8Array(readFileSync(path));
-  } catch (err: unknown) {
-    throw new LocalError("unreadable_file", err instanceof Error ? err.message : String(err));
-  }
 }
 
 function requirePerson(params: Record<string, unknown>): void {
@@ -238,8 +230,6 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "issuer_untrust":
       return engine.wallet.untrustIssuer(named(params), text(params, "hash"));
-    case "issuer_list_load":
-      return engine.wallet.loadIssuerList(readIssuerFile(text(params, "file")));
     case "use_agent": {
       const agent = acting(params);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };

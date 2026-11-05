@@ -71,6 +71,7 @@ import { LocalError, requirePerson } from "./errors.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
 import { productionRootKeys } from "../protocol/issuer-roots.ts";
+import { SHIPPED_ISSUER_LIST } from "../shipped-issuer-list.ts";
 import { type Collected, HOW_TO_GET_A_CODE, Wallet } from "./wallet.ts";
 import type { ChannelHost } from "./channels.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
@@ -311,6 +312,7 @@ export class Engine {
         if (agent) this.#notify(agent, null, text);
       },
       roots: productionRootKeys,
+      shippedList: SHIPPED_ISSUER_LIST,
     });
     this.governance = new Governance(store, {
       notify: (agentId, text) => {

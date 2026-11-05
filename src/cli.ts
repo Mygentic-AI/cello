@@ -451,7 +451,6 @@ async function main(): Promise<void> {
     return;
   }
   params["caller"] ??= CALLER;
-  if (op.method === "issuer_list_load") params["file"] = resolve(params["file"] as string);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   const ask = (fields: Record<string, unknown>): Promise<unknown> => (op.method === "export_transcript"

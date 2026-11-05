@@ -1,15 +1,21 @@
 // Who counts as an issuer, and the approved words. A mistake here wouldn't show in a live run with one stand-in issuer.
 import assert from "node:assert/strict";
+import { webcrypto } from "node:crypto";
 import { test } from "node:test";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { ROOT_NAMES, type RootKey, type RootName, addRootSignature, encodeIssuerList, encodeSignedIssuerList } from "../src/protocol/issuer-list.ts";
 import { generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { encodeCbor } from "../src/protocol/cbor.ts";
 import { issuerPubkeyField } from "../src/protocol/signal.ts";
 import { NO_EXPIRY_NOTE, unknownIssuerNote } from "../src/guidance.ts";
-import { issuerStanding, readClaim } from "../src/daemon/wallet.ts";
+import { issuerStanding, newestValidList, readClaim } from "../src/daemon/wallet.ts";
 import { BadIssuerUrl, parseIssuerUrl } from "../src/daemon/issuer-client.ts";
 import { changeSetting, currentText, DEFAULT_SERVER_URL, TEXT_SETTINGS } from "../src/daemon/settings.ts";
 import type { Store } from "../src/daemon/store.ts";
 
+
+const { publicKey: enclavePublic } = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+const enclave = { publicKey: enclavePublic };
 
 test("the notes are the approved words, whatever the claim tries to do", () => {
   assert.equal(NO_EXPIRY_NOTE, "**No expiry.** This signal says it never expires. Judge it by what it claims. A historical fact or an endorsement can reasonably be permanent. Something that can change, like a verified phone number or account, should expire, so treat a permanent one as suspect.");
@@ -57,4 +63,20 @@ test("the default server and issuer are the ones that were ruled, and a change i
   assert.equal(currentText(store, "issuer_url"), "https://trust.celloprotocol.com");
   changeSetting(store, "issuer_url", "https://other.example.com");
   assert.equal(currentText(store, "issuer_url"), "https://other.example.com");
+});
+
+test("the newest valid list wins, and with no roots or no valid list there's none", async () => {
+  const seed = (n: number): Uint8Array => new Uint8Array(32).fill(n);
+  const roots = [1, 2, 3].map((n, i) => ({ name: ROOT_NAMES[i] as RootName, seed: seed(n) }));
+  const keys: RootKey[] = await Promise.all(roots.map(async (r, i) => (i === 0 ? { name: r.name, algorithm: "p256" as const, publicKey: new Uint8Array(await webcrypto.subtle.exportKey("raw", enclave.publicKey)) } : { name: r.name, algorithm: "ed25519" as const, publicKey: ed25519.getPublicKey(r.seed) })));
+  const signed = async (issuedAt: number, signers: number): Promise<Uint8Array> => {
+    let at: Parameters<typeof addRootSignature>[0] = { listBytes: encodeIssuerList({ issued_at: issuedAt, expires_at: 5000, issuers: [] }) };
+    for (const r of roots.slice(1, 1 + signers)) at = await addRootSignature(at, { root: r.name, sign: async (message) => ed25519.sign(message, r.seed) }, keys);
+    return encodeSignedIssuerList({ signatures: { enclave: null, kms: null, paper: null }, ...at });
+  };
+  const [older, newer, weak] = [await signed(100, 2), await signed(200, 2), await signed(300, 1)];
+  assert.equal((await newestValidList([older, newer, weak], keys, 1000))?.issued_at, 200);
+  assert.equal(await newestValidList([weak], keys, 1000), null);
+  assert.equal(await newestValidList([older], keys, 6000), null, "expired");
+  assert.equal(await newestValidList([older], null, 1000), null, "no root keys");
 });
