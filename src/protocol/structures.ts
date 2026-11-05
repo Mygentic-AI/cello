@@ -191,7 +191,7 @@ export interface RegisterFields {
   identity: PublicIdentity;
 }
 
-const registerStructure = structure<{ serverId: Uint8Array; ed: Uint8Array; pq: Uint8Array }>("cello-register-v1", { serverId: HASH_BYTES, ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH });
+export const registerStructure = structure<{ serverId: Uint8Array; ed: Uint8Array; pq: Uint8Array }>("cello-register-v1", { serverId: HASH_BYTES, ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH });
 export const registerBytes = (r: RegisterFields): Uint8Array => registerStructure.encode({ serverId: r.serverId, ed: r.identity.ed, pq: r.identity.pq });
 
 export interface AgentAuthFields {
@@ -507,7 +507,7 @@ export interface Body {
   one_message?: true;
 }
 
-const bodyStructure = structure<{ n: Uint8Array; text: string; signal: string | null; estSeconds: number | null; oneMessage: number }>("cello-body-v1", { n: "bytes", text: "text", signal: "textOrNull", estSeconds: "intOrNull", oneMessage: "int" }, { maxBytes: 1_100_000 });
+export const bodyStructure = structure<{ n: Uint8Array; text: string; signal: string | null; estSeconds: number | null; oneMessage: number }>("cello-body-v1", { n: "bytes", text: "text", signal: "textOrNull", estSeconds: "intOrNull", oneMessage: "int" }, { maxBytes: 1_100_000 });
 
 export function bodyBytes(b: Body): Uint8Array {
   return bodyStructure.encode({ n: b.n, text: b.text, signal: b.signal, estSeconds: b.est_minutes === null ? null : Math.ceil(b.est_minutes * 60), oneMessage: b.one_message ? 1 : 0 });
@@ -525,11 +525,11 @@ export function readBodyBytes(bytes: Uint8Array): Body | null {
   }
 }
 
-const identityStructure = structure<{ ed: Uint8Array; pq: Uint8Array }>("cello-identity-v1", { ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH });
+export const identityStructure = structure<{ ed: Uint8Array; pq: Uint8Array }>("cello-identity-v1", { ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH });
 export const identityBytes = (pub: { ed: Uint8Array; pq: Uint8Array }): Uint8Array => identityStructure.encode({ ed: pub.ed, pq: pub.pq });
 
 // One roster member: what they signed, exactly as they signed it, with their keys and signature.
-const rosterMemberStructure = structure<{ ed: Uint8Array; pq: Uint8Array; memberKey: Uint8Array; signatureEd: Uint8Array; signaturePq: Uint8Array }>("cello-channel-member-v1", { ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH, memberKey: "bytes", signatureEd: "bytes", signaturePq: "bytes" });
+export const rosterMemberStructure = structure<{ ed: Uint8Array; pq: Uint8Array; memberKey: Uint8Array; signatureEd: Uint8Array; signaturePq: Uint8Array }>("cello-channel-member-v1", { ed: ED25519_PUBLIC_KEY_WIDTH, pq: ML_DSA_PUBLIC_KEY_WIDTH, memberKey: "bytes", signatureEd: "bytes", signaturePq: "bytes" });
 export const rosterMemberBytes = (m: { ed: Uint8Array; pq: Uint8Array; memberKey: Uint8Array; signatureEd: Uint8Array; signaturePq: Uint8Array }): Uint8Array => rosterMemberStructure.encode(m);
 const rosterMembersTag = "cello-channel-members-v1";
 // A list of any length, so it's hashed as its members' hashes: tag, then each 32-byte hash, in order.
