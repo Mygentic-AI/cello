@@ -10,7 +10,7 @@ export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;
 const NONCE_BYTES = 16;
 
-export type AgentRequestAction = "redeem" | "collect" | "add_agent";
+export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse";
 
 export interface AgentRequestFields {
   action: AgentRequestAction;
@@ -19,8 +19,10 @@ export interface AgentRequestFields {
   nonce: Uint8Array;
   issuedAt: number;
   expiresAt: number;
-  // Redeem only.
+  // Redeem: the code. Endorse: the statement.
   code: string | null;
+  // Endorse: the subject's key. Withdraw and refuse: the signal's hash.
+  target: string | null;
   // Add-agent only: the agent already enrolled, and an account-level signal it holds.
   holder: PublicIdentity | null;
   holderSignal: Uint8Array | null;
@@ -29,7 +31,7 @@ export interface AgentRequestFields {
 export function encodeAgentRequest(f: AgentRequestFields): Uint8Array {
   return new Uint8Array(encodeCbor([
     AGENT_REQUEST_DOMAIN, f.action, f.issuerAddress, f.agent.ed, f.agent.pq, f.nonce, f.issuedAt, f.expiresAt,
-    f.code, f.holder ? new Uint8Array([...f.holder.ed, ...f.holder.pq]) : null, f.holderSignal,
+    f.code, f.target, f.holder ? new Uint8Array([...f.holder.ed, ...f.holder.pq]) : null, f.holderSignal,
   ]));
 }
 
@@ -119,19 +121,19 @@ export class IssuerClient {
   }
 
   redeem(agent: AgentKeys, code: string): Promise<IssuerAnswer> {
-    return this.#send("redeem", "redeem", agent, { code, holder: null, holderSignal: null });
+    return this.#send("redeem", "redeem", agent, { code, target: null, holder: null, holderSignal: null });
   }
 
   collect(agent: AgentKeys): Promise<IssuerAnswer> {
-    return this.#send("collect", "collect", agent, { code: null, holder: null, holderSignal: null });
+    return this.#send("collect", "collect", agent, { code: null, target: null, holder: null, holderSignal: null });
   }
 
   // A new agent on a daemon that already has one: the holder signs too, and hands over an account-level signal it holds.
   addAgent(agent: AgentKeys, holder: AgentKeys, holderSignal: Uint8Array): Promise<IssuerAnswer> {
-    return this.#send("agents", "add_agent", agent, { code: null, holder: holder.identity, holderSignal }, holder.seeds);
+    return this.#send("agents", "add_agent", agent, { code: null, target: null, holder: holder.identity, holderSignal }, holder.seeds);
   }
 
-  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds): Promise<IssuerAnswer> {
+  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds): Promise<IssuerAnswer> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const bytes = encodeAgentRequest({
       action,
