@@ -11,6 +11,7 @@ import {
   type SealCertificateFields,
   type SealLogHeadFields,
   type SealRequestFields,
+  readRefusedList,
   sealKeyBindingBytes,
   structureHash,
 } from "./structures.ts";
@@ -204,6 +205,12 @@ async function findDeliveryFault(record: SealRecord): Promise<SealCheck | null> 
   return linked ? null : fail("delivery_proof_failed");
 }
 
+// What the counterparty signed that it refused, within what this seal covers.
+export function refusedPositions(record: SealRecord): number[] {
+  if (!record.deliveryAck) return [];
+  return readRefusedList(record.deliveryAck.fields.refused).filter((position) => position <= record.certificate.fields.throughPosition);
+}
+
 // Never throws on a bad record: every bad input is a named fault.
 export async function checkSealRecord(raw: unknown, sealKeyId: Uint8Array): Promise<SealCheck> {
   let record: SealRecord;
@@ -226,10 +233,11 @@ export function describeSeal(record: SealRecord): Record<string, string> {
   const n = cert.throughPosition;
   const m = cert.receivedThrough;
   const beyond = cert.tip - n;
+  const refused = refusedPositions(record);
   return {
     meaning: "A seal attests that this conversation took place. It says nothing about whether the parties agreed.",
     proven_without_trusting_the_server: m > 0
-      ? `Positions 1 to ${m}: the counterparty's own signature says its machine stored and decrypted these, in this order. That rests on its key, not on the server. Received means stored and decrypted, not read.`
+      ? `Positions 1 to ${m}: the counterparty's own signature says its machine stored and decrypted these, in this order. That rests on its key, not on the server. Received means stored and decrypted, not read.${refused.length > 0 ? ` Except positions ${refused.join(", ")}: the counterparty signed that their text wasn't what their author signed, so it holds no such words.` : ""}`
       : "Nothing: the counterparty has signed no delivery ack for any of this.",
     rests_on_the_server: `${m < n
       ? `Positions ${m + 1} to ${n}: only the sealer and the server say these were witnessed in this order. The counterparty hasn't confirmed receiving them. `
@@ -258,6 +266,7 @@ export function sealSummary(record: SealRecord): Record<string, unknown> {
     root: toHex(cert.root),
     witnessed_through: cert.throughPosition,
     received_through: cert.receivedThrough,
+    refused_by_counterparty: refusedPositions(record),
     tip_when_sealed: cert.tip,
     partial: cert.throughPosition < cert.tip,
     session_closed: cert.closed === 1,

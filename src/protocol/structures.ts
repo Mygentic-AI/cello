@@ -177,10 +177,33 @@ export interface DeliveryAckFields {
   entryHash: Uint8Array;
   root: Uint8Array;
   screenedThrough: number;
+  // Positions within this ack whose text isn't what their author signed, each 8 bytes big-endian, ascending. The reader's signed refusal:
+  // it holds everything else through this position, and not these.
+  refused: Uint8Array;
 }
 
-export const deliveryAckStructure = structure<DeliveryAckFields>("cello-delivery-ack-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, readerId: HASH_BYTES, throughPosition: "int", entryHash: HASH_BYTES, root: HASH_BYTES, screenedThrough: "int" }, { check: (d) => {
+export const MAX_REFUSED_POSITIONS = 512;
+
+export function refusedList(positions: readonly number[]): Uint8Array {
+  const out = new Uint8Array(positions.length * 8);
+  const view = new DataView(out.buffer);
+  positions.forEach((position, i) => view.setBigUint64(i * 8, BigInt(position)));
+  return out;
+}
+
+export function readRefusedList(bytes: Uint8Array): number[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  return Array.from({ length: bytes.length / 8 }, (_, i) => Number(view.getBigUint64(i * 8)));
+}
+
+export const deliveryAckStructure = structure<DeliveryAckFields>("cello-delivery-ack-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, readerId: HASH_BYTES, throughPosition: "int", entryHash: HASH_BYTES, root: HASH_BYTES, screenedThrough: "int", refused: "bytes" }, { check: (d) => {
   if (d.screenedThrough > d.throughPosition) throw new RangeError(`a delivery ack can't say it screened through ${d.screenedThrough} when it only covers ${d.throughPosition}`);
+  if (d.refused.length % 8 !== 0 || d.refused.length > MAX_REFUSED_POSITIONS * 8) throw new RangeError("the refused list must be whole positions, within its limit");
+  let last = 0;
+  for (const position of readRefusedList(d.refused)) {
+    if (!Number.isSafeInteger(position) || position <= last || position > d.throughPosition) throw new RangeError("the refused list must ascend, within what the ack covers");
+    last = position;
+  }
 } });
 export const deliveryAckBytes = (fields: DeliveryAckFields): Uint8Array => deliveryAckStructure.encode(fields);
 

@@ -4,7 +4,7 @@
 import { type ChainFault, ChainVerifier, type WitnessedEntry, witnessed } from "./chain.ts";
 import { equalBytes, toHex } from "./encode.ts";
 import { SESSION_SALT_BYTES, saltedContentHash } from "./salt.ts";
-import { type SealCheck, type SealFault, type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, readableTime, sealId, sealSummary } from "./seal.ts";
+import { type SealCheck, type SealFault, type SealRecord, type SealRecordOnWire, checkSealRecord, decodeSealRecord, describeSeal, refusedPositions, readableTime, sealId, sealSummary } from "./seal.ts";
 import { EntryKind, readBodyBytes, structureHash } from "./structures.ts";
 import { type WireSigned, fromB64, readInt, readObjectField, signedAck, signedEntry, toB64 } from "./wire.ts";
 
@@ -151,7 +151,7 @@ function describeMessage(item: WitnessedEntry, body: Uint8Array, record: SealRec
     ...words,
     author_had_read_through: item.fields.readPosition,
     witnessed_at: readableTime(item.ack.time),
-    basis: item.ack.position <= cert.receivedThrough ? "counterparty_signature" : "sender_signature_and_server",
+    basis: refusedPositions(record).includes(item.ack.position) ? "refused_by_counterparty" : item.ack.position <= cert.receivedThrough ? "counterparty_signature" : "sender_signature_and_server",
   };
 }
 
@@ -160,7 +160,8 @@ function describeTranscript(record: SealRecord, items: readonly WitnessedEntry[]
   const cert = record.certificate.fields;
   const m = cert.receivedThrough;
   const authorOf = (position: number): Uint8Array => (items[position - 1] as WitnessedEntry).fields.authorId;
-  const bound = revealed.filter((p) => p <= m);
+  const refused = refusedPositions(record);
+  const bound = revealed.filter((p) => p <= m && !refused.includes(p));
   const beyond = revealed.filter((p) => p > m);
   const fromSealer = beyond.filter((p) => equalBytes(authorOf(p), cert.sealerId));
   const fromCounterparty = beyond.filter((p) => !equalBytes(authorOf(p), cert.sealerId));
@@ -175,13 +176,16 @@ function describeTranscript(record: SealRecord, items: readonly WitnessedEntry[]
   return {
     meaning: "These are messages that were passed between these two keys. This says nothing about whether they're true, or whether either party agreed.",
     bound_by_the_counterparty_signature: bound.length > 0
-      ? `Positions ${listPositions(bound)}: each body matches its signed entry, and the counterparty's own signature says its machine stored and decrypted everything through position ${m}, in this order. That rests on its key, not on the server. Received means stored and decrypted, not read.`
+      ? `Positions ${listPositions(bound)}: each body matches its signed entry, and the counterparty's own signature says its machine stored and decrypted everything through position ${m}, in this order, except anything listed as refused. That rests on its key, not on the server. Received means stored and decrypted, not read.`
       : "No revealed position is covered by the counterparty's signature.",
     rests_on_the_sender_and_the_server: [
       ...(fromCounterparty.length > 0 ? [`Positions ${listPositions(fromCounterparty)}: the counterparty's signature on the entry stands behind the words. Their place in the order rests on the server.`] : []),
       ...(fromSealer.length > 0 ? [`Positions ${listPositions(fromSealer)}: only the signature of the person who made this file and the server's word stand behind these. Nothing shows the counterparty ever received them.`] : []),
       ...(beyond.length === 0 ? ["No revealed position rests on these alone. The times shown still rest on the server."] : ["The times shown rest on the server."]),
     ].join(" "),
+    refused_by_the_counterparty: refused.length > 0
+      ? `Positions ${listPositions(refused)}: the counterparty signed that the text it got isn't what the author signed. A body shown here may match the signed hash, and nothing shows the counterparty ever held it.`
+      : "The counterparty's signature refuses no position.",
     who_chose: `This file comes from one party, the sealer ${toHex(cert.sealerId)}, who chose what to reveal. The other party may hold its own copy.`,
     hidden: missing.length > 0
       ? `${missing.join(" ")} What isn't shown may change the meaning: "Bob offers $1M" can be followed by a hidden "Bob withdraws".`

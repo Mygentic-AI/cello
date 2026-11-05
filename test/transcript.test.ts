@@ -1,6 +1,6 @@
 // A forged file or a wrong statement wouldn't show against honest parties, so these lie on purpose.
 // Some forgeries use stolen server and seal keys: the worst case for what the file claims is bound.
-import { type Body, bodyBytes, readBodyBytes } from "../src/protocol/structures.ts";
+import { type Body, bodyBytes, readBodyBytes, refusedList } from "../src/protocol/structures.ts";
 import { editSigned, sessionOpening } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -85,6 +85,7 @@ interface SealOptions {
   // What the counterparty really signed, when the chain in the seal is a rewritten one.
   ackedHashes?: readonly Uint8Array[];
   ackEntryHash?: Uint8Array;
+  refused?: number[];
 }
 
 async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionId = SESSION): Promise<SealRecordOnWire> {
@@ -94,7 +95,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   const acked = options.ackedHashes ?? hashes;
   const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, counterpartyId: c.bob.id, throughPosition: n, root: rootOf(hashes, n) };
   const requestBytes = sealRequestBytes(request);
-  const ack = ackThrough === null ? null : { serverId: c.server.id, sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0 };
+  const ack = ackThrough === null ? null : { serverId: c.server.id, sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0, refused: refusedList(options.refused ?? []) };
   const fields: SealCertificateFields = {
     sealKeyId: c.sealKey.id,
     serverId: c.server.id,
@@ -453,3 +454,21 @@ async function exported2(chain: Chain, seal: SealRecordOnWire): Promise<Transcri
   const covered = chain.held.slice(0, n);
   return { format: TRANSCRIPT_FORMAT, seal, entries: covered.map((row) => ({ entry: row.entry, ack: row.ack as WireSigned })), salt: toB64(SALT), revealed: covered.map((row) => ({ position: row.position, body: toB64(row.body as Uint8Array) })) };
 }
+
+// A hostile author signs a hash of words it never sent, then shows those words with the salt. The reader's signed list is what answers it.
+test("words the counterparty refused don't read as received, and the refusal can't be cut out", async () => {
+  const c = await cast();
+  const chain = await chainOf(c, [{ author: c.alice, body: bodyOf("hello") }, { author: c.alice, body: bodyOf("Bob agrees to pay $1M") }, { author: c.bob, body: bodyOf("hi") }]);
+  const seal = await sealOf(c, chain, { refused: [2] });
+  const file = await exported(chain, seal);
+  const { messages, statement } = await reportOf(c, file);
+  assert.deepEqual(messages.map((m) => m.basis), ["counterparty_signature", "refused_by_counterparty", "counterparty_signature"]);
+  assert.match(statement["refused_by_the_counterparty"] as string, /Positions 2:/);
+  assert.doesNotMatch(statement["bound_by_the_counterparty_signature"] as string, /Positions 1-3|, 2/);
+
+  const cut = structuredClone(file);
+  editSigned(cut.seal.deliveryAck as WireSigned, signedDeliveryAck, (s) => { s.refused = new Uint8Array(0); });
+  assert.equal(await faultOf(c, cut), "delivery_ack_mismatch", "the certificate names the ack as signed");
+  const unsigned = await sealOf(c, chain, {});
+  assert.equal((await reportOf(c, await exported(chain, unsigned))).messages[1]?.basis, "counterparty_signature");
+});

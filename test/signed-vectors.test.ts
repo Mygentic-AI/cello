@@ -87,6 +87,14 @@ test("hostile bytes are refused before the decoder can spend anything on them", 
   refused("a byte string longer than the file", new Uint8Array([0x8d, 0x7a, 0xff, 0xff, 0xff, 0xff]));
 });
 
+test("a delivery ack's refused list is refused unless it's whole, ascending and within the ack", () => {
+  const base = { serverId: new Uint8Array(32), sessionId: new Uint8Array(16), readerId: new Uint8Array(32), throughPosition: 5, entryHash: new Uint8Array(32), root: new Uint8Array(32), screenedThrough: 5 };
+  assert.ok(structures.deliveryAckBytes({ ...base, refused: structures.refusedList([2, 5]) }));
+  for (const list of [[5, 2], [2, 2], [6], [0]]) assert.throws(() => structures.deliveryAckBytes({ ...base, refused: structures.refusedList(list) }), RangeError, String(list));
+  assert.throws(() => structures.deliveryAckBytes({ ...base, refused: new Uint8Array(7) }), RangeError);
+  assert.throws(() => structures.deliveryAckBytes({ ...base, refused: new Uint8Array(8 * 513) }), RangeError);
+});
+
 test("another structure's bytes can't pass as this one, even at the same shape", () => {
   const a = structures.greetingBytes({ offerHash: new Uint8Array(32), sealedText: new Uint8Array(32) });
   const b = structures.sealKeyBindingBytes({ serverId: new Uint8Array(32), sealKeyId: new Uint8Array(32) });

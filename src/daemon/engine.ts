@@ -36,7 +36,9 @@ import {
   sealRequestBytes,
   structureHash,
   type Body,
+  MAX_REFUSED_POSITIONS,
   bodyBytes,
+  refusedList,
   readBodyBytes,
 } from "../protocol/structures.ts";
 import {
@@ -1460,7 +1462,7 @@ export class Engine {
     // Stored, but not deliverable until it has a verdict. Its doorbell rings then, from #onVerdict.
     if (unverifiable) {
       logEvent("session.unverifiable_text", { agent: agent.hex, session: sessionHex, position });
-      this.#notify(agent, local.session_id, `The message at position ${position} from ${this.#who(agent, local)} isn't what its author signed, so it wasn't delivered. The bytes are kept (see evidence), and this agent won't sign that it received this message or anything after it. Later messages can still be read.`);
+      this.#notify(agent, local.session_id, `The message at position ${position} from ${this.#who(agent, local)} isn't what its author signed, so it wasn't delivered. The bytes are kept (see evidence), and this agent's signed delivery ack lists it as refused. Later messages can still be read.`);
     }
     if (!fromMe && !counted?.withheld && !unverifiable) {
       const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
@@ -1606,15 +1608,16 @@ export class Engine {
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
   // It also says how far screening has got, so it goes again when that moves, or when the screen is held up.
   async #deliver(agent: AgentContext, local: SessionRow, etaSeconds = 0): Promise<void> {
-    const refused = this.#store.firstUnverifiableText(agent.signer.id, local.session_id);
+    const refused = this.#store.unverifiablePositions(agent.signer.id, local.session_id);
     const latest = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
-    // An ack covers everything before it, and this machine can't say it holds what the author signed at that position.
-    const through = refused === undefined ? latest : Math.min(latest, refused - 1);
+    // The signed list has a limit, so a flood of bad messages stops the ack there rather than growing it without end.
+    const past = refused[MAX_REFUSED_POSITIONS];
+    const through = past === undefined ? latest : Math.min(latest, past - 1);
     if (through === 0) return;
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { serverId: this.#serverId(this.#urlOf(local)), sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
+    const fields = { serverId: this.#serverId(this.#urlOf(local)), sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened, refused: refusedList(refused.filter((position) => position <= through)) };
     const signature = await agent.signer.sign("cello-delivery-ack", deliveryAckBytes(fields));
     // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
     await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });

@@ -469,9 +469,8 @@ export class Store {
     return this.#prep("SELECT agent_id, session_id, kind, position, entry, ack, other_ack, ciphertext FROM evidence WHERE agent_id = ? AND session_id = ? ORDER BY id").all([agentId, sessionId]) as unknown as EvidenceRow[];
   }
 
-  // A delivery ack is cumulative, so it stops short of the first message this machine couldn't check.
-  firstUnverifiableText(agentId: Uint8Array, sessionId: Uint8Array): number | undefined {
-    return (this.#prep("SELECT min(position) AS first FROM evidence WHERE agent_id = ? AND session_id = ? AND kind = 'unverifiable_text'").get([agentId, sessionId]) as { first: number | null }).first ?? undefined;
+  unverifiablePositions(agentId: Uint8Array, sessionId: Uint8Array): number[] {
+    return (this.#prep("SELECT DISTINCT position FROM evidence WHERE agent_id = ? AND session_id = ? AND kind = 'unverifiable_text' ORDER BY position").all([agentId, sessionId]) as { position: number }[]).map((row) => row.position);
   }
 
   markWithheld(id: number, detail: string): void {

@@ -17,7 +17,7 @@ import { deriveSessionSecrets, generateSessionEphemeral } from "../src/protocol/
 import { EMPTY_ROOT, RunningMerkle } from "../src/protocol/merkle.ts";
 import { mlKemDecapsulate } from "../src/protocol/ml-kem.ts";
 import { deriveSessionSalt, generateSaltContribution, saltedContentHash } from "../src/protocol/salt.ts";
-import { EntryKind, EntryMode, type EntryFields, ackBytes, assignmentBytes, bodyBytes, ciphertextHash, confirmBytes, entryBytes, entryHash, offerBytes, serverAuthBytes, structureHash } from "../src/protocol/structures.ts";
+import { EntryKind, EntryMode, type EntryFields, ackBytes, assignmentBytes, bodyBytes, readRefusedList, ciphertextHash, confirmBytes, entryBytes, entryHash, offerBytes, serverAuthBytes, structureHash } from "../src/protocol/structures.ts";
 import { PROTOCOL_VERSION, type WireSigned, fromB64, identityCodec, signatureCodec, signedAccept, signedAck, signedAssignment, signedConfirm, signedDeliveryAck, signedEntry, signedOffer, toB64 } from "../src/protocol/wire.ts";
 
 async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>): Promise<T> {
@@ -51,6 +51,7 @@ class Scene {
   refuseAppends = false;
   refused: WireSigned[] = [];
   deliveryAcks: number[] = [];
+  refusals: number[][] = [];
   appended: WireSigned[] = [];
   accepted: ((accept: WireSigned) => void) | undefined;
   daemon!: ChildProcess;
@@ -82,7 +83,7 @@ class Scene {
           case "session.list": return answer({ sessions: [] });
           case "session.accept": this.accepted?.(p["accept"] as WireSigned); return answer({ ok: true });
           case "entry.fetch": return answer({ items: this.items.slice(p["after"] as number), tip: this.items.length, longNext: false });
-          case "delivery.ack": this.deliveryAcks.push(signedDeliveryAck.decode(p["deliveryAck"]).fields.throughPosition); return answer({});
+          case "delivery.ack": { const d = signedDeliveryAck.decode(p["deliveryAck"]).fields; this.deliveryAcks.push(d.throughPosition); this.refusals.push(readRefusedList(d.refused)); } return answer({});
           case "entry.append": {
             const entry = p["entry"] as WireSigned;
             this.appended.push(entry);
@@ -203,7 +204,7 @@ test("a refused message a server lands anyway doesn't stand as your word, and yo
   assert.equal(listed.sessions[0]?.fault, "refused_entry_landed");
 });
 
-test("one bad message from the other side doesn't stop the reader, keeps its proof, and is never acknowledged", { timeout: 60_000 }, async () => {
+test("one bad message from the other side doesn't stop the reader, keeps its proof, and is signed as refused", { timeout: 60_000 }, async () => {
   const s = await scene();
   await s.fromMallory("first");
   await until("the first message", async () => (await s.verified()) === 1);
@@ -216,8 +217,8 @@ test("one bad message from the other side doesn't stop the reader, keeps its pro
 
   await s.fromMallory("third");
   await until("reading to carry on past it", async () => (await s.verified()) === 3);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assert.ok(Math.max(...s.deliveryAcks) === 1, `the reader signed that it holds what it couldn't check: ${s.deliveryAcks.join(",")}`);
+  await until("an ack past it", () => s.deliveryAcks.includes(3));
+  for (const [i, through] of s.deliveryAcks.entries()) assert.deepEqual(s.refusals[i], through >= 2 ? [2] : [], `an ack through ${through} must refuse position 2`);
 
   const read = await until("the third to be screened", async () => {
     const r = await s.client.call("receive", { agent: s.agent, caller: "t", session_id: s.hex }) as { messages: { text: string | null }[]; notices: { text: string }[] };
@@ -250,4 +251,6 @@ test("two signed acks at one position are kept as proof a stranger can check, an
   assert.equal(await provesTwoAcks(s.server.publicIdentity, signedAck.decode(proof?.ack), signedAck.decode(proof?.ack)), false);
 
   await assert.rejects(s.client.call("send", { agent: s.agent, caller: "t", session_id: s.hex, text: "more", signal: "over" }), /frozen|two different/);
+  await s.client.call("close_session", { agent: s.agent, caller: "t", session_id: s.hex });
+  await until("the frozen side's close", () => s.appended.some((entry) => signedEntry.decode(entry).fields.kind === EntryKind.close));
 });
