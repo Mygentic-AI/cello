@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { type ChannelNoticeKind, LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
+import { compareTranscripts, type ChannelNoticeKind, LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -2131,7 +2131,7 @@ export class Engine {
       if (err instanceof ServerRefused && SEAL_RETRY_CODES.includes(err.code)) return notSealedYet(`${err.code}: ${err.message}`);
       if (err instanceof ServerRefused) {
         this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
-        throw new LocalError(err.code, err.message);
+        throw new LocalError(err.code, err.code === "seal_root_mismatch" ? `${err.message}. ${compareTranscripts(toHex(sessionId))}` : err.message);
       }
       throw err;
     }

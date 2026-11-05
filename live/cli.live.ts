@@ -19,7 +19,7 @@ import { saltedContentHash } from "../src/protocol/salt.ts";
 import { type SealRecordOnWire, encodeHashes } from "../src/protocol/seal.ts";
 import { sealCertificateBytes } from "../src/protocol/structures.ts";
 import { fromB64, signedSealCertificate, toB64 } from "../src/protocol/wire.ts";
-import { SEAL_NOTE, sealMismatchMessage } from "../src/guidance.ts";
+import { SEAL_NOTE, compareTranscripts } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
@@ -398,7 +398,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   sql(`UPDATE entries SET root = '\\x${Buffer.from(rewritten.root()).toString("hex")}' WHERE session_id = '${hexSession}' AND position = 3`);
   const mismatch = cello(["seal", session, "--through", "3", "--agent", "Jan"]);
   assert.deepEqual([mismatch.status, mismatch.json["error"]], [1, "seal_root_mismatch"], mismatch.stdout + mismatch.stderr);
-  assert.equal(mismatch.json["message"], sealMismatchMessage(3, session), "it says what to compare");
+  assert.ok((mismatch.json["message"] as string).endsWith(compareTranscripts(session)), "it says what to compare");
 
   // A log that no longer rebuilds its own root yields no seal, names the server as the cause, and isn't retried forever.
   const broken = cello(["seal", session, "--through", "2", "--agent", "Jan"]);

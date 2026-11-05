@@ -60,8 +60,12 @@ export function noAgentGuidance(name: string): string {
   return `Agent '${name}' does not exist. Create it with cello_create_agent, then retry — or check names with cello_agents.`;
 }
 
+export function compareTranscripts(sessionHex: string): string {
+  return `Compare that message on both transcripts with cello_transcript ${sessionHex}.`;
+}
+
 export function sealMismatchMessage(position: number, sessionHex: string): string {
-  return `the server sealed a different history from the one you hold at position ${position}. Compare that message on both transcripts with cello_transcript ${sessionHex}.`;
+  return `the server sealed a different history from the one you hold at position ${position}. ${compareTranscripts(sessionHex)}`;
 }
 
 export const DAEMON_STOPPED_DOORBELL = "CELLO: the local daemon stopped. Tools will fail until you run `cello-v2 login`.";
