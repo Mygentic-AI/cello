@@ -22,6 +22,16 @@ export const SETTINGS = {
   channel_read_wait_seconds: { default: 20, min: 0, max: 60, description: "How long channel-read waits for posts to be screened. What isn't ready by then is listed as still screening, and a doorbell rings when it is." },
 } as const satisfies Record<string, Setting>;
 
+// Settings that are words rather than numbers. The same rule: the default is written to the database on first start.
+export const TEXT_SETTINGS = {
+  issuer_url: { default: "https://trust.celloprotocol.com", description: "The issuer this daemon redeems codes at and collects signals from. Which issuers count is decided by the signed list, not by this." },
+  concierge_address: { default: "", description: "The agent setup calls to prove this one works. Empty means there's nothing to call yet." },
+} as const satisfies Record<string, { default: string; description: string }>;
+export type TextSettingName = keyof typeof TEXT_SETTINGS;
+const TEXT_NAMES = Object.keys(TEXT_SETTINGS) as TextSettingName[];
+
+export const DEFAULT_SERVER_URL = "wss://server.celloprotocol.com/v1";
+
 export type SettingName = keyof typeof SETTINGS;
 export type Settings = Record<SettingName, number>;
 
@@ -45,6 +55,9 @@ export function loadSettings(store: Store): Settings {
     if (stored === undefined) store.setConfig(configKey(name), String(SETTINGS[name].default));
     loaded[name] = stored === undefined ? SETTINGS[name].default : checked(name, stored);
   }
+  for (const name of TEXT_NAMES) {
+    if (store.getConfig(`setting.${name}`) === undefined) store.setConfig(`setting.${name}`, TEXT_SETTINGS[name].default);
+  }
   return loaded;
 }
 
@@ -53,11 +66,22 @@ export function currentSetting(store: Store, name: SettingName): number {
   return checked(name, store.getConfig(configKey(name)) ?? String(SETTINGS[name].default));
 }
 
+export function currentText(store: Store, name: TextSettingName): string {
+  return store.getConfig(`setting.${name}`) ?? TEXT_SETTINGS[name].default;
+}
+
 export function changeSetting(store: Store, name: string, raw: string): void {
-  if (!NAMES.includes(name as SettingName)) throw new SettingError(`there's no setting named ${name}. They are: ${NAMES.join(", ")}`);
+  if (TEXT_NAMES.includes(name as TextSettingName)) {
+    store.setConfig(`setting.${name}`, raw);
+    return;
+  }
+  if (!NAMES.includes(name as SettingName)) throw new SettingError(`there's no setting named ${name}. They are: ${[...NAMES, ...TEXT_NAMES].join(", ")}`);
   store.setConfig(configKey(name as SettingName), String(checked(name as SettingName, raw)));
 }
 
-export function listSettings(store: Store): { name: string; value: number; default: number; description: string }[] {
-  return NAMES.map((name) => ({ name, value: Number(store.getConfig(configKey(name)) ?? SETTINGS[name].default), default: SETTINGS[name].default, description: SETTINGS[name].description }));
+export function listSettings(store: Store): { name: string; value: number | string; default: number | string; description: string }[] {
+  return [
+    ...NAMES.map((name) => ({ name, value: Number(store.getConfig(configKey(name)) ?? SETTINGS[name].default), default: SETTINGS[name].default, description: SETTINGS[name].description })),
+    ...TEXT_NAMES.map((name) => ({ name, value: currentText(store, name), default: TEXT_SETTINGS[name].default, description: TEXT_SETTINGS[name].description })),
+  ];
 }

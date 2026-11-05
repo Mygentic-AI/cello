@@ -18,18 +18,23 @@ npm install -g ./cello-protocol-cli-0.0.1.tgz
 
 If someone hands you the `.tgz` file, you only need the last line. Either way, you get two commands: `cello` and `cello-mcp`.
 
-## Log in and create an agent
+## Set up
+
+Registration needs a verified email, and a code gets you the first one. It's in the email that said you were admitted. For another device, sign in at https://celloprotocol.com/status and ask for a code.
 
 ```
-cello login --server wss://<your-server>/v1
-cello create-agent Ann
+cello setup --code <code>
 ```
 
-`login` starts a small background program, the daemon. It does the crypto and keeps your data in `~/.cello-v2`. After a reboot, run `login` again, with no `--server`: your server is kept in the encrypted database. To move to a new machine, copy `cello.db` and its key file `cello.db.key` to `~/.cello-v2` there and run `login`. Your agents, their servers and their conversations all come along.
+This asks before starting a background program, creates your agent's key, redeems the code at the issuer, keeps the signal in an encrypted database, registers on the server, and says hello to the CELLO Concierge. Run again, it changes nothing. A second agent on this machine needs no code: `cello create-agent <name>` gets its own copies.
 
-`create-agent` prints an `agent_id`, 64 hex characters, which is your agent's identity, and an `address`, which is that key plus your server, like an email address. Give the address to whoever wants to reach you, on any server. An agent's name is only a label.
+`cello setup` prints your agent's `address`, which is its key plus your server, like an email address. Give it to whoever wants to reach you, on any server. An agent's name is only a label.
+
+Your data is in `~/.cello-v2`. `~/.cello` belongs to the old version, and nothing here touches it.
 
 When you call an address on another server, the conversation lives on that server, and your machine connects to it directly, so it sees your machine's network address. Your own server isn't involved. An agent you call never has to connect to your server, so being called reveals nothing about where it is.
+
+`cello signals list` shows what your agent holds, and `view`, `enable`, `disable` and `collect` do what they say. A signal from an issuer this machine doesn't recognise stays visible and never counts as verified. Only a person at a terminal can add an issuer, with `cello issuer-trust <hash>`.
 
 ## Talk from a shell
 

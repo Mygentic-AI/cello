@@ -11,6 +11,7 @@ import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { SETUP_HELP, setup } from "./setup.ts";
 import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-sign.ts";
 import { RootKeysNotConfigured } from "./protocol/issuer-list.ts";
 import { productionRootKeys } from "./protocol/issuer-roots.ts";
@@ -43,7 +44,7 @@ function usageLine(op: Operation): string {
     return p.required ? text : `[${text}]`;
   });
   const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
-  const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : [])];
+  const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : []), ...(op.plain ? ["[--json]"] : [])];
   return `cello ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
 }
 
@@ -62,7 +63,7 @@ function commandHelp(op: Operation): string {
 }
 
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
+  const groups = new Map<string, string[]>([["Setup", [`  ${"setup".padEnd(20)} Set up CELLO on this machine, with the code from your admission email.`, `  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
     lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
@@ -71,7 +72,7 @@ function overview(): string {
   const sections = [...groups].map(([group, lines]) => `${group}:\n${lines.join("\n")}`);
   return `CELLO: signed, encrypted conversations between agents.
 
-First-time setup:  cello login --server <url>  →  cello create-agent <name>  →  cello status
+First-time setup:  cello setup --code <code>
 
 Usage: cello <command> [args]
 
@@ -126,6 +127,7 @@ function readValue(param: Param, raw: string): string | number {
 
 // One line by default, because the usual reader is a program or an agent paying for every character.
 let pretty = false;
+let asJson = false;
 const render = (value: unknown): string => `${pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`;
 
 // Fails on anything it doesn't recognise, so a mistyped flag can't quietly change what a command does.
@@ -146,6 +148,10 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
     }
     if (arg === "--pretty") {
       pretty = true;
+      continue;
+    }
+    if (op.plain && arg === "--json") {
+      asJson = true;
       continue;
     }
     if (op.acts && arg === "--force") {
@@ -222,6 +228,17 @@ async function waitForDaemon(child: ReturnType<typeof spawn>): Promise<IpcClient
   return fail(`The daemon didn't start. The last lines of ${logPath()}:\n${tail}\n`, EXIT_REFUSED);
 }
 
+async function startDaemon(server: string | undefined): Promise<IpcClient> {
+  const entry = daemonEntry();
+  mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
+  const logFile = openSync(logPath(), "a", 0o600);
+  const child = spawn(process.execPath, server ? [entry, server] : [entry], { detached: true, stdio: ["ignore", logFile, logFile] });
+  closeSync(logFile);
+  const client = await waitForDaemon(child);
+  child.unref();
+  return client;
+}
+
 async function login(args: string[]): Promise<void> {
   const at = args.indexOf("--server");
   const server = at >= 0 ? args[at + 1] : undefined;
@@ -238,13 +255,7 @@ async function login(args: string[]): Promise<void> {
   } catch (err: unknown) {
     if (!(err instanceof DaemonGone)) throw err;
   }
-  const entry = daemonEntry();
-  mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
-  const logFile = openSync(logPath(), "a", 0o600);
-  const child = spawn(process.execPath, server ? [entry, server] : [entry], { detached: true, stdio: ["ignore", logFile, logFile] });
-  closeSync(logFile);
-  const client = await waitForDaemon(child);
-  child.unref();
+  const client = await startDaemon(server);
   // A far-away server takes a moment. Say what's true rather than implying it's ready.
   let status = await client.call("status") as { pid: number; server: string; connected: boolean; problem: string | null };
   for (let i = 0; i < 50 && !status.connected; i++) {
@@ -372,7 +383,9 @@ async function issuerListSignCommand(args: string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+  const [first, ...rest] = process.argv.slice(2);
+  // cello signals list is the same operation as cello signals-list, which is what its tool is named after.
+  const [command, args] = first === "signals" && rest[0] && !rest[0].startsWith("-") ? [`signals-${rest[0]}`, rest.slice(1)] : [first, rest];
   if (!command || command === "--help" || command === "-h" || command === "help") {
     const named = command === "help" ? OPERATIONS.find((candidate) => candidate.command === args[0]) : undefined;
     process.stdout.write(named ? commandHelp(named) : overview());
@@ -386,6 +399,19 @@ async function main(): Promise<void> {
       return;
     }
     return login(args);
+  }
+  if (command === "setup") {
+    if (wantsHelp) {
+      process.stdout.write(SETUP_HELP);
+      return;
+    }
+    process.exitCode = await setup(args, {
+      startDaemon,
+      ask: askTerminal,
+      caller: CALLER,
+      rememberAgent: (agentId) => writeFileSync(currentAgentFile(), `${agentId}\n`, { mode: 0o600 }),
+    });
+    return;
   }
   if (command === "screener") return screenerCommand(args);
   if (command === "issuer-list-sign") {
@@ -424,6 +450,7 @@ async function main(): Promise<void> {
     return;
   }
   params["caller"] ??= CALLER;
+  if (op.method === "issuer_list_load") params["file"] = resolve(params["file"] as string);
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
   const ask = (fields: Record<string, unknown>): Promise<unknown> => (op.method === "export_transcript"
@@ -439,7 +466,7 @@ async function main(): Promise<void> {
   }
   const result = answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
-  process.stdout.write(render(result));
+  process.stdout.write(op.plain && !asJson ? op.plain(result as never) : render(result));
   // The id, never the name: a name is a label, and it could later mean a different agent.
   if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${result.agent_id as string}\n`, { mode: 0o600 });
   if (op.method === "stop_using_agent" && currentAgent() === result.agent_id) rmSync(currentAgentFile());

@@ -1,5 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
@@ -39,7 +39,7 @@ const store = new Store(databasePath(home));
 // The server is named once, and then lives in the database, so moving the database and its key moves everything.
 const serverUrl = process.argv[2] ?? store.getConfig(CONFIG_SERVER_URL);
 if (!serverUrl) {
-  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello login --server <url>" });
+  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello setup, or cello login --server <url>" });
   process.exit(1);
 }
 const sockets = new Set<Socket>();
@@ -96,6 +96,19 @@ function acting(params: Record<string, unknown>): string {
   const agent = engine.resolveAgent(text(params, "agent"));
   takeHold(agent, text(params, "caller"), params["force"] === true);
   return agent;
+}
+
+// Naming an agent is enough for its own wallet: it doesn't act as the agent, so it takes no hold.
+function named(params: Record<string, unknown>): string {
+  return engine.resolveAgent(text(params, "agent"));
+}
+
+function readIssuerFile(path: string): Uint8Array {
+  try {
+    return new Uint8Array(readFileSync(path));
+  } catch (err: unknown) {
+    throw new LocalError("unreadable_file", err instanceof Error ? err.message : String(err));
+  }
 }
 
 function requirePerson(params: Record<string, unknown>): void {
@@ -202,6 +215,27 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "create_agent":
       return engine.createAgent(text(params, "name"));
+    case "enroll_agent":
+      return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"));
+    case "signals_list":
+      return engine.wallet.list(named(params), params["all"] === true);
+    case "signals_view":
+      return engine.wallet.view(named(params), text(params, "hash"));
+    case "signals_enable":
+      return engine.wallet.enable(named(params), text(params, "hash"));
+    case "signals_disable":
+      return engine.wallet.disable(named(params), text(params, "hash"));
+    case "signals_collect":
+      return engine.wallet.collect(named(params));
+    case "issuer_trust": {
+      const agent = named(params);
+      if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);
+      return engine.wallet.trustIssuer(agent, text(params, "hash"));
+    }
+    case "issuer_untrust":
+      return engine.wallet.untrustIssuer(named(params), text(params, "hash"));
+    case "issuer_list_load":
+      return engine.wallet.loadIssuerList(readIssuerFile(text(params, "file")));
     case "use_agent": {
       const agent = acting(params);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
