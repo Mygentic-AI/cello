@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { policyDoorbell } from "./guidance.ts";
+import { DAEMON_STOPPED_DOORBELL, policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -91,12 +91,13 @@ function onNotification(frame: IpcNotification): void {
   ring(`${doorbellText(frame)}${policyDoorbell(frame.data)}`, meta);
 }
 
-// Nothing can push from a daemon that's gone, so this side says when it's back, and what's waiting.
+// Nothing can push from a daemon that's gone, so this side says when it goes, when it's back, and what's waiting.
 async function attach(): Promise<IpcClient> {
   const connected = await IpcClient.connect(socketPath());
   connected.onNotification = onNotification;
   connected.onClose = () => {
     if (client === connected) client = undefined;
+    ring(DAEMON_STOPPED_DOORBELL, { type: "daemon_stopped" });
     scheduleReconnect();
   };
   let unread = 0;

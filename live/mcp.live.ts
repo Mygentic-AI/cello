@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 
-import { SIGNAL_ERROR } from "../src/guidance.ts";
+import { DAEMON_STOPPED_DOORBELL, SIGNAL_ERROR } from "../src/guidance.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
@@ -146,6 +146,7 @@ test("the tools work, doorbells wake with no text in them, and they come back af
     else await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.deepEqual(caughtUp?.messages.map((m) => [m.text, m.est_minutes]), [["second", 2]]);
+  assert.equal((await one.bell("daemon_stopped")).content, DAEMON_STOPPED_DOORBELL);
   const back = await one.bell("daemon_back");
   assert.match(back.content, /daemon is back.*1 waiting/);
   const twoBack = await two.bell("daemon_back");
