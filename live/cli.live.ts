@@ -19,6 +19,7 @@ import { saltedContentHash } from "../src/protocol/salt.ts";
 import { type SealRecordOnWire, encodeHashes } from "../src/protocol/seal.ts";
 import { sealCertificateBytes } from "../src/protocol/structures.ts";
 import { fromB64, signedSealCertificate, toB64 } from "../src/protocol/wire.ts";
+import { SEAL_NOTE, sealMismatchMessage } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
@@ -234,6 +235,7 @@ interface SealOutput {
   tip_when_sealed: number;
   partial: boolean;
   session_closed: boolean;
+  note?: string;
   statement: Record<string, string>;
 }
 
@@ -375,6 +377,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   okIn(kitHome, ["receive", "--agent", "Kit"]);
   const kitClosed = okIn(kitHome, ["close-session", session, "--agent", "Kit"]) as { seal: SealOutput };
   assert.deepEqual([kitClosed.seal.sealed, kitClosed.seal.session_closed, kitClosed.seal.witnessed_through], [true, false, 5]);
+  assert.equal(kitClosed.seal.note, SEAL_NOTE, "the answer says what a seal attests");
   await until("Jan's copy of the close", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   ok(["receive", "--agent", "Jan"]);
   const janClosed = ok(["close-session", session, "--agent", "Jan"]) as { state: string; seal: SealOutput };
@@ -395,6 +398,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   sql(`UPDATE entries SET root = '\\x${Buffer.from(rewritten.root()).toString("hex")}' WHERE session_id = '${hexSession}' AND position = 3`);
   const mismatch = cello(["seal", session, "--through", "3", "--agent", "Jan"]);
   assert.deepEqual([mismatch.status, mismatch.json["error"]], [1, "seal_root_mismatch"], mismatch.stdout + mismatch.stderr);
+  assert.equal(mismatch.json["message"], sealMismatchMessage(3, session), "it says what to compare");
 
   // A log that no longer rebuilds its own root yields no seal, names the server as the cause, and isn't retried forever.
   const broken = cello(["seal", session, "--through", "2", "--agent", "Jan"]);

@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
+import { LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -1309,7 +1309,7 @@ export class Engine {
       if (outcome.status === "landed") {
         this.#notify(agent, local.session_id, `Your message "${preview}" has now landed at position ${outcome.position}.`);
       } else if (outcome.status === "refused") {
-        this.#notify(agent, local.session_id, `Your message "${preview}" was not sent: ${outcome.code}, ${outcome.message}.`);
+        this.#notify(agent, local.session_id, `Your message "${preview}" was not sent: ${outcome.code}, ${outcome.message}. ${LOST_MESSAGE_GUIDANCE}`);
       } else {
         return;
       }
@@ -2149,7 +2149,7 @@ export class Engine {
       if (head.size > (this.#knownSealLogHead(route.url)?.size ?? 0)) this.#store.setConfig(this.#pinKey(CONFIG_SEAL_LOG_HEAD, route.url), JSON.stringify({ size: head.size, root: toB64(head.root) }));
     });
     logEvent("seal.stored", { agent: agent.hex, session: toHex(sessionId), through });
-    return { sealed: true, ...sealSummary(record), statement: describeSeal(record) };
+    return { sealed: true, ...sealSummary(record), statement: describeSeal(record), note: SEAL_NOTE };
   }
 
   #knownSealLogHead(url: string): { size: number; root: Uint8Array } | undefined {
@@ -2175,7 +2175,7 @@ export class Engine {
     const check = await checkSealRecord(raw, sealKeyId);
     if (!check.ok) throw new LocalError(check.fault, check.message);
     const cert = check.record.certificate.fields;
-    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", `the server sealed a different history from the one you hold at position ${through}`);
+    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", sealMismatchMessage(through, toHex(local.session_id)));
     const subject = equalBytes(cert.sessionId, local.session_id) && equalBytes(cert.sealerId, agent.signer.id) && equalBytes(cert.counterpartyId, local.counterparty_id) && cert.throughPosition === through;
     if (!subject) throw new LocalError("seal_wrong_subject", "the server's certificate isn't for this seal: its session, parties or position differ");
     if (cert.tip < local.verified_position || (local.state === "closed" && cert.closed !== 1)) {
