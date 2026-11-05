@@ -80,6 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
+import { sessionGuidance } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -2405,6 +2406,7 @@ export class Engine {
     const reads: { sessionId: Uint8Array; through: number }[] = [];
     const screening: unknown[] = [];
     const policies: unknown[] = [];
+    const guidance: { session_id: string; text: string }[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
     for (const local of sessions) {
@@ -2415,30 +2417,43 @@ export class Engine {
       const page = this.#store.unreadPage(agent.signer.id, local.session_id, local.read_position, room);
       const unread = page.rows;
       more ||= page.more;
+      // The newest signal says whose move it is. A close after it only leaves wrap standing: they've gone, so nobody expects a reply.
+      let lastSignal: unknown = null;
       for (const row of unread) {
         room -= row.body.length;
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
+        const shown = shownMessage(row, closing);
+        lastSignal = closing ? (lastSignal === "wrap" ? "wrap" : null) : shown["signal"] ?? null;
         messages.push({
           session_id: toHex(local.session_id),
           from: this.#who(agent, local),
           from_id: toHex(local.counterparty_id),
           position: row.position,
-          ...shownMessage(row, closing),
+          ...shown,
         });
       }
+      let hasPolicy = false;
       if (unread.length > 0) {
         reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
         const conduct = this.governance.conductFor(agent.signer.id, toHex(local.session_id), toHex(local.counterparty_id), this.governance.contacts.tierOf(agent.signer.id, local.counterparty_id), unread.length);
-        if (Object.keys(conduct).length > 0) policies.push({ session_id: toHex(local.session_id), ...conduct });
+        if (Object.keys(conduct).length > 0) {
+          policies.push({ session_id: toHex(local.session_id), ...conduct });
+          hasPolicy = true;
+        }
       }
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
+      if (unread.length > 0) {
+        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked: 0 })) {
+          guidance.push({ session_id: toHex(local.session_id), text });
+        }
+      }
     }
     const notices = this.#store.notices(agent.signer.id);
     const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
     const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
-      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {

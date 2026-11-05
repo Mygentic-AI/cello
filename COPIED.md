@@ -44,3 +44,7 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 
 - `src/protocol/cbor.ts`, from `cello-client/core/protocol-types/src/cbor.ts`, unchanged and comments kept, because they state the rules. cbor-x is held at exactly 1.6.4, the version it was measured on, because signed bytes depend on it.
 - `test/no-multiple-cbor-encoders.test.ts` is a port of the test of the same name in `core/protocol-types`, from vitest to node:test.
+
+## Guidance
+
+`src/guidance.ts`: sentences from `cello-client`, commit `2ea5834d`, changed only where a name or command no longer exists. From `core/daemon/src/session-content-handlers.ts`, `close-session-handler.ts`, `session-read-handlers.ts`, `session-closed.ts`, `session-liveness.ts`, `agent-handlers.ts`, `frontier-mismatch.ts`, and `core/adapter-claude-code/src/signal-guidance.ts`, `channel-params.ts`, `cello-tools.ts`.

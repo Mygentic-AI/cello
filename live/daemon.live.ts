@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
@@ -77,7 +78,7 @@ class Session {
       return this.bells.splice(at, 1)[0];
     });
   }
-  async receive(): Promise<{ messages: { position: number; text?: string; signal?: string; est_minutes?: number; closed_their_side?: boolean; session_id: string }[]; notices: { text: string }[] }> {
+  async receive(): Promise<{ messages: { position: number; text?: string; signal?: string; est_minutes?: number; closed_their_side?: boolean; session_id: string }[]; notices: { text: string }[]; guidance?: { session_id: string; text: string }[] }> {
     return await this.call("receive") as never;
   }
   send(sessionId: string, text: string, signal: string, extra: Record<string, unknown> = {}): Promise<unknown> {
@@ -148,6 +149,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal((await bob.bell("message")).data["session_id"], sessionId);
   const first = await bob.receive();
   assert.deepEqual(first.messages.map((m) => [m.position, m.text, m.signal]), [[1, "the launch code is purple-walrus", "over"]]);
+  assert.deepEqual(first.guidance, [{ session_id: sessionId, text: OVER_GUIDANCE }]);
 
   await bob.send(sessionId, "working on it", "standby", { est_minutes: 5 });
   await alice.bell("message");
@@ -158,6 +160,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await bob.bell("message");
   const unread = await alice.receive();
   assert.deepEqual(unread.messages.map((m) => [m.text, m.signal, m.est_minutes]), [["working on it", "standby", 5]]);
+  assert.deepEqual(unread.guidance, [{ session_id: sessionId, text: STANDBY_GUIDANCE }]);
   const stop = await bob.receive();
   assert.deepEqual(stop.messages.map((m) => m.text), ["stop, actually"]);
   await bob.send(sessionId, "stopped", "over");
@@ -208,7 +211,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   // Close, with the signal that says so first.
   await alice.send(sessionId, "that's all from me", "wrap");
   await bob.bell("message");
-  await bob.receive();
+  assert.deepEqual((await bob.receive()).guidance, [{ session_id: sessionId, text: WRAP_GUIDANCE }]);
   const closedA = await bob.call("close_session", { session_id: sessionId }) as { closed: boolean; state: string };
   assert.deepEqual([closedA.closed, closedA.state], [true, "active"]);
   await alice.bell("peer_closed");
