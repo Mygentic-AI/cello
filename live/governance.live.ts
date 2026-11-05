@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { socketPath } from "../src/daemon/paths.ts";
 import { IpcClient } from "../src/ipc/client.ts";
-import { OVER_GUIDANCE, POLICY_GUIDANCE } from "../src/guidance.ts";
+import { OVER_GUIDANCE, POLICY_GUIDANCE, refusedGuidance } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
@@ -244,6 +244,8 @@ test("guards: each agent has its own, and personal data, rate and language are r
   const refused = await until("the message from Jan", () => read(b, "Hob").messages.find((m) => m.position === 1 && m.blocked));
   assert.equal(refused.text, undefined);
   assert.match(refused.screening?.reason ?? "", /outside the languages/);
+  const record = b.ok(["transcript", other, "--agent", "Hob"]);
+  assert.equal(record["quarantined_guidance"], refusedGuidance(1), "the record says what a refused message is, and nothing it needs");
   const log = b.ok(["screening-log", "--agent", "Hob"]) as unknown as { screened: { verdict: string; reason: string }[] };
   assert.ok(log.screened.some((s) => /outside the languages/.test(s.reason ?? "")));
 });

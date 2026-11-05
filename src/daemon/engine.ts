@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { sessionGuidance, unreadWarning } from "../guidance.ts";
+import { refusedGuidance, sessionGuidance, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -2423,12 +2423,14 @@ export class Engine {
       more ||= page.more;
       // The newest signal says whose move it is. A close after it only leaves wrap standing: they've gone, so nobody expects a reply.
       let lastSignal: unknown = null;
+      let blocked = 0;
       const lag = this.#replyLag(agent, local, unread);
       for (const row of unread) {
         room -= row.body.length;
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
         const shown = shownMessage(row, closing);
         lastSignal = closing ? (lastSignal === "wrap" ? "wrap" : null) : shown["signal"] ?? null;
+        if (shown["blocked"] === true) blocked += 1;
         messages.push({
           session_id: toHex(local.session_id),
           from: this.#who(agent, local),
@@ -2449,7 +2451,7 @@ export class Engine {
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
       if (unread.length > 0) {
-        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked: 0, lag })) {
+        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
           guidance.push({ session_id: toHex(local.session_id), text });
         }
       }
@@ -2550,7 +2552,8 @@ export class Engine {
         ...shownMessage(row, closing),
       };
     });
-    return { session_id: toHex(local.session_id), with: this.#who(agent, local), with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
+    const refused = entries.filter((entry) => (entry as { blocked?: boolean }).blocked === true).length;
+    return { session_id: toHex(local.session_id), with: this.#who(agent, local), with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(refused > 0 ? { quarantined_count: refused, quarantined_guidance: refusedGuidance(refused) } : {}), ...(page.more ? { more: true } : {}) };
   }
 
   // What can be read right now. A message still being screened isn't in it, or a caller would be told to read and find nothing.
