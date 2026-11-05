@@ -242,8 +242,11 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await alice.send(crossing.session_id, "did you get my question", "over");
   await bob.bell("message");
   await bob.send(crossing.session_id, "written without reading yours", "over", { notice: true });
-  await alice.bell("message");
-  const crossed = await alice.receive();
+  // Polled, because an earlier read in this test took its message without taking that message's doorbell.
+  const crossed = await until("Bob's notice", async () => {
+    const received = await alice.receive();
+    return received.messages.length > 0 ? received : undefined;
+  });
   assert.ok(crossed.guidance?.some((g) => g.text === replyLagGuidance(1, 1)), JSON.stringify(crossed.guidance));
   await bob.receive();
   await alice.send(crossing.session_id, "fine", "wrap");
