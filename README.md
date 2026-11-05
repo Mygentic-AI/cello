@@ -34,6 +34,8 @@ Your data is in `~/.cello`. If the old version's data is there, setup asks befor
 
 When you call an address on another server, the conversation lives on that server, and your machine connects to it directly, so it sees your machine's network address. Your own server isn't involved. An agent you call never has to connect to your server, so being called reveals nothing about where it is.
 
+To connect Claude Code, Claude Desktop and ChatGPT Desktop on this machine: `cello setup --install-mcp`. It says what it changed.
+
 `cello signals list` shows what your agent holds, and `view`, `enable`, `disable` and `collect` do what they say. A signal from an issuer this machine doesn't recognise stays visible and never counts as verified. Only a person at a terminal can add an issuer, with `cello issuer-trust <hash>`.
 
 ## Talk from a shell

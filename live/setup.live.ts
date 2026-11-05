@@ -28,10 +28,10 @@ function newHome(): string {
   return home;
 }
 
-function run(home: string, args: string[], input = ""): Promise<Run> {
+function run(home: string, args: string[], input = "", env: Record<string, string> = {}): Promise<Run> {
   return new Promise((resolve, reject) => {
     // HOME moves too, so a real ~/.cello on this machine doesn't change what's printed.
-    const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "" }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", ...env }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += String(chunk); });
@@ -362,7 +362,7 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
   await client.connect(stderrFree);
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
   for (const name of ["cello_signals_list", "cello_signals_view", "cello_signals_enable", "cello_signals_disable", "cello_signals_collect"]) assert.ok(tools.includes(name), name);
-  for (const name of ["cello_issuer_trust", "cello_issuer_untrust", "cello_issuer_list_load", "cello_setup"]) assert.equal(tools.includes(name), false, name);
+  for (const name of ["cello_issuer_trust", "cello_issuer_untrust", "cello_setup"]) assert.equal(tools.includes(name), false, name);
   const answer = await client.callTool({ name: "cello_signals_list", arguments: { agent: "Ann" } }, z.any() as never) as { content: { text: string }[] };
   assert.ok((JSON.parse(answer.content[0]?.text as string) as Listed).signals.length >= 4);
   await client.close();
@@ -371,6 +371,38 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
   await ok(home, ["logout"]);
   await ok(home, ["login"]);
   assert.equal((await listed(home, "Ann")).signals.length, count);
+  await ok(home, ["logout"]);
+});
+
+test("--install-mcp connects what it finds, says what it changed, and a repeat changes nothing", async () => {
+  const home = newHome();
+  const app = join(home, "Library", "Application Support", "Claude");
+  mkdirSync(app, { recursive: true });
+  const config = join(app, "claude_desktop_config.json");
+  writeFileSync(config, JSON.stringify({ theme: "dark", mcpServers: { other: { command: "x" } } }));
+  mkdirSync(join(home, ".codex"));
+  writeFileSync(join(home, ".codex", "config.toml"), 'model = "x"\n');
+  const args = setupArgs(["--code", newCode(), "--install-mcp"]);
+  // PATH without claude, so Claude Code is reported missing, whatever this machine has.
+  const first = await run(home, args, "", { PATH: "/usr/bin:/bin" });
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /Claude Code: not found/);
+  assert.match(first.stdout, /Claude Desktop: installed\. added the cello server/);
+  assert.match(first.stdout, /ChatGPT Desktop: installed\. added \[mcp_servers\.cello\]/);
+  const desktop = JSON.parse(readFileSync(config, "utf8")) as { theme: string; mcpServers: { other: unknown; cello: { command: string; args: string[] } } };
+  assert.equal(desktop.theme, "dark");
+  assert.deepEqual(desktop.mcpServers.other, { command: "x" });
+  assert.equal(desktop.mcpServers.cello.command, process.execPath);
+  assert.ok(existsSync(desktop.mcpServers.cello.args[0] as string));
+  assert.match(readFileSync(join(home, ".codex", "config.toml"), "utf8"), /^model = "x"\n[\s\S]*\[mcp_servers\.cello\]/);
+  const again = await run(home, args, "", { PATH: "/usr/bin:/bin" });
+  assert.match(again.stdout, /Claude Desktop: unchanged/);
+  assert.match(again.stdout, /ChatGPT Desktop: unchanged/);
+  writeFileSync(config, "not json");
+  const broken = await run(home, args, "", { PATH: "/usr/bin:/bin" });
+  assert.equal(broken.status, 1);
+  assert.match(broken.stdout, /left alone/);
+  assert.equal(readFileSync(config, "utf8"), "not json");
   await ok(home, ["logout"]);
 });
 

@@ -6,6 +6,7 @@ import { createConnection } from "node:net";
 import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DEFAULT_SERVER_URL } from "./daemon/settings.ts";
 import { HOW_TO_GET_A_CODE } from "./daemon/wallet.ts";
+import { installMcp } from "./install-mcp.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 
 const CONNECT_WAIT_TRIES = 50;
@@ -13,7 +14,7 @@ const CONNECT_WAIT_MS = 200;
 const REPLY_WAIT_SECONDS = 60;
 const HELLO = "Hello. I've just been set up.";
 
-export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [--server <url>] [--issuer <url>] [--concierge <address>] [--yes] [--json]
+export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
 
 Set up CELLO on this machine: start the background program, create an agent's key, redeem your code for a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
@@ -23,6 +24,7 @@ Set up CELLO on this machine: start the background program, create an agent's ke
   --issuer     The issuer, if it isn't the default.
   --concierge  The agent to call at the end.
   --yes        Start the background program without asking.
+  --install-mcp  Find Claude Code, Claude Desktop and ChatGPT Desktop on this machine, connect each one, and say what changed. Without it, setup only prints the Claude Code commands.
   --json       Answer in JSON.
 `;
 
@@ -42,7 +44,7 @@ class SetupFailed extends Error {
 }
 
 function options(args: string[]): Record<string, string | true> {
-  const known: Record<string, boolean> = { code: true, name: true, server: true, issuer: true, concierge: true, yes: false, json: false };
+  const known: Record<string, boolean> = { code: true, name: true, server: true, issuer: true, concierge: true, yes: false, json: false, "install-mcp": false };
   const found: Record<string, string | true> = {};
   for (let i = 0; i < args.length; i++) {
     const name = (args[i] as string).replace(/^--/, "");
@@ -192,12 +194,17 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     if (reply?.replied) say(`The Concierge replied, in its own words:\n"${(reply.text as string).replace(/\p{Cc}/gu, " ")}"`);
     if (reply && !reply.replied) throw new SetupFailed("concierge_silent", `Your agent is set up, and the Concierge didn't answer: ${reply.problem as string}. Run the same command again to retry. Nothing is lost.`);
 
-    say("Next, to use it from Claude Code:");
-    say('  claude plugin marketplace add "$(npm root -g)/@cello-protocol/cli"');
-    say("  claude plugin install cello@cello-protocol");
-    say("  claude --dangerously-load-development-channels plugin:cello@cello-protocol");
-    if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, server, name: agent.name, agent_id: agent.agent_id, address: agent.address, already_set_up: agent.already_set_up === true, signals_held: agent.signals_held ?? null, concierge: reply })}\n`);
-    return 0;
+    const installed = flags["install-mcp"] === true ? installMcp() : null;
+    for (const line of installed ?? []) say(`${line.app}: ${line.outcome.replace("_", " ")}. ${line.detail}`);
+    if (!installed) {
+      say("Next, to use it from Claude Code:");
+      say('  claude plugin marketplace add "$(npm root -g)/@cello-protocol/cli"');
+      say("  claude plugin install cello@cello-protocol");
+      say("  claude --dangerously-load-development-channels plugin:cello@cello-protocol");
+      say("Or let setup connect the apps on this machine: cello setup --install-mcp");
+    }
+    if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, server, name: agent.name, agent_id: agent.agent_id, address: agent.address, already_set_up: agent.already_set_up === true, signals_held: agent.signals_held ?? null, concierge: reply, install_mcp: installed })}\n`);
+    return installed?.some((line) => line.outcome === "failed") ? 1 : 0;
   } catch (err: unknown) {
     if (err instanceof SetupFailed || err instanceof DaemonRefused) return refuse(err.code, err.message);
     if (err instanceof DaemonGone) return refuse(err.code, "The background program stopped during setup. Run the same command again.");
