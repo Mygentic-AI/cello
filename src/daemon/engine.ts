@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, refusedGuidance, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
+import { NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -1978,9 +1978,15 @@ export class Engine {
   }
 
   #requireSession(agent: AgentContext, sessionHex: string): SessionRow {
-    const local = this.#store.session(agent.signer.id, parseHex(sessionHex, 16, "session id"));
-    if (!local) throw new LocalError("unknown_session", "this agent has no such session");
-    return local;
+    // A short id isn't an id at all, but a piece of a real one is a paste that got cut.
+    if (typeof sessionHex === "string" && /^[0-9a-fA-F]+$/.test(sessionHex) && sessionHex.length < 32 && this.#store.sessionsOf(agent.signer.id).some((row) => toHex(row.session_id).startsWith(sessionHex.toLowerCase()))) {
+      throw new LocalError("unknown_session", TRUNCATED_SESSION_GUIDANCE);
+    }
+    const id = parseHex(sessionHex, 16, "session id");
+    const local = this.#store.session(agent.signer.id, id);
+    if (local) return local;
+    const another = [...this.#agents.values()].some((other) => this.#store.session(other.signer.id, id) !== undefined);
+    throw new LocalError("unknown_session", another ? OTHER_AGENTS_SESSION_GUIDANCE : NO_SESSION_GUIDANCE);
   }
 
   // Returns an outcome rather than throwing for anything the agent can act on.
@@ -2302,7 +2308,7 @@ export class Engine {
     const byId = this.#agents.get(nameOrId);
     if (byId) return byId.hex;
     for (const agent of this.#agents.values()) if (agent.name === nameOrId) return agent.hex;
-    throw new LocalError("unknown_agent", `no agent named ${nameOrId} on this machine`);
+    throw new LocalError("unknown_agent", noAgentGuidance(nameOrId));
   }
 
   agentName(agentHex: string): string {

@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { OVER_GUIDANCE, SESSION_CLOSED_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
+import { NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, OVER_GUIDANCE, SESSION_CLOSED_GUIDANCE, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
@@ -220,6 +220,16 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
+
+  // A wrong id or agent says where to look, and which mistake it was.
+  await assert.rejects(alice.call("receive", { session_id: "00".repeat(16) }), { code: "unknown_session", message: NO_SESSION_GUIDANCE });
+  await assert.rejects(alice.call("receive", { session_id: sessionId.slice(0, 8) }), { code: "unknown_session", message: TRUNCATED_SESSION_GUIDANCE });
+  await assert.rejects(alice.call("receive", { agent: "Nobody" }), { code: "unknown_agent", message: noAgentGuidance("Nobody") });
+  const outsider = await alice.call("create_agent", { name: "Outsider" }) as { agent_id: string };
+  await online(daemon, "Outsider");
+  const outsiderHeld = await daemon.attach("Outsider");
+  await assert.rejects(outsiderHeld.call("receive", { session_id: sessionId }), { code: "unknown_session", message: OTHER_AGENTS_SESSION_GUIDANCE });
+  assert.equal(outsider.agent_id.length, 64);
 
   // Too big says to split it, and the session carries on.
   const roomy = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
