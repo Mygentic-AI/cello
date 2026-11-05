@@ -306,11 +306,11 @@ const serverProfileDir = join(runDir, "server-prof");
 let composeUp = false;
 
 function compose(...argv: string[]): string {
-  return execFileSync("docker", ["compose", "-p", COMPOSE_PROJECT, "-f", join(serverDir, "docker-compose.yml"), "-f", overridePath, "--project-directory", serverDir, ...argv], {
+  return execFileSync("docker", ["compose", "-p", COMPOSE_PROJECT, "-f", join(serverDir, "docker-compose.yml"), "-f", join(serverDir, "live/docker-compose.test.yml"), "-f", overridePath, "--project-directory", serverDir, ...argv], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, CELLO_PORT: String(LOCAL_PORT), POSTGRES_PASSWORD: localPasswords.postgres, CELLO_APP_PASSWORD: localPasswords.app },
+    env: { ...process.env, CELLO_TEST_VOUCH: "1", CELLO_PORT: String(LOCAL_PORT), POSTGRES_PASSWORD: localPasswords.postgres, CELLO_APP_PASSWORD: localPasswords.app },
   });
 }
 const localPasswords = { postgres: randomBytes(16).toString("hex"), app: randomBytes(16).toString("hex") };

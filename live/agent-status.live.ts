@@ -243,7 +243,7 @@ after(() => {
 
 test("the kill switch stops an agent at once, on each server, and leaves it able to seal", { timeout: 400_000 }, async () => {
   const portal = await signerFromSeeds(generateIdentitySeeds());
-  const portalEnv = { CELLO_PORTAL_STATUS_KEY: JSON.stringify(identityCodec.encode(portal.publicIdentity)) };
+  const portalEnv = { CELLO_TRUSTED_ISSUERS: JSON.stringify([{ address: "issuer.status-test.example", ...identityCodec.encode(portal.publicIdentity) }]) };
   server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv);
   server(["up", "--name", B.name, "--port", String(B.port), "--no-build"], portalEnv);
   say("two servers up");
