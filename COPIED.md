@@ -39,3 +39,8 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 - `src/screener/screener-state.ts`, same name. Its paths now live under this client's home.
 
 `src/screener/inbound.ts` and `outbound.ts` are rewrites of `screen/inbound.ts` and `screen/outbound.ts`, with the same checks, as steps a scheduler can pause. Left out, by the copying test, because they need things v2 doesn't have yet: the outbound rate limiter and the personal-data warnings, which need a decision-and-resend flow.
+
+## The CBOR encoder
+
+- `src/protocol/cbor.ts`, from `cello-client/core/protocol-types/src/cbor.ts`, unchanged and comments kept, because they state the rules. cbor-x is held at exactly 1.6.4, the version it was measured on, because signed bytes depend on it.
+- `test/no-multiple-cbor-encoders.test.ts` is a port of the test of the same name in `core/protocol-types`, from vitest to node:test.

@@ -28,6 +28,7 @@
     "@noble/curves": "latest",
     "@noble/hashes": "latest",
     "@signalapp/sqlcipher": "latest",
+    "cbor-x": "1.6.4",
     "re2-wasm": "latest",
     "ws": "latest",
     "zod": "latest"
