@@ -48,3 +48,5 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 ## Trust signals
 
 - `src/protocol/signal.ts`, from `cello-client/core/protocol-types/src/trust-signal.ts`, commit `f2977a7a`: comments on their own lines removed, imports rewritten. Its changes are the ones ruled in the spec's section 4.4, and they're a separate commit, so the diff shows them.
+
+`src/protocol/issuer-list.ts` and `issuer-roots.ts` are new, for the signed issuer list: there's no old code for it.

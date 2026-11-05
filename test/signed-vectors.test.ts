@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { ISSUER_ENTRY_DOMAIN, ISSUER_LIST_DOMAIN, type RootAlgorithm, type RootName, SIGNED_ISSUER_LIST_DOMAIN, encodeIssuerEntry, encodeIssuerList, verifyIssuerList } from "../src/protocol/issuer-list.ts";
 import { SIGNED_SIGNAL_DOMAIN, TRUST_SIGNAL_DOMAIN, type TrustSignalEnvelope, checkSignal, decodeTrustSignalEnvelope, encodeTrustSignalEnvelope } from "../src/protocol/signal.ts";
 import { checkTranscript } from "../src/protocol/transcript.ts";
 import * as structures from "../src/protocol/structures.ts";
@@ -134,6 +135,28 @@ test("a signed signal made today still verifies, with its signatures outside wha
   assert.equal(ed.length, 128);
   assert.equal(pq.length, 4840);
   assert.equal(Buffer.from(check.signal.hash).toString("hex"), createHash("sha256").update(Buffer.from(envelope, "hex")).digest("hex"));
+});
+
+const listFormats = (file as unknown as { issuer_list_format: { entry: { inputs: { name: string; ed: { hex: string }; pq: { hex: string }; expires_at: number }; expected_cbor_hex: string }; list: { issued_at: number; expires_at: number; expected_cbor_hex: string }; signed: { test_only_roots: { name: RootName; algorithm: RootAlgorithm; publicKey: { hex: string } }[]; now: number; expected_cbor_hex: string } } }).issuer_list_format;
+
+test("the issuer list's bytes are pinned, and a reader without cbor-x gets every field back", async () => {
+  const { entry, list, signed } = listFormats;
+  const issuer = { name: entry.inputs.name, ed: fromHex(entry.inputs.ed.hex), pq: fromHex(entry.inputs.pq.hex), expires_at: entry.inputs.expires_at };
+  assert.equal(Buffer.from(encodeIssuerEntry(issuer)).toString("hex"), entry.expected_cbor_hex);
+  assert.deepEqual(readCbor(Buffer.from(entry.expected_cbor_hex, "hex")), [ISSUER_ENTRY_DOMAIN, issuer.name, entry.inputs.ed.hex, entry.inputs.pq.hex, BigInt(issuer.expires_at)]);
+  assert.ok(entry.expected_cbor_hex.endsWith(`1b${issuer.expires_at.toString(16).padStart(16, "0")}`), "above 2^32 it's a uint64");
+  assert.equal(Buffer.from(encodeIssuerList({ issued_at: list.issued_at, expires_at: list.expires_at, issuers: [issuer] })).toString("hex"), list.expected_cbor_hex);
+  assert.deepEqual(readCbor(Buffer.from(list.expected_cbor_hex, "hex")), [ISSUER_LIST_DOMAIN, BigInt(list.issued_at), BigInt(list.expires_at), entry.expected_cbor_hex]);
+  const independent = readCbor(Buffer.from(signed.expected_cbor_hex, "hex"));
+  assert.equal(independent[0], SIGNED_ISSUER_LIST_DOMAIN);
+  assert.equal(independent[1], list.expected_cbor_hex);
+  assert.equal((independent[2] as string).length, 128, "enclave");
+  assert.equal(independent[3], null, "kms didn't sign");
+  assert.equal((independent[4] as string).length, 128, "paper");
+  const roots = signed.test_only_roots.map((root) => ({ name: root.name, algorithm: root.algorithm, publicKey: fromHex(root.publicKey.hex) }));
+  const check = await verifyIssuerList(fromHex(signed.expected_cbor_hex), roots, signed.now);
+  assert.ok(check.ok, check.ok ? "" : check.message);
+  assert.deepEqual(check.list.issuers, [issuer]);
 });
 
 const kept = JSON.parse(readFileSync(new URL("vectors/record-format-1.json", import.meta.url), "utf8")) as { seal_key: string; transcript: { entries: { entry: WireSigned }[]; seal: { certificate: WireSigned } } };
