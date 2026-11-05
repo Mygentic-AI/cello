@@ -44,3 +44,7 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 
 - `src/protocol/cbor.ts`, from `cello-client/core/protocol-types/src/cbor.ts`, unchanged and comments kept, because they state the rules. cbor-x is held at exactly 1.6.4, the version it was measured on, because signed bytes depend on it.
 - `test/no-multiple-cbor-encoders.test.ts` is a port of the test of the same name in `core/protocol-types`, from vitest to node:test.
+
+## Trust signals
+
+- `src/protocol/signal.ts`, from `cello-client/core/protocol-types/src/trust-signal.ts`, commit `f2977a7a`: comments on their own lines removed, imports rewritten. Its changes are the ones ruled in the spec's section 4.4, and they're a separate commit, so the diff shows them.
