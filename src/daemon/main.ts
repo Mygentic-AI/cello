@@ -39,7 +39,7 @@ const store = new Store(databasePath(home));
 // The server is named once, and then lives in the database, so moving the database and its key moves everything.
 const serverUrl = process.argv[2] ?? store.getConfig(CONFIG_SERVER_URL);
 if (!serverUrl) {
-  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello-v2 login --server <url>" });
+  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello login --server <url>" });
   process.exit(1);
 }
 const sockets = new Set<Socket>();
@@ -99,7 +99,7 @@ function acting(params: Record<string, unknown>): string {
 }
 
 function requirePerson(params: Record<string, unknown>): void {
-  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello-v2 command. Nothing changed.");
+  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
 }
 
 function stopListening(socket: Socket): void {

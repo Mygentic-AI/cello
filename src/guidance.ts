@@ -68,7 +68,7 @@ export function sealMismatchMessage(position: number, sessionHex: string): strin
   return `the server sealed a different history from the one you hold at position ${position}. ${compareTranscripts(sessionHex)}`;
 }
 
-export const DAEMON_STOPPED_DOORBELL = "CELLO: the local daemon stopped. Tools will fail until you run `cello-v2 login`.";
+export const DAEMON_STOPPED_DOORBELL = "CELLO: the local daemon stopped. Tools will fail until you run `cello login`.";
 
 // Your own operator wrote a policy, and this machine wrote the error, so unlike a name either can ride on a doorbell.
 export function policyDoorbell(data: Record<string, unknown>): string {

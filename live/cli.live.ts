@@ -48,13 +48,13 @@ function cello(args: string[], input?: string, caller?: string, inHome = home): 
 
 function ok(args: string[], input?: string): Record<string, unknown> {
   const run = cello(args, input);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
 function okIn(inHome: string, args: string[]): Record<string, unknown> {
   const run = cello(args, undefined, undefined, inHome);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
@@ -102,7 +102,7 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
     assert.ok(overview.stdout.includes(`  ${op.command}`), `${op.command} is missing from the help`);
     const own = cello([op.command, "--help"]);
     assert.equal(own.status, 0);
-    assert.match(own.stdout, new RegExp(`^Usage: cello-v2 ${op.command}`));
+    assert.match(own.stdout, new RegExp(`^Usage: cello ${op.command}`));
   }
   assert.ok(overview.stdout.split("\n").every((line) => line.length <= 120), "the list stays short");
 
@@ -427,7 +427,7 @@ test("a standby past its time tells each side once, across restarts, and changes
     const caller = `shell-${agent}`;
     const must = (args: string[]): Record<string, unknown> => {
       const done = cello(args, undefined, caller, inHome);
-      assert.equal(done.status, 0, `${agent}: cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+      assert.equal(done.status, 0, `${agent}: cello ${args.join(" ")} failed: ${done.stderr}`);
       return done.json;
     };
     const act = (...args: string[]): Record<string, unknown> => must([...args, "--agent", agent]);
@@ -704,7 +704,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   // No seal yet: it names the failure, and says what to run.
   const unsealed = refusal(nedHome, "--all", "--out", nextOut(), "--agent", "Ned");
   assert.equal(unsealed["error"], "no_seal_covers");
-  assert.match(unsealed["message"] as string, new RegExp(`cello-v2 seal ${session} --agent Ned`));
+  assert.match(unsealed["message"] as string, new RegExp(`cello seal ${session} --agent Ned`));
 
   const seal = ned("seal", session) as unknown as SealOutput;
   assert.deepEqual([seal.witnessed_through, seal.received_through], [4, 3]);
@@ -936,7 +936,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   });
   const must = async (args: string[]): Promise<Record<string, unknown>> => {
     const done = await run(args);
-    assert.equal(done.status, 0, `cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+    assert.equal(done.status, 0, `cello ${args.join(" ")} failed: ${done.stderr}`);
     return done.json;
   };
   try {

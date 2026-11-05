@@ -36,7 +36,7 @@ class Machine {
   }
   ok(args: string[], input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return run.json;
   }
   log(): { event: string; [key: string]: unknown }[] {

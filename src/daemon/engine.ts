@@ -109,7 +109,7 @@ const LATEST_DATE_MS = 8.64e15;
 const SCREENED_ACK_DELAY_MS = 1_000;
 const SENDER_BACKLOG_CHECK_MS = 250;
 const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
-const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
+const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello screener install";
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
@@ -1084,7 +1084,7 @@ export class Engine {
       }
       let screened: string;
       try {
-        screened = (await this.#screenOutbound(agent, text, {}, `cello-v2 settings --agent ${agent.hex}`)).text;
+        screened = (await this.#screenOutbound(agent, text, {}, `cello settings --agent ${agent.hex}`)).text;
       } catch (err: unknown) {
         // A worker that's restarting says nothing about the text, so that one tries again at the next catch-up.
         if (err instanceof LocalError && err.code === "screener_unavailable") return;
@@ -2013,7 +2013,7 @@ export class Engine {
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", SIGNAL_ERROR);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
+    const screened = await this.#screenOutbound(agent, text, params, `cello send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
@@ -2252,7 +2252,7 @@ export class Engine {
     const built = await buildTranscript({
       ...choice,
       session: toHex(local.session_id),
-      sealCommand: `cello-v2 seal ${toHex(local.session_id)} --agent ${agent.name}`,
+      sealCommand: `cello seal ${toHex(local.session_id)} --agent ${agent.name}`,
       entries: this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => ({
         position: row.position as number,
         entry: JSON.parse(row.entry) as WireSigned,
@@ -2324,7 +2324,7 @@ export class Engine {
     // You blocked them, so calling them is a stop sign. A person can drive through it, once.
     const dialled = /^[0-9a-fA-F]{64}/.exec(target)?.[0];
     if (dialled && this.governance.contacts.tierOf(agent.signer.id, parseHex(dialled, 32, "target")) === TIER.BLOCKED) {
-      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello-v2 initiate-session ${target} --agent ${agent.hex}`);
+      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello initiate-session ${target} --agent ${agent.hex}`);
     }
     let address: ReturnType<typeof parseAddress>;
     try {

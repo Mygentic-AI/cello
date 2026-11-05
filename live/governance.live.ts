@@ -41,13 +41,13 @@ class Machine {
   }
   ok(args: string[], input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return run.json;
   }
   refused(args: string[], code: string, input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 1, `cello-v2 ${args.join(" ")} should have been refused`);
-    assert.equal(run.json["error"], code, `cello-v2 ${args.join(" ")} said ${run.stderr}`);
+    assert.equal(run.status, 1, `cello ${args.join(" ")} should have been refused`);
+    assert.equal(run.json["error"], code, `cello ${args.join(" ")} said ${run.stderr}`);
     return run.json;
   }
   // A real terminal: the code is read off the screen and typed back.

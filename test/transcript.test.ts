@@ -132,7 +132,7 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
 }
 
 function request(chain: Chain, seals: readonly SealRecordOnWire[], choice: Partial<TranscriptRequest>): TranscriptRequest {
-  return { session: "s", sealCommand: "cello-v2 seal s --agent Alice", entries: chain.held, seals, salt: SALT, reveal: undefined, all: false, sealId: undefined, ...choice };
+  return { session: "s", sealCommand: "cello seal s --agent Alice", entries: chain.held, seals, salt: SALT, reveal: undefined, all: false, sealId: undefined, ...choice };
 }
 
 async function exported(chain: Chain, seal: SealRecordOnWire, choice: Partial<TranscriptRequest> = { all: true }): Promise<TranscriptOnWire> {
@@ -399,7 +399,7 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
 
   const none = await buildTranscript(request(chain, [], { all: true }));
   assert.deepEqual(none.ok ? null : none.fault, "no_seal_covers");
-  assert.match(none.ok ? "" : none.message, /Run: cello-v2 seal s --agent Alice/);
+  assert.match(none.ok ? "" : none.message, /Run: cello seal s --agent Alice/);
   assert.equal(await faultFor([part], { all: true }), "no_seal_covers", "all can't quietly mean less than everything held");
   assert.equal(await faultFor([part], { reveal: "4" }), "no_seal_covers");
   assert.equal(await faultFor([whole], { reveal: "1-99999999999" }), "no_seal_covers");

@@ -103,7 +103,7 @@ function side(name: string, home: Server) {
   };
   const must = (args: string[]): Record<string, unknown> => {
     const done = run(args);
-    assert.equal(done.status, 0, `${name}: cello-v2 ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
+    assert.equal(done.status, 0, `${name}: cello ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
     return done.json;
   };
   const self = {

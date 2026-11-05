@@ -102,7 +102,7 @@ async function worker(caller: string): Promise<void> {
 
   async function must(args: string[], input?: string): Promise<Run> {
     const run = await cello(args, input);
-    if (run.status !== 0) throw new Error(`cello-v2 ${args[0]} failed: ${run.stderr}`);
+    if (run.status !== 0) throw new Error(`cello ${args[0]} failed: ${run.stderr}`);
     return run;
   }
 

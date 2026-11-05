@@ -18,7 +18,7 @@ const homes: string[] = [];
 
 function cello(home: string, args: string[], input?: string): Json {
   const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: home } });
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   try {
     return JSON.parse(run.stdout) as Json;
   } catch {

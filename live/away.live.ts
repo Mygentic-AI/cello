@@ -23,7 +23,7 @@ class Machine {
   }
   ok(args: string[], input?: string): Json {
     const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home, CELLO_CALLER: "cli" } });
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return JSON.parse(run.stdout) as Json;
   }
   login(): void {

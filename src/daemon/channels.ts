@@ -474,7 +474,7 @@ export class Channels {
   async post(agentHex: string, channelHex: string, text: string, title: string | undefined, params: Record<string, unknown> = {}): Promise<unknown> {
     const channel = parseChannel(channelHex);
     // Outside the channel's queue, so a slow screen doesn't hold up what's arriving.
-    const retry = `cello-v2 channel-post ${channelHex} - --allow-flagged --agent ${agentHex}`;
+    const retry = `cello channel-post ${channelHex} - --allow-flagged --agent ${agentHex}`;
     const screenedBody = await this.#host.screenOutbound(agentHex, text, params, retry);
     const screenedTitle = title === undefined ? undefined : await this.#host.screenOutbound(agentHex, title, params, retry);
     const report = { ...screenedTitle?.report, ...screenedBody.report };

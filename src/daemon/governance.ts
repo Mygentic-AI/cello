@@ -110,7 +110,7 @@ export class Governance {
   noteRefusal(agentId: Uint8Array, agentHex: string, callerHex: string, code: RefusalCode): void {
     const told = this.reach.addRefusal(agentId, fromHex(callerHex), code, code !== "not_accepting", this.reach.number(agentId, "limits.cap_alarm_minutes") * 60_000);
     logEvent("session.refused", { agent: agentHex, caller: callerHex, reason: code });
-    if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello-v2 contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+    if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
   }
 
   knocks(agentId: Uint8Array, agentHex: string): unknown[] {
@@ -120,7 +120,7 @@ export class Governance {
       last_at: new Date(row.last_refused_at).toISOString(),
       times: row.times,
       reason: row.last_reason,
-      let_through: `cello-v2 contact-set-tier ${toHex(row.contact_id)} --tier known --agent ${agentHex}`,
+      let_through: `cello contact-set-tier ${toHex(row.contact_id)} --tier known --agent ${agentHex}`,
     }));
   }
 
@@ -181,8 +181,8 @@ export class Governance {
     const moniker = this.#monikerOf(params);
     const tier = this.contacts.tierOf(agentId, contact.id);
     if (tier === TIER.BLOCKED) {
-      requirePerson(params, `This would lift your block on ${contact.hex}.`, `cello-v2 contact-add ${contact.hex} --agent ${agentHex}`);
-      this.#weakened(agentId, `contact.${contact.hex}.tier`, "blocked", "known", "loosen", params, `cello-v2 contact-set-tier ${contact.hex} --tier blocked --agent ${agentHex}`);
+      requirePerson(params, `This would lift your block on ${contact.hex}.`, `cello contact-add ${contact.hex} --agent ${agentHex}`);
+      this.#weakened(agentId, `contact.${contact.hex}.tier`, "blocked", "known", "loosen", params, `cello contact-set-tier ${contact.hex} --tier blocked --agent ${agentHex}`);
     }
     const raises = tier === TIER.BLOCKED || tier === TIER.UNKNOWN;
     this.contacts.put(agentId, contact.id, { ...(raises ? { tier: TIER.KNOWN, provenance: "added" } : {}), ...(moniker ? { moniker } : {}) });
@@ -202,8 +202,8 @@ export class Governance {
     const row = this.contacts.get(agentId, contact.id);
     if (!row) return { removed: false, contact_id: contact.hex };
     if (row.tier === TIER.BLOCKED) {
-      requirePerson(params, `Removing ${contact.hex} would lift your block on it.`, `cello-v2 contact-remove ${contact.hex} --agent ${agentHex}`);
-      this.#weakened(agentId, `contact.${contact.hex}.tier`, "blocked", "unknown", "loosen", params, `cello-v2 contact-set-tier ${contact.hex} --tier blocked --agent ${agentHex}`);
+      requirePerson(params, `Removing ${contact.hex} would lift your block on it.`, `cello contact-remove ${contact.hex} --agent ${agentHex}`);
+      this.#weakened(agentId, `contact.${contact.hex}.tier`, "blocked", "unknown", "loosen", params, `cello contact-set-tier ${contact.hex} --tier blocked --agent ${agentHex}`);
     }
     this.contacts.remove(agentId, contact.id);
     return { removed: true, contact_id: contact.hex };
@@ -215,10 +215,10 @@ export class Governance {
     if (to === undefined) throw new LocalError("invalid_tier", "tier must be blocked, unknown, known, whitelisted or vip");
     const from = this.contacts.tierOf(agentId, contact.id);
     const direction: Direction = to > from ? "loosen" : to < from ? "tighten" : "neutral";
-    if (direction === "loosen") requirePerson(params, `This raises ${contact.hex} from ${tierName(from)} to ${tierName(to)}, which gives it more room with ${agentHex}.`, `cello-v2 contact-set-tier ${contact.hex} --tier ${tierName(to)} --agent ${agentHex}`);
+    if (direction === "loosen") requirePerson(params, `This raises ${contact.hex} from ${tierName(from)} to ${tierName(to)}, which gives it more room with ${agentHex}.`, `cello contact-set-tier ${contact.hex} --tier ${tierName(to)} --agent ${agentHex}`);
     this.contacts.put(agentId, contact.id, { tier: to });
     if (direction === "loosen") this.reach.forgetRefusal(agentId, contact.id);
-    if (direction !== "neutral") this.#weakened(agentId, `contact.${contact.hex}.tier`, tierName(from), tierName(to), direction, params, `cello-v2 contact-set-tier ${contact.hex} --tier ${tierName(from)} --agent ${agentHex}`);
+    if (direction !== "neutral") this.#weakened(agentId, `contact.${contact.hex}.tier`, tierName(from), tierName(to), direction, params, `cello contact-set-tier ${contact.hex} --tier ${tierName(from)} --agent ${agentHex}`);
     return this.#contactView(agentId, this.contacts.get(agentId, contact.id) as ContactRow);
   }
 
@@ -251,7 +251,7 @@ export class Governance {
     const clear = params["clear"] === true;
     if (clear === (value !== undefined)) throw new LocalError("bad_argument", "give a value, or --clear to go back to the default, and not both");
     const agentFlag = agentHex ? ` --agent ${agentHex}` : "";
-    const command = `cello-v2 settings-set ${name} ${clear ? "--clear" : JSON.stringify(value)}${agentFlag}`;
+    const command = `cello settings-set ${name} ${clear ? "--clear" : JSON.stringify(value)}${agentFlag}`;
     const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts."].some((prefix) => name.startsWith(prefix));
     if (!isAgentKey) {
       if (clear) throw new LocalError("bad_argument", "a daemon setting has no --clear: set the value you want");
@@ -270,7 +270,7 @@ export class Governance {
     const change = this.reach.plan(agentId, name, clear ? null : value as string);
     if (change.direction === "loosen") requirePerson(params, `This changes ${name} from ${change.from} to ${change.to} for ${agentHex}, which loosens it.`, command);
     change.apply();
-    if (change.direction !== "neutral") this.#weakened(agentId, name, change.from, change.to, change.direction, params, `cello-v2 settings-set ${name} ${JSON.stringify(change.from)} --agent ${agentHex}`);
+    if (change.direction !== "neutral") this.#weakened(agentId, name, change.from, change.to, change.direction, params, `cello settings-set ${name} ${JSON.stringify(change.from)} --agent ${agentHex}`);
     return { name, value: change.to, was: change.from };
   }
 
@@ -288,7 +288,7 @@ export class Governance {
     const key = optionalText(params, "key") as string;
     const raw = optionalText(params, "value") ?? "";
     const plan = this.guards.plan(agentId, key, raw);
-    const command = `cello-v2 config-set ${key} ${JSON.stringify(raw)} --agent ${agentHex}`;
+    const command = `cello config-set ${key} ${JSON.stringify(raw)} --agent ${agentHex}`;
     if (plan.direction === "loosen") requirePerson(params, `This loosens the guard ${key}, to ${JSON.stringify(plan.value)}, for ${agentHex}.`, command);
     this.guards.apply(agentId, plan, params["person_confirmed"] === true);
     logEvent("guard.changed", { agent: agentHex, key, direction: plan.direction, confirmed: params["person_confirmed"] === true });
@@ -330,7 +330,7 @@ export class Governance {
     const sender = hexParam(params, "sender");
     const before = this.screeningRule(agentId, sender.hex).level;
     if (LEVEL_STRENGTH[level] < LEVEL_STRENGTH[before]) {
-      requirePerson(params, `This weakens screening of everything ${sender.hex} sends to ${agentHex}, to level ${level}.\nAn agent you control can still forward something hostile it picked up elsewhere.`, `cello-v2 screening ${sender.hex} --level ${level} --agent ${agentHex}`);
+      requirePerson(params, `This weakens screening of everything ${sender.hex} sends to ${agentHex}, to level ${level}.\nAn agent you control can still forward something hostile it picked up elsewhere.`, `cello screening ${sender.hex} --level ${level} --agent ${agentHex}`);
     }
     return this.#applyScreening(agentId, agentHex, "sender", sender.hex, before, level, params, { sender: sender.hex });
   }
@@ -341,7 +341,7 @@ export class Governance {
     if (tierFromName(tier) === undefined) throw new LocalError("invalid_tier", "tier must be whitelisted or vip");
     if (level !== "full" && !WEAKENABLE_TIERS.includes(tier)) throw new LocalError("tier_not_weakenable", `Screening can't be weakened for the whole ${tier} tier, by anyone: an agent's own call or reply can put a stranger in known. It can be weakened for whitelisted or vip, or for one named agent.`);
     if (LEVEL_STRENGTH[level] < LEVEL_STRENGTH[before]) {
-      requirePerson(params, `This weakens screening of everything sent to ${agentHex} by anyone in the ${tier} tier, to level ${level}.\nEven a trusted agent can be compromised, and can forward something hostile it picked up elsewhere.`, `cello-v2 screening --tier ${tier} --level ${level} --agent ${agentHex}`);
+      requirePerson(params, `This weakens screening of everything sent to ${agentHex} by anyone in the ${tier} tier, to level ${level}.\nEven a trusted agent can be compromised, and can forward something hostile it picked up elsewhere.`, `cello screening --tier ${tier} --level ${level} --agent ${agentHex}`);
     }
     return this.#applyScreening(agentId, agentHex, "tier", tier, before, level, params, { tier });
   }
@@ -353,7 +353,7 @@ export class Governance {
     logEvent("screening.rule_changed", { agent: agentHex, scope, subject, from: before, to: level });
     const flags = scope === "tier" ? `--tier ${subject}` : subject;
     const whose = scope === "tier" ? `the ${subject} tier` : subject;
-    this.#hooks.notify(agentId, `The screening rule for messages from ${whose} changed from ${before} to ${level}, by a person at this machine's terminal. If that wasn't you, run: cello-v2 screening ${flags} --level full --agent ${agentHex}`);
+    this.#hooks.notify(agentId, `The screening rule for messages from ${whose} changed from ${before} to ${level}, by a person at this machine's terminal. If that wasn't you, run: cello screening ${flags} --level full --agent ${agentHex}`);
     return { agent_id: agentHex, ...named, level, was: before };
   }
 
@@ -394,7 +394,7 @@ export class Governance {
       ...(clear ? {} : { value: none ? { mode: "none" as const } : { mode: "text" as const, text: text as string } }),
       ...(everyN === undefined ? {} : { everyN }),
     }, params["caller"] === "cli" ? "operator" : "agent"));
-    return { ...proposal, in_force: false, next: `Nothing has changed. A person approves it at a terminal: cello-v2 policy-approve ${proposal.proposal_id} --agent ${agentHex}` };
+    return { ...proposal, in_force: false, next: `Nothing has changed. A person approves it at a terminal: cello policy-approve ${proposal.proposal_id} --agent ${agentHex}` };
   }
 
   policyApprove(agentId: Uint8Array, agentHex: string, params: Params): unknown {
@@ -407,7 +407,7 @@ export class Governance {
     }
     const was = pending.was ? (pending.was.mode === "none" ? "NONE" : pending.was.text) : "nothing";
     const now = pending.action === "clear" ? "nothing" : pending.mode === "none" ? "NONE" : pending.text;
-    requirePerson(params, `This puts in force the ${pending.type} policy at ${pending.scope}${pending.target ? ` ${pending.target}` : ""}, proposed by ${pending.proposed_by}.\nIt was: ${was as string}\nIt becomes: ${now as string}`, `cello-v2 policy-approve ${proposalId} --agent ${agentHex}`);
+    requirePerson(params, `This puts in force the ${pending.type} policy at ${pending.scope}${pending.target ? ` ${pending.target}` : ""}, proposed by ${pending.proposed_by}.\nIt was: ${was as string}\nIt becomes: ${now as string}`, `cello policy-approve ${proposalId} --agent ${agentHex}`);
     const result = this.#proposals.approve(agentId, proposalId);
     if (!result.ok) throw new LocalError(result.reason, `no pending proposal ${proposalId}`);
     this.guards.record(agentId, `policy.${pending.type}.${pending.scope}${pending.target ? `.${pending.target}` : ""}`, was, now, "neutral", true);
