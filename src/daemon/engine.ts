@@ -80,7 +80,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { sessionGuidance } from "../guidance.ts";
+import { sessionGuidance, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -2067,6 +2067,10 @@ export class Engine {
     this.#refuseIfStopped(agent, this.#urlOf(local));
     if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
     await this.#resendPending(agent, local);
+    // Their close is an entry too, and it isn't a message anyone could have read.
+    const lastPeer = this.#store.lastPeerEntry(agent.signer.id, local.session_id);
+    const theirCloseUnread = local.peer_closed === 1 && lastPeer !== undefined && (lastPeer.position as number) > local.read_position;
+    const neverRead = this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) - (theirCloseUnread ? 1 : 0);
     // Durable before the close goes, so a crash anywhere after this still ends in a seal.
     this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
     const body: Body = { n: new Uint8Array(randomBytes(16)), text: "", signal: null, est_minutes: null, ...(oneMessage ? { one_message: true as const } : {}) };
@@ -2074,7 +2078,7 @@ export class Engine {
     const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
     const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
     const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
-    return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
+    return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report, ...(report.sent && neverRead > 0 ? { unread_count: neverRead, unread_warning: unreadWarning(neverRead, sessionHex) } : {}) };
   }
 
   // ---- Sealing ----

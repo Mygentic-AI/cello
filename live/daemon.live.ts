@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE } from "../src/guidance.ts";
+import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, unreadWarning } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
@@ -220,6 +220,17 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
+
+  // Closing with something unread still closes, and says what was never read. Their close doesn't count as a message.
+  const second = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await alice.send(second.session_id, "you never read this", "over");
+  await bob.bell("message");
+  const closedUnread = await bob.call("close_session", { session_id: second.session_id }) as { closed: boolean; unread_count: number; unread_warning: string };
+  assert.deepEqual([closedUnread.closed, closedUnread.unread_count, closedUnread.unread_warning], [true, 1, unreadWarning(1, second.session_id)]);
+  await alice.bell("peer_closed");
+  const closedRead = await alice.call("close_session", { session_id: second.session_id }) as { unread_warning?: string };
+  assert.equal(closedRead.unread_warning, undefined, "their close alone isn't an unread message");
   await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed" });
 
   // The encrypted text is gone from the server, and the chain is kept.
