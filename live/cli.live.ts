@@ -36,7 +36,7 @@ function sql(query: string): string {
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
 function cello(args: string[], input?: string, caller?: string, inHome = home): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
+  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -48,13 +48,13 @@ function cello(args: string[], input?: string, caller?: string, inHome = home): 
 
 function ok(args: string[], input?: string): Record<string, unknown> {
   const run = cello(args, input);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
 function okIn(inHome: string, args: string[]): Record<string, unknown> {
   const run = cello(args, undefined, undefined, inHome);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
@@ -102,7 +102,7 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
     assert.ok(overview.stdout.includes(`  ${op.command}`), `${op.command} is missing from the help`);
     const own = cello([op.command, "--help"]);
     assert.equal(own.status, 0);
-    assert.match(own.stdout, new RegExp(`^Usage: cello-v2 ${op.command}`));
+    assert.match(own.stdout, new RegExp(`^Usage: cello ${op.command}`));
   }
   assert.ok(overview.stdout.split("\n").every((line) => line.length <= 120), "the list stays short");
 
@@ -427,7 +427,7 @@ test("a standby past its time tells each side once, across restarts, and changes
     const caller = `shell-${agent}`;
     const must = (args: string[]): Record<string, unknown> => {
       const done = cello(args, undefined, caller, inHome);
-      assert.equal(done.status, 0, `${agent}: cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+      assert.equal(done.status, 0, `${agent}: cello ${args.join(" ")} failed: ${done.stderr}`);
       return done.json;
     };
     const act = (...args: string[]): Record<string, unknown> => must([...args, "--agent", agent]);
@@ -448,7 +448,7 @@ test("a standby past its time tells each side once, across restarts, and changes
       },
       // A command that blocks, so this test can carry on while it does.
       wait: () => new Promise<Run>((resolve) => {
-        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
+        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
           resolve({ status: err ? (err.code as number) : 0, stdout, stderr, json: JSON.parse(stdout) as Record<string, unknown> });
         });
       }),
@@ -704,7 +704,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   // No seal yet: it names the failure, and says what to run.
   const unsealed = refusal(nedHome, "--all", "--out", nextOut(), "--agent", "Ned");
   assert.equal(unsealed["error"], "no_seal_covers");
-  assert.match(unsealed["message"] as string, new RegExp(`cello-v2 seal ${session} --agent Ned`));
+  assert.match(unsealed["message"] as string, new RegExp(`cello seal ${session} --agent Ned`));
 
   const seal = ned("seal", session) as unknown as SealOutput;
   assert.deepEqual([seal.witnessed_through, seal.received_through], [4, 3]);
@@ -729,7 +729,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
 
   // A relative out starts from where the command runs.
   const relativeFolder = mkdtempSync(join(scratch, "relative-"));
-  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: nedHome } });
+  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_HOME: nedHome } });
   assert.equal(relative.status, 0, relative.stderr);
   assert.equal(realpathSync((JSON.parse(relative.stdout) as { file: string }).file), realpathSync(join(relativeFolder, "here.json")));
 
@@ -924,7 +924,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
   // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
   const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
-    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: liarHome } }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {
       let json: Record<string, unknown> = {};
       try {
         json = JSON.parse(stdout || stderr) as Record<string, unknown>;
@@ -936,7 +936,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   });
   const must = async (args: string[]): Promise<Record<string, unknown>> => {
     const done = await run(args);
-    assert.equal(done.status, 0, `cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+    assert.equal(done.status, 0, `cello ${args.join(" ")} failed: ${done.stderr}`);
     return done.json;
   };
   try {

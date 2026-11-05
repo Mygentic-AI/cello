@@ -23,6 +23,8 @@ Run them whenever you like. They need nobody's OK.
 
 **The kill switch test** runs alone: `CELLO_SERVER_DIR=<server> scripts/status-test.sh`. Two real servers on projects `cello-v2-status-a` and `-b`, ports 18800 and 18801, with real daemons and a real terminal for the person-only commands. It flips the switch mid-conversation, and checks both connections, sealing, the signed log, forged statements, and what crosses between servers. It builds under the heavy-run lock, and needs no other lock.
 
+**The setup test.** `CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<cello-issuer> scripts/setup-test.sh`. A real server on project `cello-v2-setup` and port 18950, real daemons and a real terminal, with a stand-in issuer in `live/stand-in-issuer.ts`. It runs setup from nothing, its failures, a repeat, a second agent's copies, and the wallet. It reads requests with `cello-issuer`'s own code, but it doesn't run that issuer or the waitlist.
+
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 
 ```

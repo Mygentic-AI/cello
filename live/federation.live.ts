@@ -104,7 +104,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 function side(name: string, home: Server) {
   let dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
   const run = (args: string[]): Run => {
-    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: dir, CELLO_CALLER: `shell-${name}` } });
+    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` } });
     let json: Record<string, unknown> = {};
     try {
       json = JSON.parse(done.stdout || done.stderr) as Record<string, unknown>;
@@ -115,7 +115,7 @@ function side(name: string, home: Server) {
   };
   const must = (args: string[]): Record<string, unknown> => {
     const done = run(args);
-    assert.equal(done.status, 0, `${name}: cello-v2 ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
+    assert.equal(done.status, 0, `${name}: cello ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
     return done.json;
   };
   const self = {

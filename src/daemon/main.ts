@@ -8,10 +8,14 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
 import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
-import { celloHome, databasePath, socketPath } from "./paths.ts";
+import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
 
 const home = celloHome();
+if (holdsOldVersion(home)) {
+  logEvent("daemon.old_version_data", { message: oldVersionMessage(home) });
+  process.exit(1);
+}
 mkdirSync(home, { recursive: true, mode: 0o700 });
 const path = socketPath(home);
 
@@ -39,7 +43,7 @@ const store = new Store(databasePath(home));
 // The server is named once, and then lives in the database, so moving the database and its key moves everything.
 const serverUrl = process.argv[2] ?? store.getConfig(CONFIG_SERVER_URL);
 if (!serverUrl) {
-  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello-v2 login --server <url>" });
+  logEvent("daemon.no_server", { message: "no server is set for this data yet. Run: cello setup, or cello login --server <url>" });
   process.exit(1);
 }
 const sockets = new Set<Socket>();
@@ -98,8 +102,13 @@ function acting(params: Record<string, unknown>): string {
   return agent;
 }
 
+// Naming an agent is enough for its own wallet: it doesn't act as the agent, so it takes no hold.
+function named(params: Record<string, unknown>): string {
+  return engine.resolveAgent(text(params, "agent"));
+}
+
 function requirePerson(params: Record<string, unknown>): void {
-  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello-v2 command. Nothing changed.");
+  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
 }
 
 function stopListening(socket: Socket): void {
@@ -202,6 +211,25 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
     }
     case "create_agent":
       return engine.createAgent(text(params, "name"));
+    case "enroll_agent":
+      return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"));
+    case "signals_list":
+      return engine.wallet.list(named(params), params["all"] === true);
+    case "signals_view":
+      return engine.wallet.view(named(params), text(params, "hash"));
+    case "signals_enable":
+      return engine.wallet.enable(named(params), text(params, "hash"));
+    case "signals_disable":
+      return engine.wallet.disable(named(params), text(params, "hash"));
+    case "signals_collect":
+      return engine.wallet.collect(named(params));
+    case "issuer_trust": {
+      const agent = named(params);
+      if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);
+      return engine.wallet.trustIssuer(agent, text(params, "hash"));
+    }
+    case "issuer_untrust":
+      return engine.wallet.untrustIssuer(named(params), text(params, "hash"));
     case "use_agent": {
       const agent = acting(params);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };

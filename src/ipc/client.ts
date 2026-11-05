@@ -14,7 +14,7 @@ export class DaemonRefused extends Error {
 export class DaemonGone extends Error {
   readonly code = "daemon_not_running";
   constructor() {
-    super("the daemon isn't running. Run: cello-v2 login");
+    super("the daemon isn't running. Run: cello login");
     this.name = "DaemonGone";
   }
 }

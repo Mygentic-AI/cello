@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS standby_told (
 );
 `;
 
-export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number }
+export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number; awaiting_signal: number }
 
 export interface EvidenceRow {
   agent_id: Uint8Array;
@@ -279,6 +279,8 @@ export class Store {
     this.#addColumn("sessions", "server_url", "TEXT");
     this.#addColumn("agents", "removed", "INTEGER NOT NULL DEFAULT 0");
     this.#addColumn("sessions", "frozen", "INTEGER NOT NULL DEFAULT 0");
+    // An agent still getting its first signal. It doesn't try to register until it has one.
+    this.#addColumn("agents", "awaiting_signal", "INTEGER NOT NULL DEFAULT 0");
   }
 
   #addColumn(table: string, column: string, definition: string): void {
@@ -374,6 +376,10 @@ export class Store {
 
   insertAgent(agentId: Uint8Array, name: string, edSeed: Uint8Array, pqSeed: Uint8Array): void {
     this.#prep("INSERT INTO agents (agent_id, name, ed_seed, pq_seed) VALUES (?, ?, ?, ?)").run([agentId, name, edSeed, pqSeed]);
+  }
+
+  setAwaitingSignal(agentId: Uint8Array, awaiting: boolean): void {
+    this.#prep("UPDATE agents SET awaiting_signal = ? WHERE agent_id = ?").run([awaiting ? 1 : 0, agentId]);
   }
 
   markRegistered(agentId: Uint8Array): void {

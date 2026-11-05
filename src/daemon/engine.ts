@@ -70,6 +70,9 @@ import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
 import { LocalError, requirePerson } from "./errors.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
+import { productionRootKeys } from "../protocol/issuer-roots.ts";
+import { SHIPPED_ISSUER_LIST } from "../shipped-issuer-list.ts";
+import { type Collected, HOW_TO_GET_A_CODE, Wallet } from "./wallet.ts";
 import type { ChannelHost } from "./channels.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
@@ -96,6 +99,7 @@ const STILL_UPLOADING = Symbol("still uploading");
 // One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
 const MAX_REPLY_BYTES = 8_000_000;
 export const CONFIG_SERVER_URL = "server_url";
+const DEFAULT_AGENT_NAME = "agent";
 const CONFIG_SERVER_IDENTITY = "server_identity";
 const CONFIG_SEAL_KEY = "seal_key";
 const CONFIG_SEAL_LOG_HEAD = "seal_log_head";
@@ -109,7 +113,7 @@ const LATEST_DATE_MS = 8.64e15;
 const SCREENED_ACK_DELAY_MS = 1_000;
 const SENDER_BACKLOG_CHECK_MS = 250;
 const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
-const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
+const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello screener install";
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
@@ -182,6 +186,10 @@ interface AgentContext {
   hex: string;
   name: string;
   registered: boolean;
+  // Still getting its first signal, so it stays off the server until it has one.
+  awaitingSignal: boolean;
+  // Why it isn't online, in the server's words, for whoever asks next.
+  problem?: string;
   online: boolean;
   statuses: Map<string, AgentStatusRow>;
 }
@@ -282,6 +290,7 @@ export class Engine {
   readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
   readonly #refusals = new Map<string, string>();
   readonly governance: Governance;
+  readonly wallet: Wallet;
   readonly #away: Away;
   #lastCrashTold = 0;
   #modelMissingTold = false;
@@ -291,6 +300,20 @@ export class Engine {
     this.#events = events;
     this.#url = url;
     this.#settings = loadSettings(store);
+    this.wallet = new Wallet(store, {
+      keys: (agentHex) => {
+        const row = store.agents().find((candidate) => toHex(candidate.agent_id) === agentHex);
+        if (!row) throw new LocalError("unknown_agent", noAgentGuidance(agentHex));
+        return { identity: this.#requireAgent(agentHex).signer.publicIdentity, seeds: { ed: new Uint8Array(row.ed_seed), pq: new Uint8Array(row.pq_seed) } };
+      },
+      screen: (agentHex, issuerHex, text) => this.channelHost().screen(agentHex, `signal:${issuerHex}`, 0, issuerHex, text),
+      notify: (agentId, text) => {
+        const agent = this.#agents.get(toHex(agentId));
+        if (agent) this.#notify(agent, null, text);
+      },
+      roots: productionRootKeys,
+      shippedList: SHIPPED_ISSUER_LIST,
+    });
     this.governance = new Governance(store, {
       notify: (agentId, text) => {
         const agent = this.#agents.get(toHex(agentId));
@@ -323,12 +346,12 @@ export class Engine {
 
   async start(): Promise<void> {
     const pinned = this.#store.getConfig(CONFIG_SERVER_URL);
-    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_V2_HOME.`);
+    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_HOME.`);
     this.#store.setConfig(CONFIG_SERVER_URL, this.#url);
     for (const row of this.#store.agents()) {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
       const statuses = new Map(this.#store.statusRows(signer.id).map((status) => [status.server_url, status]));
-      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false, statuses });
+      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, awaitingSignal: row.awaiting_signal === 1, online: false, statuses });
       this.governance.writeDefaults(signer.id);
     }
     this.#checkStandbys();
@@ -735,7 +758,9 @@ export class Engine {
   }
 
   async #bringOnline(agent: AgentContext, server: ConnectedServer): Promise<void> {
+    if (agent.awaitingSignal) return;
     try {
+      agent.problem = undefined;
       if (!agent.registered) await this.#register(agent);
       while (this.#server === server) {
         try {
@@ -761,14 +786,17 @@ export class Engine {
         }
       }
     } catch (err: unknown) {
-      logEvent("agent.bring_online_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) });
+      agent.problem = err instanceof Error ? err.message : String(err);
+      logEvent("agent.bring_online_failed", { agent: agent.hex, message: agent.problem });
     }
   }
 
   async #register(agent: AgentContext): Promise<void> {
     const identity = agent.signer.publicIdentity;
     const signature = await agent.signer.sign("cello-register", registerBytes({ serverId: this.#serverId(), identity }));
-    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature) });
+    // The verified email a server asks for. A server that doesn't require one leaves it unread.
+    const email = this.wallet.emailFile(agent.hex);
+    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature), ...(email ? { signal: toB64(email) } : {}) });
     this.#store.markRegistered(agent.signer.id);
     agent.registered = true;
     logEvent("agent.registered", { agent: agent.hex });
@@ -1084,7 +1112,7 @@ export class Engine {
       }
       let screened: string;
       try {
-        screened = (await this.#screenOutbound(agent, text, {}, `cello-v2 settings --agent ${agent.hex}`)).text;
+        screened = (await this.#screenOutbound(agent, text, {}, `cello settings --agent ${agent.hex}`)).text;
       } catch (err: unknown) {
         // A worker that's restarting says nothing about the text, so that one tries again at the next catch-up.
         if (err instanceof LocalError && err.code === "screener_unavailable") return;
@@ -2013,7 +2041,7 @@ export class Engine {
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
     if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", SIGNAL_ERROR);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
+    const screened = await this.#screenOutbound(agent, text, params, `cello send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
@@ -2252,7 +2280,7 @@ export class Engine {
     const built = await buildTranscript({
       ...choice,
       session: toHex(local.session_id),
-      sealCommand: `cello-v2 seal ${toHex(local.session_id)} --agent ${agent.name}`,
+      sealCommand: `cello seal ${toHex(local.session_id)} --agent ${agent.name}`,
       entries: this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => ({
         position: row.position as number,
         entry: JSON.parse(row.entry) as WireSigned,
@@ -2268,18 +2296,84 @@ export class Engine {
 
   // ---- What agents and people ask for ----
 
-  async createAgent(name: string): Promise<unknown> {
-    if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
-    if ([...this.#agents.values()].some((a) => a.name === name)) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
-    const seeds = generateIdentitySeeds();
-    const signer = await signerFromSeeds(seeds);
+  #newAgent(name: string, seeds: ReturnType<typeof generateIdentitySeeds>, signer: Signer, awaitingSignal: boolean): AgentContext {
     this.#store.insertAgent(signer.id, name, seeds.ed, seeds.pq);
-    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, online: false, statuses: new Map() };
+    if (awaitingSignal) this.#store.setAwaitingSignal(signer.id, true);
+    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, awaitingSignal, online: false, statuses: new Map() };
     this.#agents.set(agent.hex, agent);
     this.governance.writeDefaults(signer.id);
+    return agent;
+  }
+
+  #describeNew(agent: AgentContext): Record<string, unknown> {
+    const note = agent.online ? {} : { note: `saved, but not online yet: ${agent.problem ?? this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
+    return { name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
+  }
+
+  #checkNewName(name: string): void {
+    if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
+  }
+
+  async #signalThenOnline(agent: AgentContext, get: () => Promise<Collected>): Promise<Collected> {
+    const got = await get();
+    if (!this.wallet.hasEmail(agent.hex)) {
+      const why = got.refused.map((r) => r.message).join("; ") || "it sent none";
+      throw new LocalError("no_email_signal", `The issuer didn't give this agent a verified email signal it could keep: ${why}. Nothing was registered. Run the same command again, and if it says the same, write to support@celloprotocol.com.`);
+    }
+    agent.awaitingSignal = false;
+    this.#store.setAwaitingSignal(agent.signer.id, false);
     if (this.#server) await this.#bringOnline(agent, this.#server);
-    const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
-    return { name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
+    return got;
+  }
+
+  // A second agent gets copies from the one already enrolled. With nothing to vouch for it, it registers bare, and a server that requires a signal refuses it by name.
+  async createAgent(name: string): Promise<unknown> {
+    this.#checkNewName(name);
+    const existing = [...this.#agents.values()].find((a) => a.name === name);
+    if (existing && !existing.awaitingSignal) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
+    if (existing) return this.#enrollExisting(existing, undefined);
+    const holder = this.wallet.holderAmong([...this.#agents.keys()]);
+    const seeds = generateIdentitySeeds();
+    const signer = await signerFromSeeds(seeds);
+    const agent = this.#newAgent(name, seeds, signer, holder !== undefined);
+    if (holder) return this.#enrollExisting(agent, undefined);
+    if (this.#server) await this.#bringOnline(agent, this.#server);
+    return this.#describeNew(agent);
+  }
+
+  async #enrollExisting(agent: AgentContext, code: string | undefined): Promise<unknown> {
+    const holder = this.wallet.holderAmong([...this.#agents.keys()].filter((hex) => hex !== agent.hex));
+    const got = await this.#signalThenOnline(agent, async () => {
+      if (holder) return this.wallet.copyFromHolder(agent.hex, holder);
+      // A first answer that was lost, or a signal that has lapsed: the issuer may already know this agent, which spends no code.
+      try {
+        const collected = await this.wallet.collect(agent.hex);
+        if (this.wallet.hasEmail(agent.hex)) return collected;
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
+      }
+      if (!code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
+      return this.wallet.redeem(agent.hex, code);
+    });
+    return { ...this.#describeNew(agent), signals_held: got.held, signals_refused: got.refused };
+  }
+
+  // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
+  async enrollAgent(name: string | undefined, code: string | undefined): Promise<unknown> {
+    const agents = [...this.#agents.values()];
+    const chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
+    if (chosen && this.wallet.hasEmail(chosen.hex)) {
+      if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
+      return { ...this.#describeNew(chosen), already_set_up: true };
+    }
+    if (chosen) return this.#enrollExisting(chosen, code);
+    const newName = name ?? DEFAULT_AGENT_NAME;
+    this.#checkNewName(newName);
+    const holder = this.wallet.holderAmong(agents.map((a) => a.hex));
+    if (!holder && !code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
+    const seeds = generateIdentitySeeds();
+    const signer = await signerFromSeeds(seeds);
+    return this.#enrollExisting(this.#newAgent(newName, seeds, signer, true), code);
   }
 
   // What channels.ts needs from here. It shares an agent's keys and the server link, and nothing about any conversation.
@@ -2324,7 +2418,7 @@ export class Engine {
     // You blocked them, so calling them is a stop sign. A person can drive through it, once.
     const dialled = /^[0-9a-fA-F]{64}/.exec(target)?.[0];
     if (dialled && this.governance.contacts.tierOf(agent.signer.id, parseHex(dialled, 32, "target")) === TIER.BLOCKED) {
-      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello-v2 initiate-session ${target} --agent ${agent.hex}`);
+      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello initiate-session ${target} --agent ${agent.hex}`);
     }
     let address: ReturnType<typeof parseAddress>;
     try {

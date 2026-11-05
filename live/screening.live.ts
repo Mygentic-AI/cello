@@ -25,7 +25,7 @@ class Machine {
     this.env = env;
   }
   run(args: string[], input?: string): { status: number | null; stdout: string; stderr: string; json: Json } {
-    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home, ...this.env } });
+    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home, ...this.env } });
     let json: Json = {};
     try {
       json = JSON.parse(run.stdout || run.stderr) as Json;
@@ -36,7 +36,7 @@ class Machine {
   }
   ok(args: string[], input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return run.json;
   }
   log(): { event: string; [key: string]: unknown }[] {
@@ -306,7 +306,7 @@ print(out)
 `;
 
 function atTerminal(m: Machine, args: string[], answer: string): { out: string } {
-  const run = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_V2_HOME: m.home, ...m.env } });
+  const run = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: m.home, ...m.env } });
   assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
   return { out: run.stdout };
 }
@@ -322,7 +322,7 @@ test("only a person at a terminal can weaken screening, and the state shows", as
   const piped = b.run(args, "yes\n");
   assert.equal(piped.status, 1);
   assert.equal(piped.json["error"], "person_required", "a pipe isn't a person, whatever it writes");
-  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1", CELLO_V2_HOME: b.home }), args, "right");
+  const inAgentShell = atTerminal(new Machine({ CELLO_CALLER: "agent-1", CELLO_HOME: b.home }), args, "right");
   assert.match(inAgentShell.out, /person_required/);
 
   const wrong = atTerminal(b, args, "000000");

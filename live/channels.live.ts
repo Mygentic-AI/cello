@@ -31,7 +31,7 @@ const ids = {} as Record<Who, string>;
 function run(who: Who, args: string[], input?: string): { status: number | null; json: Record<string, unknown>; stderr: string } {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     encoding: "utf8", input, maxBuffer: 16_000_000,
-    env: { ...process.env, CELLO_V2_HOME: homes[who] },
+    env: { ...process.env, CELLO_HOME: homes[who] },
   });
   let json: Record<string, unknown> = {};
   try {
@@ -619,7 +619,7 @@ test("MCP: every channel operation is a tool, its description says channel text 
   const session = new Client({ name: "channels-live", version: "0" });
   const bells: { content: string; meta: Record<string, string> }[] = [];
   session.setNotificationHandler(z.object({ method: z.literal("notifications/claude/channel"), params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }) }), async ({ params }) => { bells.push(params); });
-  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_V2_HOME: homes.bea } as Record<string, string> }));
+  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_HOME: homes.bea } as Record<string, string> }));
   try {
     const { tools } = await session.listTools();
     const named = new Map(tools.map((tool) => [tool.name, tool.description ?? ""]));

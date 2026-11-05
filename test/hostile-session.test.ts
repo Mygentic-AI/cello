@@ -96,7 +96,7 @@ class Scene {
     });
     const port = (this.wss.address() as { port: number }).port;
     const home = mkdtempSync(join(tmpdir(), "cello-hostile-session-"));
-    this.daemon = spawn(process.execPath, [fileURLToPath(new URL("../src/daemon/main.ts", import.meta.url)), `ws://127.0.0.1:${port}/`], { env: { ...process.env, CELLO_V2_HOME: home }, stdio: process.env["SHOW_DAEMON"] ? "inherit" : "ignore" });
+    this.daemon = spawn(process.execPath, [fileURLToPath(new URL("../src/daemon/main.ts", import.meta.url)), `ws://127.0.0.1:${port}/`], { env: { ...process.env, CELLO_HOME: home }, stdio: process.env["SHOW_DAEMON"] ? "inherit" : "ignore" });
     this.client = await until("the daemon's socket", async () => {
       try { return await IpcClient.connect(join(home, "daemon.sock")); } catch { return false; }
     });

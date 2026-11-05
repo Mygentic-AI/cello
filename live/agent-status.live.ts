@@ -90,7 +90,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 
 function side(name: string, home: Server) {
   const dir = mkdtempSync(join(tmpdir(), `cello-v2-status-${name}-`));
-  const env = { ...process.env, CELLO_V2_HOME: dir, CELLO_CALLER: `shell-${name}` };
+  const env = { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` };
   const run = (args: string[], input?: string): Run => {
     const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
     let json: Record<string, unknown> = {};
@@ -103,7 +103,7 @@ function side(name: string, home: Server) {
   };
   const must = (args: string[]): Record<string, unknown> => {
     const done = run(args);
-    assert.equal(done.status, 0, `${name}: cello-v2 ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
+    assert.equal(done.status, 0, `${name}: cello ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
     return done.json;
   };
   const self = {
@@ -152,7 +152,7 @@ const gets = (who: Side): Promise<boolean> => until(`something to reach ${who.na
 
 // Sends and hands the turn over, with the other side reading it.
 async function talk(from: Side, to: Side, session: string, text: string): Promise<void> {
-  const sent = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", from.name], { encoding: "utf8", input: text, env: { ...process.env, CELLO_V2_HOME: homeOf(from), CELLO_CALLER: `shell-${from.name}` } });
+  const sent = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", from.name], { encoding: "utf8", input: text, env: { ...process.env, CELLO_HOME: homeOf(from), CELLO_CALLER: `shell-${from.name}` } });
   assert.equal(sent.status, 0, `${from.name} couldn't send: ${sent.stdout}${sent.stderr}`);
   await gets(to);
   const read = to.read();
@@ -276,7 +276,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(cara.refused("close-session", session), "agent_suspended");
   assert.equal(cara.refused("wait"), "agent_suspended");
   assert.equal(cara.refused("channel-create", "after-the-flip", "--type", "public"), "agent_suspended");
-  const longSend = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", "Cara"], { encoding: "utf8", input: LONG_TEXT, env: { ...process.env, CELLO_V2_HOME: homeOf(cara), CELLO_CALLER: "shell-Cara" } });
+  const longSend = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", "Cara"], { encoding: "utf8", input: LONG_TEXT, env: { ...process.env, CELLO_HOME: homeOf(cara), CELLO_CALLER: "shell-Cara" } });
   assert.match(longSend.stderr, /agent_suspended/, "a long message stops too");
   say(`the next send and receive both stopped, by name, ${report["ms_from_operator_command_to_refused_send_and_receive"] as number} ms after the command`);
 

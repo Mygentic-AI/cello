@@ -27,7 +27,7 @@ interface Status { pid: number; connected: boolean; agents: AgentStatus[] }
 class Daemon {
   readonly home = mkdtempSync(join(tmpdir(), "cello-v2-live-"));
   cli(...args: string[]): string {
-    return execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    return execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
   login(): void {
     this.cli("login", "--server", url);

@@ -53,3 +53,10 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 - `src/protocol/signal.ts`, from `cello-client/core/protocol-types/src/trust-signal.ts`, commit `f2977a7a`: comments on their own lines removed, imports rewritten. Its changes are the ones ruled in the spec's section 4.4, and they're a separate commit, so the diff shows them.
 
 `src/protocol/issuer-list.ts` and `issuer-roots.ts` are new, for the signed issuer list: there's no old code for it.
+
+## The wallet and setup
+
+- `src/daemon/signal-store.ts`, from `cello-client`, `core/daemon/src/trust-signal-store.ts`, methods sliced out by script with their comments removed. The consent, selection, supersession and expiry rules stay. Changed for the rulings: a row belongs to the agent its signal names, the signed file is kept, and whether it's public is a column. Gone: `issued_submissions` and `listPresentable`. `contact_trust_signals` has no writer until a counterparty's signals are read, so it comes with that unit.
+- `src/daemon/wallet.ts` carries the list, view, enable and disable logic of `core/daemon/src/signal-handlers.ts`. The consent verbs wait for endorsements.
+- `src/signals-text.ts`, from `core/cli/src/commands.ts`, `trustSignals`: its wording and columns, with an expiry and issuer column added.
+- `src/daemon/issuer-client.ts`, from `cello-issuer`, branch `core`, `src/server/trust/agent-request.ts`: the request's encoding, framing and wire form, by script. `live/stand-in-issuer.ts` reads requests with that file itself, so a drift fails the setup test.
