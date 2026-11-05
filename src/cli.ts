@@ -285,11 +285,11 @@ async function confirmPerson(refusal: string): Promise<void> {
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
 
-const BRIDGE_USAGE = `Usage: cello-v2 bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public] [--allow-initiate]
+const BRIDGE_USAGE = `Usage: cello-v2 bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public | --not-public] [--allow-initiate]
        cello-v2 bridge daemon-unit
 
 hermes connects a Hermes install to one agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin. A flag you leave out goes back to its default.
---public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list.
+--public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.
 daemon-unit prints a systemd unit that keeps the daemon up on a server.
 `;
 
@@ -310,7 +310,7 @@ async function bridgeCommand(args: string[]): Promise<void> {
   const flags = new Set<string>();
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i] as string;
-    if (arg === "--public" || arg === "--allow-initiate") flags.add(arg);
+    if (arg === "--public" || arg === "--not-public" || arg === "--allow-initiate") flags.add(arg);
     else if (["--agent", "--hermes-home", "--session-scope", "--channel-notifications", "--landing-session"].includes(arg)) {
       const value = rest[++i];
       if (value === undefined) usageError(`${arg} needs a value`);
@@ -327,6 +327,7 @@ async function bridgeCommand(args: string[]): Promise<void> {
     landingSession: values["--landing-session"],
     public: flags.has("--public"),
     allowInitiate: flags.has("--allow-initiate"),
+    notPublic: flags.has("--not-public"),
     modelReady: async () => (await screenerState({ dir: screenerModelDir(), runtimePresent: await runtimeAvailable() })).state === "ready",
   });
   if (!result.ok) fail(`${result.output}\n`, EXIT_REFUSED);

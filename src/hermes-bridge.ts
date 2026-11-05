@@ -31,6 +31,8 @@ export interface BridgeOptions {
   // A public agent: limited tools, one conversation per caller, and the screening model required.
   public: boolean;
   allowInitiate: boolean;
+  // Stays public across re-runs until this says otherwise.
+  notPublic: boolean;
   modelReady: () => Promise<boolean>;
   exec?: Exec;
 }
@@ -68,23 +70,32 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   const refuse = (output: string): { ok: boolean; output: string } => ({ ok: false, output });
   const agent = options.agent.trim();
   if (!/^[^\s=]+$/.test(agent)) return refuse(`'${agent}' can't be an agent's name here.`);
-  const scope = options.sessionScope ?? (options.public ? "peer" : "agent");
+  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
+  if (!existsSync(hermesHome)) return refuse(`There's no Hermes home at ${hermesHome}. Install Hermes first, or pass --hermes-home.`);
+  const envPath = join(hermesHome, ".env");
+  const hermesEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  // This has to be re-run after every upgrade, and forgetting a flag then mustn't open a public agent to strangers. Only --not-public ends it.
+  const wasPublic = hermesEnv.split("\n").includes("CELLO_PUBLIC=1");
+  if (options.public && options.notPublic) return refuse("--public and --not-public can't go together.");
+  const isPublic = options.public || (wasPublic && !options.notPublic);
+  const allowInitiate = options.allowInitiate || (isPublic && !options.notPublic && hermesEnv.split("\n").includes("CELLO_ALLOW_INITIATE=1"));
+  const scope = options.sessionScope ?? (isPublic ? "peer" : "agent");
   if (!(SESSION_SCOPES as readonly string[]).includes(scope)) return refuse(`--session-scope must be one of ${SESSION_SCOPES.join(", ")}, not '${scope}'.`);
-  if (options.public && scope !== "peer") return refuse("A public agent needs --session-scope peer, or callers would share one conversation.");
+  if (isPublic && scope !== "peer") return refuse("A public agent needs --session-scope peer, or callers would share one conversation.");
   const channels = options.channelNotifications ?? "on";
   if (!(CHANNEL_NOTIFICATIONS as readonly string[]).includes(channels)) return refuse(`--channel-notifications must be one of ${CHANNEL_NOTIFICATIONS.join(", ")}, not '${channels}'.`);
-  if (options.allowInitiate && !options.public) return refuse("--allow-initiate only means something with --public.");
+  if (options.allowInitiate && !isPublic) return refuse("--allow-initiate only means something with --public.");
   const landing = options.landingSession?.trim();
   if (landing && !SAFE_SESSION_ID.test(landing)) return refuse(`--landing-session '${landing}' isn't a session id.`);
 
-  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
-  if (!existsSync(hermesHome)) return refuse(`There's no Hermes home at ${hermesHome}. Install Hermes first, or pass --hermes-home.`);
   // Strangers' text goes straight to this agent's model, so a public agent doesn't start on the rules alone.
-  if (options.public && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello-v2 screener install");
+  if (isPublic && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello-v2 screener install");
 
-  const envPath = join(hermesHome, ".env");
-  const hermesEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  const tools = isPublic ? [...PUBLIC_TOOLS, ...(allowInitiate ? ["cello_initiate_session"] : [])] : undefined;
   const settings: Record<string, string> = {
+    ...(isPublic ? { CELLO_PUBLIC: "1" } : {}),
+    ...(allowInitiate ? { CELLO_ALLOW_INITIATE: "1" } : {}),
+    ...(tools ? { CELLO_TOOLS: tools.join(",") } : {}),
     CELLO_AGENT_NAME: agent,
     CELLO_CALLER: BRIDGE_CALLER,
     CELLO_SESSION_SCOPE: scope,
@@ -92,7 +103,7 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     ...(process.env["CELLO_V2_HOME"] ? { CELLO_V2_HOME: celloHome() } : {}),
     ...(landing ? { CELLO_LANDING_SESSION: landing } : {}),
   };
-  const wanted = withEnv(hermesEnv, settings, [...RETIRED_ENV, ...(landing ? [] : ["CELLO_LANDING_SESSION"])]);
+  const wanted = withEnv(hermesEnv, settings, [...RETIRED_ENV, ...(landing ? [] : ["CELLO_LANDING_SESSION"]), ...(isPublic ? [] : ["CELLO_PUBLIC", "CELLO_TOOLS"]), ...(allowInitiate ? [] : ["CELLO_ALLOW_INITIATE"])]);
   const envNeedsWriting = wanted !== hermesEnv;
   if (envNeedsWriting) {
     // Checked before anything is written. A hardened host keeps this file read-only, and half an install looks like a failed one.
@@ -125,11 +136,11 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   }
 
   // By full path, so a gateway started by a service manager with a short PATH still finds it.
-  const tools = options.public ? [...PUBLIC_TOOLS, ...(options.allowInitiate ? ["cello_initiate_session"] : [])] : undefined;
   // The limit is enforced by the tool process itself. 'hermes config set' can only write a string, which Hermes would read as one tool's name.
   const mcpEnv = [`CELLO_CALLER=${BRIDGE_CALLER}`, ...(process.env["CELLO_V2_HOME"] ? [`CELLO_V2_HOME=${celloHome()}`] : []), ...(tools ? [`CELLO_TOOLS=${tools.join(",")}`] : [])];
   const mcpAdd = ["mcp", "add", "cello", "--env", ...mcpEnv, "--command", process.execPath, "--args", mcpEntry()];
-  const steps = [["plugins", "enable", "cello"], mcpAdd];
+  // The tools first: an enabled plugin with no tools reads messages and can never answer them.
+  const steps = [mcpAdd, ["plugins", "enable", "cello"]];
   const byHand = steps.map((step) => `  hermes ${step.join(" ")}`).join("\n");
   const hermes = (args: string[]): Promise<ExecResult> => (options.exec ?? runHermes)("hermes", args, hermesHome);
   for (const step of steps) {
@@ -141,11 +152,13 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     }
     if (result.code !== 0) return refuse(`${out.join("\n")}\n\n'hermes ${step.join(" ")}' failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}\nFix that and run this again.`);
     out.push(`Ran: hermes ${step.slice(0, 3).join(" ")}`);
+    if (step === mcpAdd) {
+      // hermes mcp add can say "Cancelled." and still exit 0.
+      const listed = await hermes(["mcp", "list"]);
+      if (!listed.stdout.includes("cello")) return refuse(`${out.join("\n")}\n\n'hermes mcp add' reported success, but 'hermes mcp list' has no cello server. Run this by hand and answer Y, then run this command again:\n  hermes ${mcpAdd.join(" ")}`);
+      out.push("Checked: cello is in hermes mcp list");
+    }
   }
-  // hermes mcp add can say "Cancelled." and still exit 0.
-  const listed = await hermes(["mcp", "list"]);
-  if (!listed.stdout.includes("cello")) return refuse(`${out.join("\n")}\n\n'hermes mcp add' reported success, but 'hermes mcp list' has no cello server. Run this by hand and answer Y:\n  hermes ${mcpAdd.join(" ")}`);
-  out.push("Checked: cello is in hermes mcp list");
   if (tools) out.push(`Tools the model can reach: ${tools.join(", ")}`);
   out.push("", "Now restart the gateway, so Hermes loads the plugin: hermes gateway restart", "The daemon must stay up by itself on a server: cello-v2 bridge daemon-unit");
   return { ok: true, output: out.join("\n") };

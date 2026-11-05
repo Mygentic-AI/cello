@@ -21,7 +21,7 @@ A person sets it up at their own terminal. You can't do it from a turn, so tell 
 4. Restart the gateway: `hermes gateway restart`. Do this by hand, not from a script.
 5. On a server, keep the daemon up: `cello-v2 bridge daemon-unit` prints a systemd unit and how to enable it.
 
-Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin. A flag left out goes back to its default.
+Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin. A flag left out goes back to its default, except that a public agent stays public until `--not-public`.
 
 ## How it behaves
 
