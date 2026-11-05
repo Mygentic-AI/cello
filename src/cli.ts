@@ -11,6 +11,9 @@ import { celloHome, logPath, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-sign.ts";
+import { RootKeysNotConfigured } from "./protocol/issuer-list.ts";
+import { productionRootKeys } from "./protocol/issuer-roots.ts";
 import { installModel } from "./screener/model-installer.ts";
 import { SCREENER_RUNTIME_MODULE, describeScreenerState, runtimeAvailable, screenerModelDir, screenerRuntimeDir, screenerState } from "./screener/screener-state.ts";
 
@@ -59,7 +62,7 @@ function commandHelp(op: Operation): string {
 }
 
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`]]]);
+  const groups = new Map<string, string[]>([["Setup", [`  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
     lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
@@ -352,6 +355,22 @@ async function confirmAtTerminal(what: string): Promise<void> {
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
 
+async function issuerListSignCommand(args: string[]): Promise<void> {
+  const value = (name: string): string => {
+    const at = args.indexOf(`--${name}`);
+    const found = at >= 0 ? args[at + 1] : undefined;
+    return found ?? usageError(`issuer-list-sign needs --${name}`);
+  };
+  const [inPath, outPath, root, command] = [value("in"), value("out"), value("root"), value("signer-command")];
+  try {
+    const result = await signIssuerListFile({ inPath, outPath, signer: commandSigner(parseRootName(root), command), roots: productionRootKeys() });
+    process.stdout.write(`${JSON.stringify({ ok: true, out: outPath, signed_by: result.signed })}\n`);
+  } catch (err: unknown) {
+    const code = err instanceof RootKeysNotConfigured ? err.code : "issuer_list_not_signed";
+    fail(`${JSON.stringify({ error: code, message: err instanceof Error ? err.message : String(err) })}\n`, EXIT_REFUSED);
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "--help" || command === "-h" || command === "help") {
@@ -369,6 +388,13 @@ async function main(): Promise<void> {
     return login(args);
   }
   if (command === "screener") return screenerCommand(args);
+  if (command === "issuer-list-sign") {
+    if (wantsHelp) {
+      process.stdout.write("Usage: cello-v2 issuer-list-sign --in <file> --out <file> --root <enclave|kms|paper> --signer-command <command>\n\nAdd one root key's signature to the signed issuer list. --in is the list as JSON, or a file another root has already signed. The command gets the message on stdin and prints the raw 64-byte signature in hex. A list needs two roots.\n");
+      return;
+    }
+    return issuerListSignCommand(args);
+  }
   if (command === "logout") {
     if (wantsHelp) {
       process.stdout.write("Usage: cello-v2 logout\n\nStop the daemon. Conversations carry on after the next login.\n");

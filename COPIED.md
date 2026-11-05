@@ -48,3 +48,8 @@ From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on 
 ## Guidance
 
 `src/guidance.ts`: sentences from `cello-client`, commit `2ea5834d`, changed only where a name or command no longer exists. From `core/daemon/src/session-content-handlers.ts`, `close-session-handler.ts`, `session-read-handlers.ts`, `session-closed.ts`, `session-liveness.ts`, `agent-handlers.ts`, `frontier-mismatch.ts`, and `core/adapter-claude-code/src/signal-guidance.ts`, `channel-params.ts`, `cello-tools.ts`.
+## Trust signals
+
+- `src/protocol/signal.ts`, from `cello-client/core/protocol-types/src/trust-signal.ts`, commit `f2977a7a`: comments on their own lines removed, imports rewritten. Its changes are the ones ruled in the spec's section 4.4, and they're a separate commit, so the diff shows them.
+
+`src/protocol/issuer-list.ts` and `issuer-roots.ts` are new, for the signed issuer list: there's no old code for it.
