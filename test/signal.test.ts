@@ -15,7 +15,7 @@ const ISSUED = 1_800_000_000;
 const NOW = ISSUED + 10;
 
 const envelope = (over: Partial<TrustSignalEnvelope> = {}): TrustSignalEnvelope => ({
-  subject_kind: "account", subject: AGENT, issuer_kind: "portal", issuer_pubkey: issuerPubkeyField(issuer.publicIdentity), type: "email", schema_version: 1,
+  subject_kind: "account", subject: AGENT, issuer_kind: "issuer", issuer_pubkey: issuerPubkeyField(issuer.publicIdentity), type: "email", schema_version: 1,
   payload: new Uint8Array([1, 2, 3]), issued_at: ISSUED, expires_at: ISSUED + 86_400, supersedes_hash: null, same_operator: false, issuer_address: "trust.celloprotocol.com", signal_id: fill(9, 16), ...over,
 });
 const fault = async (file: Uint8Array, subject = AGENT, now = NOW): Promise<string> => {
@@ -102,6 +102,7 @@ test("the old envelope's rules still hold", () => {
   const missing: Partial<TrustSignalEnvelope> = envelope();
   delete missing.signal_id;
   assert.throws(() => encodeTrustSignalEnvelope(missing as TrustSignalEnvelope), /missing mandatory field/);
+  assert.throws(() => encodeTrustSignalEnvelope(envelope({ issuer_kind: "portal" as "issuer" })), /issuer_kind/);
   assert.throws(() => encodeTrustSignalEnvelope(envelope({ issued_at: 1.5 })), /no floating point/);
   assert.throws(() => encodeTrustSignalEnvelope(envelope({ issued_at: 1_800_000_000_000, expires_at: null })), /millisecond/);
   assert.throws(() => encodeTrustSignalEnvelope(envelope({ type: "é" })), /NFC/);
@@ -112,6 +113,10 @@ test("the old envelope's rules still hold", () => {
   assert.ok(hex.includes(`1b${late.toString(16).padStart(16, "0")}`), "above 2^32 it's a uint64");
   assert.deepEqual(decodeTrustSignalEnvelope(encodeTrustSignalEnvelope(envelope())), envelope(), "round trip, null slots included");
   assert.deepEqual(encodeTrustSignalEnvelope(envelope()).subarray(1, 2 + TRUST_SIGNAL_DOMAIN.length).subarray(1), new TextEncoder().encode(TRUST_SIGNAL_DOMAIN), "the domain tag is slot 0");
+});
+
+test("the old word \"portal\" is refused even when the issuer really signed it", async () => {
+  assert.equal(await fault(await rawFile(rawEnvelope(envelope({ issuer_kind: "portal" as "issuer" })))), "malformed");
 });
 
 test("malformed bytes are refused by name before the decoder can spend anything", async () => {

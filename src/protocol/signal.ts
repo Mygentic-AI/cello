@@ -24,7 +24,7 @@ export class ExpiryTooLong extends RangeError {}
 
 export type SignalSubjectKind = "account" | "agent";
 
-export type SignalIssuerKind = "portal" | "agent";
+export type SignalIssuerKind = "issuer" | "agent";
 
 export interface TrustSignalEnvelope {
   subject_kind: SignalSubjectKind;
@@ -143,8 +143,8 @@ function toPreimage(envelope: TrustSignalEnvelope): unknown[] {
   if (subject_kind !== "account" && subject_kind !== "agent") {
     throw new Error(`trust-signal envelope: subject_kind must be "account" or "agent", got ${String(subject_kind)}`);
   }
-  if (issuer_kind !== "portal" && issuer_kind !== "agent") {
-    throw new Error(`trust-signal envelope: issuer_kind must be "portal" or "agent", got ${String(issuer_kind)}`);
+  if (issuer_kind !== "issuer" && issuer_kind !== "agent") {
+    throw new Error(`trust-signal envelope: issuer_kind must be "issuer" or "agent", got ${String(issuer_kind)}`);
   }
   requireNfcString("subject", subject);
   if (!/^[0-9a-f]{64}$/.test(subject)) {
