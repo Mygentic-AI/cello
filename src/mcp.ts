@@ -61,6 +61,7 @@ function doorbellText(frame: IpcNotification): string {
   switch (frame.notification) {
     case "session_started": return "CELLO: a session has started. There's nothing to read yet, and another doorbell rings when a message arrives.";
     case "message": return "CELLO: a message is waiting. Call cello_receive to read it.";
+    case "away_greeting": return "CELLO: nobody is reachable as the agent you called, and it left an automatic greeting. Call cello_receive to read it.";
     case "peer_closed": return "CELLO: the other side closed their side. Call cello_receive, then cello_close_session.";
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";

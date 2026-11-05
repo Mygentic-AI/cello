@@ -306,6 +306,7 @@ async function worker(caller: string): Promise<void> {
         return { pid: daemonPid, home };
       case "create": {
         const created = (await must(["create-agent", command["name"] as string])).json;
+        await must(["settings-set", "away.answering", "false", "--agent", command["name"] as string]);
         await allOnline(60_000);
         return created;
       }

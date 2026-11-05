@@ -124,6 +124,19 @@ export class Governance {
     }));
   }
 
+  // The ladder, most specific first: for this caller, their tier, this agent's default, then the system's. Empty sends nothing.
+  awayText(agentId: Uint8Array, callerId: Uint8Array, fallbackName: string): string {
+    const tier = this.contacts.tierOf(agentId, callerId);
+    const own = this.contacts.get(agentId, callerId)?.away_message;
+    if (own) return own;
+    const forTier = this.reach.tiers(agentId).find((row) => row.tier === tierName(tier))?.away_text;
+    if (forTier) return forTier;
+    const byDefault = this.reach.setting(agentId, "away.default");
+    if (byDefault) return byDefault;
+    const system = this.reach.setting(agentId, tier === TIER.UNKNOWN ? "away.system.stranger" : "away.system.known");
+    return system.replaceAll("{name}", this.offeredName(agentId, fallbackName) || "This agent");
+  }
+
   // What this agent calls itself, sealed to whoever it talks to. Empty offers no name.
   offeredName(agentId: Uint8Array, fallback: string): string {
     return this.reach.offeredName(agentId) ?? fallback;

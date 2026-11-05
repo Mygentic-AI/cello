@@ -75,6 +75,7 @@ function big(tag: string, tail = ""): string {
 async function pair(a: Machine, aName: string, b: Machine, bName: string): Promise<{ session: string; aId: string; bId: string }> {
   const aId = a.ok(["create-agent", aName])["agent_id"] as string;
   const bId = b.ok(["create-agent", bName])["agent_id"] as string;
+  b.ok(["settings-set", "away.answering", "false", "--agent", bName]);
   await until("both online", () => a.ok(["agents"]) && b.ok(["agents"]) && (a.ok(["status"]) as { agents: { online: boolean }[] }).agents.every((x) => x.online) && (b.ok(["status"]) as { agents: { online: boolean }[] }).agents.every((x) => x.online));
   const session = a.ok(["initiate-session", bId, "--agent", aName])["session_id"] as string;
   return { session, aId, bId };
@@ -159,6 +160,7 @@ test("a queue of long messages: nobody overtakes, the reply gate holds, stop get
   // A second conversation, from another machine, on the same reader. Its short message passes the long lane.
   const benId = (b.ok(["agents"]) as { agents: { agent_id: string }[] }).agents[0]?.agent_id as string;
   const carlId = c.ok(["create-agent", "Carl"])["agent_id"] as string;
+  c.ok(["settings-set", "away.answering", "false", "--agent", "Carl"]);
   await until("Carl online", () => (c.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
   const other = c.ok(["initiate-session", benId, "--agent", "Carl"])["session_id"] as string;
   const sentAt = Date.now();
@@ -228,6 +230,7 @@ test("a session's very first message, if it's long, still tells its sender the p
   const first = machine();
   busy.ok(["create-agent", "Bo"]);
   first.ok(["create-agent", "Flo"]);
+  reader.ok(["settings-set", "away.answering", "false", "--agent", "Rio"]);
   for (const m of [reader, busy, first]) await until("online", () => (m.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
   const busySession = busy.ok(["initiate-session", readerId, "--agent", "Bo"])["session_id"] as string;
   const firstSession = first.ok(["initiate-session", readerId, "--agent", "Flo"])["session_id"] as string;

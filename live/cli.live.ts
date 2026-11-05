@@ -70,6 +70,8 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   ok(["login", "--server", url]);
   const gail = ok(["create-agent", "Gail"]);
   const hugo = ok(["create-agent", "Hugo"]);
+  ok(["settings-set", "away.answering", "false", "--agent", "Hugo"]);
+  ok(["settings-set", "away.answering", "false", "--agent", "Gail"]);
   await until("both agents online", () => (ok(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online));
 
   // Nothing works unnamed until an agent is chosen, and then it's still in each call.
@@ -252,6 +254,8 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   okIn(kitHome, ["login", "--server", url]);
   const kit = okIn(kitHome, ["create-agent", "Kit"]);
   ok(["create-agent", "Jan"]);
+  okIn(kitHome, ["settings-set", "away.answering", "false", "--agent", "Kit"]);
+  ok(["settings-set", "away.answering", "false", "--agent", "Jan"]);
   await until("both online", () => {
     const jan = (ok(["status"]) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Jan");
     return jan?.online && (okIn(kitHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online);
@@ -449,6 +453,8 @@ test("a standby past its time tells each side once, across restarts, and changes
   nora.must(["create-agent", "Nora"]);
   await owen.restart();
   const owenId = owen.must(["create-agent", "Owen"])["agent_id"] as string;
+  owen.must(["settings-set", "away.answering", "false", "--agent", "Owen"]);
+  nora.must(["settings-set", "away.answering", "false", "--agent", "Nora"]);
   await until("both online", () => nora.online() && owen.online());
   const session = nora.act("initiate-session", owenId)["session_id"] as string;
   assert.ok(session);
@@ -650,6 +656,8 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   okIn(oraHome, ["login", "--server", url]);
   const nedAgent = okIn(nedHome, ["create-agent", "Ned"]);
   const oraAgent = okIn(oraHome, ["create-agent", "Ora"]);
+  okIn(nedHome, ["settings-set", "away.answering", "false", "--agent", "Ned"]);
+  okIn(oraHome, ["settings-set", "away.answering", "false", "--agent", "Ora"]);
   await until("both online", () => [nedHome, oraHome].every((inHome) => (okIn(inHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online)));
   const ned = (...args: string[]): Record<string, unknown> => okIn(nedHome, [...args, "--agent", "Ned"]);
   const ora = (...args: string[]): Record<string, unknown> => okIn(oraHome, [...args, "--agent", "Ora"]);
@@ -928,6 +936,8 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
     await must(["login", "--server", proxy.url]);
     await must(["create-agent", "Lea"]);
     const mo = await must(["create-agent", "Mo"]);
+    await must(["settings-set", "away.answering", "false", "--agent", "Mo"]);
+    await must(["settings-set", "away.answering", "false", "--agent", "Lea"]);
     await until("both online", async () => (await must(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online));
     const session = (await must(["initiate-session", mo["agent_id"] as string, "--agent", "Lea"]))["session_id"] as string;
     await must(["send", session, "hello", "--over", "--agent", "Lea"]);

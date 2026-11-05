@@ -166,6 +166,7 @@ interface Agent { name: string; id: string; home: Home; caller: string }
 async function makeAgent(home: Home, name: string): Promise<Agent> {
   const made = await home.run(["create-agent", name], undefined);
   if (made.status !== 0) throw new Error(`create-agent ${name} failed: ${made.stderr}`);
+  await home.run(["settings-set", "away.answering", "false", "--agent", name], undefined);
   return { name, id: made.json["agent_id"] as string, home, caller: `speed-${name}` };
 }
 
