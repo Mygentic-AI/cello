@@ -437,6 +437,11 @@ export class Store {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 0 ORDER BY position DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
   }
 
+  // Your earliest message landed between these positions, so a reply written at "after" hadn't seen it.
+  firstOwnBetween(agentId: Uint8Array, sessionId: Uint8Array, after: number, before: number): number | undefined {
+    return (this.#prep("SELECT min(position) AS first FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND position > ? AND position < ?").get([agentId, sessionId, after, before]) as { first: number | null }).first ?? undefined;
+  }
+
   standbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): boolean {
     return this.#prep("SELECT 1 FROM standby_told WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) !== undefined;
   }

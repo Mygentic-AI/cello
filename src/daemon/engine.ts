@@ -2423,6 +2423,7 @@ export class Engine {
       more ||= page.more;
       // The newest signal says whose move it is. A close after it only leaves wrap standing: they've gone, so nobody expects a reply.
       let lastSignal: unknown = null;
+      const lag = this.#replyLag(agent, local, unread);
       for (const row of unread) {
         room -= row.body.length;
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
@@ -2448,7 +2449,7 @@ export class Engine {
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
       if (unread.length > 0) {
-        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked: 0 })) {
+        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || held !== undefined, finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked: 0, lag })) {
           guidance.push({ session_id: toHex(local.session_id), text });
         }
       }
@@ -2470,6 +2471,21 @@ export class Engine {
         });
       },
     };
+  }
+
+  // Their newest replies, counted back from the end, that were signed without having seen a message of yours.
+  #replyLag(agent: AgentContext, local: SessionRow, rows: readonly EntryRow[]): { replies: number; unseenPosition: number } | undefined {
+    let replies = 0;
+    let unseenPosition: number | undefined;
+    for (const row of [...rows].reverse()) {
+      const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
+      if (fields.kind === EntryKind.close) continue;
+      const unseen = this.#store.firstOwnBetween(agent.signer.id, local.session_id, fields.readPosition, row.position as number);
+      if (unseen === undefined) break;
+      replies += 1;
+      unseenPosition ??= unseen;
+    }
+    return unseenPosition === undefined ? undefined : { replies, unseenPosition };
   }
 
   // These four only read. None moves a read position, so looking never counts as reading.

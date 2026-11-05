@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, unreadWarning } from "../src/guidance.ts";
+import { OVER_GUIDANCE, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
@@ -220,6 +220,20 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
+
+  // A notice skips the read-first rule, so it can answer something older. The reader is told.
+  const crossing = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await alice.send(crossing.session_id, "did you get my question", "over");
+  await bob.bell("message");
+  await bob.send(crossing.session_id, "written without reading yours", "over", { notice: true });
+  await alice.bell("message");
+  const crossed = await alice.receive();
+  assert.ok(crossed.guidance?.some((g) => g.text === replyLagGuidance(1, 1)), JSON.stringify(crossed.guidance));
+  await bob.receive();
+  await alice.send(crossing.session_id, "fine", "wrap");
+  await bob.bell("message");
+  assert.equal((await bob.receive()).guidance?.some((g) => g.text.startsWith("Their last")), false, "a reply that saw everything has no lag");
 
   // Closing with something unread still closes, and says what was never read. Their close doesn't count as a message.
   const second = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
