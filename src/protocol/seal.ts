@@ -164,7 +164,7 @@ async function findDeliveryFault(record: SealRecord): Promise<SealCheck | null> 
   const ack = signed.fields;
   const { bytes } = signed;
   if (!equalBytes(structureHash(bytes), cert.deliveryAckHash)) return fail("delivery_ack_mismatch", "the certificate names a different ack");
-  if (!equalBytes(ack.readerId, cert.counterpartyId) || !equalBytes(ack.sessionId, cert.sessionId)) return fail("delivery_ack_mismatch", "this ack isn't the counterparty's, for this session");
+  if (!equalBytes(ack.readerId, cert.counterpartyId) || !equalBytes(ack.sessionId, cert.sessionId) || !equalBytes(ack.serverId, cert.serverId)) return fail("delivery_ack_mismatch", "this ack isn't the counterparty's, for this session");
   if (Math.min(ack.throughPosition, cert.throughPosition) !== cert.receivedThrough || cert.receivedThrough < 1) {
     return fail("delivery_ack_mismatch", `the certificate says ${cert.receivedThrough}, and the counterparty signed through ${ack.throughPosition}`);
   }

@@ -45,6 +45,7 @@ async function buildConversation(): Promise<Fixture> {
   for (const [i, author] of [alice, bob, alice, alice, bob].entries()) {
     const head = heads.get(toHex(author.id));
     const fields: EntryFields = {
+      serverId: server.id,
       sessionId,
       authorId: author.id,
       authorSeq: (head?.seq ?? 0) + 1,
@@ -143,4 +144,16 @@ test("an author can't skip or fork their own chain, or claim to have read what d
   assert.equal(await faultWhen((x) => rebuilt(2, { prevOwnHash: hashOf("a fork") }, x)), "bad_author_chain");
   assert.equal(await faultWhen((x) => rebuilt(2, { readPosition: 3 }, x)), "read_beyond_tip");
   assert.equal(await faultWhen((x) => rebuilt(2, { readRoot: hashOf("not what was read") }, x)), "bad_read_root");
+});
+
+test("entries can't be re-witnessed on a second server, because each names the server meant to witness it", async () => {
+  // A hostile second server holds the entries and acks them under its own key. Its chain is otherwise perfect.
+  const hostile = await signerFromSeeds(generateIdentitySeeds());
+  const tree = new RunningMerkle();
+  const items = await Promise.all(fixture.items.map(async (item) => {
+    const ack = { ...item.ack, serverId: hostile.id, root: tree.append(item.ack.entryHash), time: 2_000 };
+    return { ...item, ack, ackBytes: ackBytes(ack), ackSignature: await hostile.sign("cello-ack", ackBytes(ack)) };
+  }));
+  const report = await verifyTranscript({ ...parties, server: hostile.publicIdentity }, items);
+  assert.equal(report.fault, "entry_wrong_server");
 });

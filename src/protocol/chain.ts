@@ -22,6 +22,7 @@ export function witnessed(entry: Signed<EntryFields>, ack: Signed<AckFields>): W
 
 export type ChainFault =
   | "wrong_session"
+  | "entry_wrong_server"
   | "not_participant"
   | "bad_entry_signature"
   | "bad_author_seq"
@@ -88,6 +89,7 @@ export class ChainVerifier {
   async check(item: WitnessedEntry): Promise<ChainFault | null> {
     const { fields, signature, bytes, ack, ackSignature, ackBytes } = item;
     if (!equalBytes(fields.sessionId, this.#parties.sessionId)) return "wrong_session";
+    if (!equalBytes(fields.serverId, this.#serverId)) return "entry_wrong_server";
     const author = this.#keysById.get(toHex(fields.authorId));
     if (!author) return "not_participant";
     const hash = structureHash(bytes);

@@ -1550,7 +1550,7 @@ export class Engine {
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
+    const fields = { serverId: this.#serverId(this.#urlOf(local)), sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
     const signature = await agent.signer.sign("cello-delivery-ack", deliveryAckBytes(fields));
     // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
     await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
@@ -1874,6 +1874,7 @@ export class Engine {
     const last = this.#store.lastOwnEntry(agent.signer.id, local.session_id);
     const lastFields = last ? signedEntry.decode(JSON.parse(last.entry)).fields : undefined;
     const fields: EntryFields = {
+      serverId: this.#serverId(this.#urlOf(local)),
       sessionId: local.session_id,
       authorId: agent.signer.id,
       authorSeq: (lastFields?.authorSeq ?? 0) + 1,

@@ -34,6 +34,7 @@ export type TranscriptFault =
 
 const CHAIN_FAULT_MESSAGES: Record<ChainFault, string> = {
   wrong_session: "An entry belongs to a different session from the one this seal covers",
+  entry_wrong_server: "An entry's author named a different server to witness it",
   not_participant: "An entry's author isn't one of this session's two parties",
   bad_entry_signature: "An entry wasn't signed by its author",
   bad_author_seq: "An author's entries are out of sequence, so one is missing or repeated",

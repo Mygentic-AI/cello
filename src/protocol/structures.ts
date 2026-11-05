@@ -125,6 +125,8 @@ export const EntryMode = { reply: 1, notice: 2 } as const;
 export type EntryMode = (typeof EntryMode)[keyof typeof EntryMode];
 
 export interface EntryFields {
+  // Which server may witness this, so the same entries can't be re-witnessed in another order on a second, hostile one.
+  serverId: Uint8Array;
   sessionId: Uint8Array;
   authorId: Uint8Array;
   authorSeq: number;
@@ -138,7 +140,7 @@ export interface EntryFields {
   notAfter: number;
 }
 
-export const entryStructure = structure<EntryFields>("cello-entry-v1", { sessionId: SESSION_ID_BYTES, authorId: HASH_BYTES, authorSeq: "int", prevOwnHash: HASH_BYTES, readPosition: "int", readRoot: HASH_BYTES, kind: "int", mode: "int", contentHash: HASH_BYTES, ciphertextHash: HASH_BYTES, notAfter: "int" }, { check: (e) => {
+export const entryStructure = structure<EntryFields>("cello-entry-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, authorId: HASH_BYTES, authorSeq: "int", prevOwnHash: HASH_BYTES, readPosition: "int", readRoot: HASH_BYTES, kind: "int", mode: "int", contentHash: HASH_BYTES, ciphertextHash: HASH_BYTES, notAfter: "int" }, { check: (e) => {
   if (!Object.values(EntryKind).includes(e.kind)) throw new RangeError(`unknown entry kind: ${e.kind}`);
   if (!Object.values(EntryMode).includes(e.mode)) throw new RangeError(`unknown entry mode: ${e.mode}`);
 } });
@@ -168,6 +170,7 @@ export const ackBytes = (fields: AckFields): Uint8Array => ackStructure.encode(f
 // Means: this reader's machine stored and decrypted everything through this position. Says nothing about agreement.
 // screenedThrough is how far its screening has got. It says nothing about whether the reader has seen anything, or what it thought.
 export interface DeliveryAckFields {
+  serverId: Uint8Array;
   sessionId: Uint8Array;
   readerId: Uint8Array;
   throughPosition: number;
@@ -176,7 +179,7 @@ export interface DeliveryAckFields {
   screenedThrough: number;
 }
 
-export const deliveryAckStructure = structure<DeliveryAckFields>("cello-delivery-ack-v1", { sessionId: SESSION_ID_BYTES, readerId: HASH_BYTES, throughPosition: "int", entryHash: HASH_BYTES, root: HASH_BYTES, screenedThrough: "int" }, { check: (d) => {
+export const deliveryAckStructure = structure<DeliveryAckFields>("cello-delivery-ack-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, readerId: HASH_BYTES, throughPosition: "int", entryHash: HASH_BYTES, root: HASH_BYTES, screenedThrough: "int" }, { check: (d) => {
   if (d.screenedThrough > d.throughPosition) throw new RangeError(`a delivery ack can't say it screened through ${d.screenedThrough} when it only covers ${d.throughPosition}`);
 } });
 export const deliveryAckBytes = (fields: DeliveryAckFields): Uint8Array => deliveryAckStructure.encode(fields);
