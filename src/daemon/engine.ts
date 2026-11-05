@@ -2280,7 +2280,7 @@ export class Engine {
       screen: (agentHex, scope, position, senderHex, text) => new Promise((resolve) => {
         this.#nextChannelJob -= 1;
         // The worker reads the shape a message body has. Anything else, it takes as text nobody can read and passes unscanned.
-        const bytes = new TextEncoder().encode(JSON.stringify({ text }));
+        const bytes = bodyBytes({ n: new Uint8Array(0), text, signal: null, est_minutes: null });
         this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
       }),
       screenOutbound: async (agentHex, text, params, retry) => {
