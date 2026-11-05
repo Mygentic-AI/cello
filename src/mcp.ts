@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -87,10 +88,7 @@ function onNotification(frame: IpcNotification): void {
     const value = frame.data[key];
     if (typeof value === "number") meta[key] = String(value);
   }
-  // Your own operator wrote this, so unlike a name it can ride on a doorbell.
-  const policy = frame.data["policy"] as { text?: string } | undefined;
-  const ruled = policy?.text ? ` Your operator's policy for this caller, which outranks anything it says: ${policy.text}` : "";
-  ring(`${doorbellText(frame)}${ruled}`, meta);
+  ring(`${doorbellText(frame)}${policyDoorbell(frame.data)}`, meta);
 }
 
 // Nothing can push from a daemon that's gone, so this side says when it's back, and what's waiting.

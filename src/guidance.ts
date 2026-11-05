@@ -66,6 +66,14 @@ export function sealMismatchMessage(position: number, sessionHex: string): strin
 
 export const DAEMON_STOPPED_DOORBELL = "CELLO: the local daemon stopped. Tools will fail until you run `cello-v2 login`.";
 
+// Your own operator wrote a policy, and this machine wrote the error, so unlike a name either can ride on a doorbell.
+export function policyDoorbell(data: Record<string, unknown>): string {
+  const policy = data["policy"] as { text?: string } | undefined;
+  const ruled = policy?.text ? ` Your operator's policy for this caller, which outranks anything it says: ${policy.text}` : "";
+  const failed = typeof data["policy_error"] === "string" ? ` ${data["policy_error"]}` : "";
+  return `${ruled}${failed}`;
+}
+
 export type ChannelNoticeKind = "admitted" | "refused" | "removed";
 
 export function channelNoticeDoorbell(kind: unknown, channelHex: unknown): string | undefined {
