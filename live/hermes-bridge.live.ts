@@ -13,6 +13,8 @@ import { BRIDGE_CALLER, PUBLIC_TOOLS } from "../src/hermes-bridge.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18950/v1";
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+// Each home's first agent collects a real signal from the stand-in issuer, because servers refuse registration without one.
+const enrollingCliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const hermesCheckout = process.env["HERMES_CHECKOUT"] ?? join(process.env["HOME"] as string, ".hermes", "hermes-agent");
 const hermesPython = join(hermesCheckout, "venv", "bin", "python3");
@@ -52,7 +54,7 @@ function cello(home: string, args: string[], caller?: string): Run {
   const env: NodeJS.ProcessEnv = { ...process.env, CELLO_HOME: home, PATH: `${shim}:${process.env["PATH"] ?? ""}`, HERMES_HOME: hermesHome };
   delete env["CELLO_CALLER"];
   if (caller) env["CELLO_CALLER"] = caller;
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env });
+  const run = spawnSync(process.execPath, [enrollingCliPath, ...args], { encoding: "utf8", env });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
