@@ -3,7 +3,7 @@
 // Run it with scripts/concierge-deploy-test.sh.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -16,11 +16,9 @@ const name = process.env["CONCIERGE_CONTAINER"] ?? "cello-concierge-deploy";
 const volume = `${name}-data`;
 const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const root = mkdtempSync(join(tmpdir(), "cello-concierge-deploy-"));
-// The runbook mounts an approved lines file. These words aren't the real copy, only distinct from the draft's.
-const linesFile = join(root, "lines.json");
-writeFileSync(linesFile, JSON.stringify({ status: "approved", lines: { first: "Test first line.", next_step: "Test next step.", last: "Test last line.", silent: "Test silent line.", limit: "Test limit line." } }));
-chmodSync(linesFile, 0o644);
-const lines = loadLines(linesFile);
+// The runbook mounts no lines file, so the container says what the image ships, and it must say it without a draft label.
+const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
+assert.ok(!lines.first.startsWith("[DRAFT COPY]"), "the shipped lines are still a draft");
 const homeP = join(root, "people");
 // The container reaches the server and the issuer on this machine by this name.
 const inside = (address: string): string => address.replace("127.0.0.1", "host.docker.internal");
@@ -90,7 +88,7 @@ before(async () => {
   docker(["volume", "rm", "-f", volume]);
   ok(homeP, ["login", "--server", url]);
   // The runbook's command, with this run's server. The container's own supervisor starts the daemon and the Concierge.
-  const started = docker(["run", "-d", "--name", name, "--init", "--restart", "unless-stopped", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, "-v", `${linesFile}:/config/lines.json:ro`, "-e", "CONCIERGE_LINES=/config/lines.json", "-e", `CELLO_SERVER=${inside(url)}`, image]);
+  const started = docker(["run", "-d", "--name", name, "--init", "--restart", "unless-stopped", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, "-e", `CELLO_SERVER=${inside(url)}`, image]);
   assert.equal(started.status, 0, started.stderr);
   await until("the daemon inside the container", () => inContainer(["cello", "status"]).status === 0);
   // The stand-in issuer listens on this machine's own address, so a relay inside the container makes it reachable at the same one.

@@ -25,7 +25,7 @@ stop() {
 }
 trap stop TERM INT
 
-# Without this the Concierge uses its draft lines, and every line goes out labelled as draft copy.
+# Without this the Concierge uses the lines file shipped in the image.
 lines_args=""
 if [ -n "${CONCIERGE_LINES:-}" ]; then lines_args="--lines $CONCIERGE_LINES"; fi
 

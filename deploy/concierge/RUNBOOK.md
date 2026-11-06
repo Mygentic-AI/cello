@@ -9,8 +9,9 @@ Creating the machine is a decision for Andre. Nothing here creates one.
 ## Before go-live
 
 - **A setup code** for the Concierge's agent, from the same admission that gives anyone a code. It works once.
-- **Approved lines.** Without a lines file, every line goes out with the draft label. Put the approved file on the machine, for example at `/etc/cello/lines.json`. Only Andre sets a file's status to `approved`.
 - **The server address.** Production is `wss://server.celloprotocol.com/v1`.
+
+The lines it says are in `concierge/lines.draft.json`, which Andre marked approved on 5 November. The file keeps its old name, and its `status` is what counts: while it says `draft`, every line goes out with a draft label. To say other words, mount another file and set `CONCIERGE_LINES` to its path.
 
 ## First time
 
@@ -21,7 +22,6 @@ docker build -f deploy/concierge/Dockerfile -t cello-concierge .
 
 docker run -d --name concierge --init --restart unless-stopped \
   -v concierge-data:/data \
-  -v /etc/cello/lines.json:/config/lines.json:ro -e CONCIERGE_LINES=/config/lines.json \
   -e CELLO_SERVER=wss://server.celloprotocol.com/v1 \
   cello-concierge
 ```
