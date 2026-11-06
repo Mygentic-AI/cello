@@ -18,7 +18,7 @@ export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [
 
 Set up CELLO on this machine: start the background program, create an agent's key, redeem your code for a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
-  --code       The code from your admission email. A second agent on this machine doesn't need one.
+  --code       The code from your admission email. A second agent on this machine doesn't need one. Give - to read it from standard input, so it never sits in a command line or shell history: printf %s "$CODE" | cello setup --code -
   --name       The agent's name, which is only a label. The default is agent.
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.
@@ -58,6 +58,28 @@ function options(args: string[]): Record<string, string | true> {
     found[name] = value;
   }
   return found;
+}
+
+const CODE_WAIT_MS = 30_000;
+
+// Reads to the end of standard input, and gives up after a while, so a pipe nobody closes can't hold setup for good.
+function codeFromStandardInput(): Promise<string> {
+  if (process.stdin.isTTY) throw new SetupFailed("code_not_piped", "--code - reads the code from standard input, and this is a terminal. Pipe it in, for example: printf %s \"$CODE\" | cello setup --code -");
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      process.stdin.destroy();
+      reject(new SetupFailed("code_not_received", `No code arrived on standard input within ${CODE_WAIT_MS / 1000} seconds, and nothing was used.`));
+    }, CODE_WAIT_MS);
+    process.stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+    process.stdin.on("error", (err) => { clearTimeout(timer); reject(new SetupFailed("code_not_received", `Standard input failed (${err.message}), and nothing was used.`)); });
+    process.stdin.on("end", () => {
+      clearTimeout(timer);
+      const code = Buffer.concat(chunks).toString("utf8").trim();
+      if (code === "") reject(new SetupFailed("code_empty", "Standard input held no code, and nothing was used."));
+      else resolve(code);
+    });
+  });
 }
 
 const answers = (path: string): Promise<boolean> => new Promise((resolve) => {
@@ -151,8 +173,10 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
   try {
     const flags = options(args);
     const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
+    // --code - takes the code from standard input, so it never sits in a command line or in shell history.
+    const code = text("code") === "-" ? await codeFromStandardInput() : text("code");
     await moveOldVersion(host, say);
-    if (!text("code") && !existsSync(databasePath())) return refuse("code_required", HOW_TO_GET_A_CODE);
+    if (!code && !existsSync(databasePath())) return refuse("code_required", HOW_TO_GET_A_CODE);
 
     client = await daemon(host, text("server"), flags["yes"] === true, say);
     const server = await waitForServer(client);
@@ -161,7 +185,7 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       if (value) await client.call("settings_set", { name: setting, value, caller: host.caller });
     }
 
-    const agent = await client.call("enroll_agent", { name: text("name"), code: text("code") }) as {
+    const agent = await client.call("enroll_agent", { name: text("name"), code }) as {
       name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean;
     };
     say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified email signal.`);
