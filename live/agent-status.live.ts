@@ -1,4 +1,5 @@
 // The kill switch, with real daemons on two real servers. Run it with scripts/status-test.sh, which cleans up whatever happens.
+import { REAL_CLI, cliFor } from "./cli-path.ts";
 import { signedAck } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -13,11 +14,13 @@ import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/prot
 import { generateSessionEphemeral } from "../src/protocol/key-agreement.ts";
 import { STATUS_DOMAIN } from "../src/protocol/status.ts";
 import { AgentStatus, StatusIssuer, StatusReason, type StatusStatementFields, agentAuthBytes, offerBytes, registerBytes, statusStatementBytes } from "../src/protocol/structures.ts";
+import { toHex } from "../src/protocol/encode.ts";
+import { standInSignal } from "./stand-in-issuer.ts";
 import { identityCodec, signatureCodec, signedOffer, signedStatusStatement, toB64 } from "../src/protocol/wire.ts";
 
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_STATUS_PIDS"];
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = REAL_CLI;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `status-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -90,9 +93,9 @@ const everyone: { run(args: string[]): Run }[] = [];
 
 function side(name: string, home: Server) {
   const dir = mkdtempSync(join(tmpdir(), `cello-v2-status-${name}-`));
-  const env = { ...process.env, CELLO_V2_HOME: dir, CELLO_CALLER: `shell-${name}` };
+  const env = { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` };
   const run = (args: string[], input?: string): Run => {
-    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
+    const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
     let json: Record<string, unknown> = {};
     try {
       json = JSON.parse(done.stdout || done.stderr) as Record<string, unknown>;
@@ -103,7 +106,7 @@ function side(name: string, home: Server) {
   };
   const must = (args: string[]): Record<string, unknown> => {
     const done = run(args);
-    assert.equal(done.status, 0, `${name}: cello-v2 ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
+    assert.equal(done.status, 0, `${name}: cello ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
     return done.json;
   };
   const self = {
@@ -128,7 +131,7 @@ function side(name: string, home: Server) {
       const terminal: NodeJS.ProcessEnv = { ...env };
       delete terminal["CELLO_CALLER"];
       if (caller) terminal["CELLO_CALLER"] = caller;
-      const done = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: terminal });
+      const done = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: terminal });
       assert.equal(done.status, 0, `the terminal didn't run: ${done.stderr}`);
       return done.stdout;
     },
@@ -152,7 +155,7 @@ const gets = (who: Side): Promise<boolean> => until(`something to reach ${who.na
 
 // Sends and hands the turn over, with the other side reading it.
 async function talk(from: Side, to: Side, session: string, text: string): Promise<void> {
-  const sent = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", from.name], { encoding: "utf8", input: text, env: { ...process.env, CELLO_V2_HOME: homeOf(from), CELLO_CALLER: `shell-${from.name}` } });
+  const sent = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", from.name], { encoding: "utf8", input: text, env: { ...process.env, CELLO_HOME: homeOf(from), CELLO_CALLER: `shell-${from.name}` } });
   assert.equal(sent.status, 0, `${from.name} couldn't send: ${sent.stdout}${sent.stderr}`);
   await gets(to);
   const read = to.read();
@@ -193,7 +196,7 @@ class Raw {
   async register(): Promise<void> {
     const server = await this.#first;
     const identity = this.signer.publicIdentity;
-    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-register", registerBytes({ serverId: server.id, identity }))) });
+    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-register", registerBytes({ serverId: server.id, identity }))), signal: await standInSignal(toHex(this.signer.id)) });
   }
   async #proof(server: ConnectedServer): Promise<{ clientNonce: string; signature: unknown }> {
     const clientNonce = new Uint8Array(randomBytes(32));
@@ -243,7 +246,7 @@ after(() => {
 
 test("the kill switch stops an agent at once, on each server, and leaves it able to seal", { timeout: 400_000 }, async () => {
   const portal = await signerFromSeeds(generateIdentitySeeds());
-  const portalEnv = { CELLO_PORTAL_STATUS_KEY: JSON.stringify(identityCodec.encode(portal.publicIdentity)) };
+  const portalEnv = { CELLO_TRUSTED_ISSUERS: JSON.stringify([...JSON.parse(process.env["CELLO_TRUSTED_ISSUERS"] as string) as unknown[], { address: "issuer.status-test.example", ...identityCodec.encode(portal.publicIdentity) }]) };
   server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv);
   server(["up", "--name", B.name, "--port", String(B.port), "--no-build"], portalEnv);
   say("two servers up");
@@ -276,7 +279,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(cara.refused("close-session", session), "agent_suspended");
   assert.equal(cara.refused("wait"), "agent_suspended");
   assert.equal(cara.refused("channel-create", "after-the-flip", "--type", "public"), "agent_suspended");
-  const longSend = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", "Cara"], { encoding: "utf8", input: LONG_TEXT, env: { ...process.env, CELLO_V2_HOME: homeOf(cara), CELLO_CALLER: "shell-Cara" } });
+  const longSend = spawnSync(process.execPath, [cliPath, "send", session, "-", "--over", "--agent", "Cara"], { encoding: "utf8", input: LONG_TEXT, env: { ...process.env, CELLO_HOME: homeOf(cara), CELLO_CALLER: "shell-Cara" } });
   assert.match(longSend.stderr, /agent_suspended/, "a long message stops too");
   say(`the next send and receive both stopped, by name, ${report["ms_from_operator_command_to_refused_send_and_receive"] as number} ms after the command`);
 

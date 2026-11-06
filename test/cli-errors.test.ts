@@ -11,7 +11,7 @@ const home = mkdtempSync(join(tmpdir(), "c2e-"));
 
 function failing(args: string[], input?: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_V2_HOME: home }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_HOME: home }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });

@@ -1,5 +1,6 @@
 // Real daemons as separate processes, the real server, the real database. Start it with scripts/live-test.sh.
 // The restart is SIGKILL by captured process id, because a clean shutdown wouldn't test anything.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -12,7 +13,6 @@ import type { IpcNotification } from "../src/ipc/protocol.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? "../cello-server";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 
 function compose(...args: string[]): string {
   return execFileSync("docker", ["compose", ...args], { cwd: serverDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -27,7 +27,7 @@ interface Status { pid: number; connected: boolean; agents: AgentStatus[] }
 class Daemon {
   readonly home = mkdtempSync(join(tmpdir(), "cello-v2-live-"));
   cli(...args: string[]): string {
-    return execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    return execFileSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
   login(): void {
     this.cli("login", "--server", url);

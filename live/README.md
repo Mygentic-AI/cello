@@ -11,6 +11,8 @@ pnpm run test:live                    # here: the daemon and tools, with a serve
 
 Run them whenever you like. They need nobody's OK.
 
+**Signals in these tests.** A server requires a verified email signal to register. `scripts/test-issuer-env.sh` starts the stand-in issuer, and tells this run's servers to count it as an operator-added issuer, on the production server code. `live/enrolling-cli.ts` redeems a throwaway code for each home's first agent, and later agents get copies from it, so each daemon collects its own signal and presents it. Hostile registration cases are in `cello-server`'s live test. Set `CELLO_ISSUER_DIR` when running from a worktree. For a remote server, its operator sets `CELLO_TRUSTED_ISSUERS` to the output of `node live/issuer-service.ts --print-trusted`.
+
 **The install test** is one of them, and it also runs alone: `pnpm run test:install`. It packs the tarball, installs it into an empty prefix, and uses only the installed binaries from outside this repo. It starts its own server, on project `cello-v2-install` and port 18095 (`CELLO_INSTALL_PORT` changes it). It prints the install time and size. After a failure, it keeps its temporary folder and says where.
 
 **The channels test.** `scripts/live-channels.sh` starts a real server on project `cello-v2-channels` and port 18600, and three daemons in their own folders. A bare socket plays the attacker, and the hostile cases work on the database as its owner and with the server's real signing key. It reads the database directly to check that a private channel holds no plaintext. `CHANNELS_LIVE_PATTERN` runs only tests whose names match. It sets its timings with `channel-config`, never the environment, because settings live in the database.
@@ -20,6 +22,8 @@ Run them whenever you like. They need nobody's OK.
 **The away test.** `CELLO_SERVER_DIR=<server> scripts/away-test.sh`. A real server on project `cello-v2-away` and port 18900, with real daemons. It reads the server's database as its owner. Other live tests turn `away.answering` off for agents nobody holds, because a call to one of those is greeted and closed after one message.
 
 **The kill switch test** runs alone: `CELLO_SERVER_DIR=<server> scripts/status-test.sh`. Two real servers on projects `cello-v2-status-a` and `-b`, ports 18800 and 18801, with real daemons and a real terminal for the person-only commands. It flips the switch mid-conversation, and checks both connections, sealing, the signed log, forged statements, and what crosses between servers. It builds under the heavy-run lock, and needs no other lock.
+
+**The setup test.** `CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<cello-issuer> scripts/setup-test.sh`. A real server on project `cello-v2-setup` and port 18950, real daemons and a real terminal, with a stand-in issuer in `live/stand-in-issuer.ts`. It runs setup from nothing, its failures, a repeat, a second agent's copies, and the wallet. It reads requests with `cello-issuer`'s own code, but it doesn't run that issuer or the waitlist.
 
 **The speed test.** A bot floods while another pair talks on the same daemon, and the pair is timed. It tests the plumbing only: there's no screener yet. It needs no model turns, and it stops itself if the machine looks strained. Numbers go to `~/cello-v2-live-runs/speed-<time>/`.
 

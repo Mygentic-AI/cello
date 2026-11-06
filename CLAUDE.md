@@ -1,4 +1,4 @@
-# cello-v2
+# cello (repo: cello-v2)
 
 The CELLO client: daemon, commands and Claude Code tools. The design is in the spec in `trustless-cello/docs/planning/rewrite/SPEC-v2.0.md`, and the current scope is in `BUILD-PLAN.md` beside it. The server is in the separate `cello-server` repo.
 

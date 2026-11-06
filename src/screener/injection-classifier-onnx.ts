@@ -44,7 +44,7 @@ export async function loadInjectionClassifier(
       classifier: null,
       reason:
         `no model at ${modelDir} — semantic injection screening is OFF. Install it with ` +
-        `'cello-v2 screener install' (about 241 MB)`,
+        `'cello screener install' (about 241 MB)`,
     };
   }
 

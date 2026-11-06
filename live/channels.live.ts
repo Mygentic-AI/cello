@@ -1,5 +1,6 @@
 // Channels with real processes: a real server, three daemons in their own homes, and a bare socket playing the attacker.
 // The hostile cases work on the real database as its owner, and with the server's real signing key. Run it with scripts/live-channels.sh.
+import { cliFor } from "./cli-path.ts";
 import { channelInfoCodec, channelMemberKeyCodec } from "../src/protocol/channel.ts";
 import type { WireSigned } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
@@ -17,11 +18,12 @@ import { OPERATIONS } from "../src/ipc/operations.ts";
 import { type RosterFile, channelPostAckCodec, channelPostCodec, hashBlob, inRoster, postHash, readRoster, sealKeyEntry, signMemberKey, signRoster } from "../src/protocol/channel.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { channelPostAckBytes, channelPostBytes, type ChannelPostFields, agentAuthBytes, registerBytes } from "../src/protocol/structures.ts";
+import { toHex } from "../src/protocol/encode.ts";
+import { standInSignal } from "./stand-in-issuer.ts";
 import { PROTOCOL_VERSION, fromB64, identityCodec, signatureCodec, toB64 } from "../src/protocol/wire.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18600/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const LOST_WAIT_MS = 8000;
 const homes = { ada: mkdtempSync(join(tmpdir(), "cello-ch-ada-")), bea: mkdtempSync(join(tmpdir(), "cello-ch-bea-")), cyd: mkdtempSync(join(tmpdir(), "cello-ch-cyd-")) };
 type Who = keyof typeof homes;
@@ -29,9 +31,9 @@ const names: Record<Who, string> = { ada: "Ada", bea: "Bea", cyd: "Cyd" };
 const ids = {} as Record<Who, string>;
 
 function run(who: Who, args: string[], input?: string): { status: number | null; json: Record<string, unknown>; stderr: string } {
-  const result = spawnSync(process.execPath, [cliPath, ...args], {
+  const result = spawnSync(process.execPath, [cliFor(args), ...args], {
     encoding: "utf8", input, maxBuffer: 16_000_000,
-    env: { ...process.env, CELLO_V2_HOME: homes[who] },
+    env: { ...process.env, CELLO_HOME: homes[who] },
   });
   let json: Record<string, unknown> = {};
   try {
@@ -132,7 +134,7 @@ class Raw {
   async newAgent(): Promise<Signer> {
     const signer = await signerFromSeeds(generateIdentitySeeds());
     const signature = await signer.sign("cello-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
-    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature) });
+    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature), signal: await standInSignal(toHex(signer.id)) });
     const clientNonce = new Uint8Array(randomBytes(32));
     const proof = await signer.sign("cello-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
     await this.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(proof) });
@@ -619,7 +621,7 @@ test("MCP: every channel operation is a tool, its description says channel text 
   const session = new Client({ name: "channels-live", version: "0" });
   const bells: { content: string; meta: Record<string, string> }[] = [];
   session.setNotificationHandler(z.object({ method: z.literal("notifications/claude/channel"), params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }) }), async ({ params }) => { bells.push(params); });
-  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_V2_HOME: homes.bea } as Record<string, string> }));
+  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_HOME: homes.bea } as Record<string, string> }));
   try {
     const { tools } = await session.listTools();
     const named = new Map(tools.map((tool) => [tool.name, tool.description ?? ""]));

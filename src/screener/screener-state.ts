@@ -101,13 +101,13 @@ export async function screenerState(opts: ScreenerStateOptions): Promise<Screene
 export function classifierLoadable(s: ScreenerStatus): { load: boolean; reason?: string } {
   if (s.state === "ready") return { load: true };
   if (s.state === "broken") {
-    return { load: false, reason: `model FAILED verification and was NOT loaded: ${s.problem ?? "unknown fault"} — repair it with 'cello-v2 screener install --repair'` };
+    return { load: false, reason: `model FAILED verification and was NOT loaded: ${s.problem ?? "unknown fault"} — repair it with 'cello screener install --repair'` };
   }
-  return { load: false, reason: `classifier not installed (${s.state}) — install it with 'cello-v2 screener install'` };
+  return { load: false, reason: `classifier not installed (${s.state}) — install it with 'cello screener install'` };
 }
 
 export function describeScreenerState(s: ScreenerStatus, layer2?: string): string {
-  const fix = "Run: cello-v2 screener install";
+  const fix = "Run: cello screener install";
   const rev = s.revision.slice(0, 8);
   switch (s.state) {
     case "ready":

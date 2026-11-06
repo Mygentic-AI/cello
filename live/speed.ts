@@ -5,6 +5,9 @@
 //   node live/speed.ts --server wss://host/v1 --gentle
 //
 // Raw numbers and the report go to ~/cello-v2-live-runs/speed-<time>/.
+import { cliFor } from "./cli-path.ts";
+import { identityCodec } from "../src/protocol/wire.ts";
+import { StandInIssuer, standInKeys } from "./stand-in-issuer.ts";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -38,7 +41,6 @@ const { values: args } = parseArgs({
 });
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
@@ -103,8 +105,8 @@ class Home {
   run(argv: string[], caller: string | undefined, input?: string, extraEnv: Record<string, string> = {}): Promise<Run> {
     return new Promise((resolve) => {
       const started = performance.now();
-      const child: ChildProcess = spawn(process.execPath, [CLI, ...argv], {
-        env: { ...process.env, CELLO_V2_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
+      const child: ChildProcess = spawn(process.execPath, [cliFor(argv), ...argv], {
+        env: { ...process.env, CELLO_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       const out: Buffer[] = [];
@@ -302,6 +304,10 @@ function conversationSummary(turns: Turn[]): Record<string, unknown> {
 
 const serverDir = args["server-dir"] ?? process.env["CELLO_SERVER_DIR"] ?? join(REPO, "..", "cello-server");
 const overridePath = join(runDir, "compose-override.yml");
+// Each daemon collects a real signal, from an issuer this server is told to count.
+const standIn = await StandInIssuer.start(process.env["CELLO_ISSUER_DIR"] ?? join(REPO, "..", "cello-issuer"), { open: true });
+process.env["CELLO_TEST_ISSUER_URL"] = standIn.url;
+process.env["CELLO_TRUSTED_ISSUERS"] = JSON.stringify([{ address: "127.0.0.1", ...identityCodec.encode((await standInKeys()).publicIdentity) }]);
 const serverProfileDir = join(runDir, "server-prof");
 let composeUp = false;
 
@@ -1188,6 +1194,7 @@ try {
 } finally {
   await cleanUp();
   clearInterval(guardTimer);
+  standIn.stop();
 }
 if (args["cpu-prof"]) {
   results["serverProfile"] = summariseProfiles(serverProfileDir);

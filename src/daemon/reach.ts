@@ -150,7 +150,7 @@ export class Reach {
     const parsed = parseKey(key);
     if (parsed) return this.#planTier(agentId, parsed.tier, parsed.field, key, raw);
     const setting = AGENT_SETTINGS[key];
-    if (!setting) throw new LocalError("bad_setting", `there's no setting named ${key}. They're listed by: cello-v2 settings --agent <name>`);
+    if (!setting) throw new LocalError("bad_setting", `there's no setting named ${key}. They're listed by: cello settings --agent <name>`);
     const to = raw ?? setting.default;
     const from = this.setting(agentId, key);
     const write = (): void => { this.#store.prepare("UPDATE agent_settings SET value = ?, updated_at = ? WHERE agent_id = ? AND key = ?").run(to, Date.now(), agentId, key); };
