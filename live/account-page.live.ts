@@ -3,7 +3,7 @@
 import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -166,6 +166,31 @@ test("the page shows this machine's own agents, signals, contacts, settings and 
   assert.equal((await http(port, "/api/agents", { token: "0".repeat(64) })).status, 401);
   assert.equal((await http(port, "/api/agents", { token: link.token, host: "evil.example" })).status, 421);
   assert.equal((await http(port, "/api/agents", { token: link.token, host: `evil.example:${port}` })).status, 421);
+});
+
+const CHROME = process.env["CHROME"] ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+// The page's own script only runs in a browser, so a mistake in it would pass every request above.
+test("a real browser opens the link and the page shows the agents, a signal and the contact", { skip: existsSync(CHROME) ? false : `no Chrome at ${CHROME}. Set CHROME to a browser to run this` }, async () => {
+  const m = await machineWithPage(await freePort());
+  const ann = m.ok(["create-agent", "Ann"])["agent_id"] as string;
+  const bea = m.ok(["create-agent", "Bea"])["agent_id"] as string;
+  m.ok(["contact-add", bea, "--agent", "Ann"]);
+  const link = linkOf(m);
+  const signal = ((await read(link, `signals_list?agent=${ann}`)) as { signals: { signal_hash: string }[] }).signals[0]?.signal_hash as string;
+
+  const profile = mkdtempSync(join(tmpdir(), "cello-v2-page-chrome-"));
+  const run = spawnSync(CHROME, ["--headless=new", "--disable-gpu", `--user-data-dir=${profile}`, "--virtual-time-budget=8000", "--dump-dom", `http://127.0.0.1:${link.port}/#${link.token}`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, `Chrome failed: ${run.stderr.slice(-400)}`);
+  const dom = run.stdout;
+  assert.match(dom, /<h2>Agents<\/h2>/);
+  for (const name of ["Ann", "Bea"]) assert.ok(dom.includes(`>${name}<`), `${name} isn't on the page`);
+  assert.ok(dom.includes(ann), "Ann's id isn't on the page");
+  assert.ok(dom.includes(signal), "Ann's signal isn't on the page");
+  assert.ok(dom.includes(bea), "the contact isn't on the page");
+  assert.match(dom, /<h2>Track record<\/h2>/);
+  assert.match(dom, /<p id="problem"[^>]*hidden/, "the page is showing a problem");
+  assert.ok(!dom.includes(link.token), "the secret is left in the page's address or text");
 });
 
 test("nothing changes through the page, not even with the link", async () => {
