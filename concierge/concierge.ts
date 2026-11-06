@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The CELLO Concierge: the first agent a new person dials. Set lines, no model, and only the real cello-v2 command.
+// The CELLO Concierge: the first agent a new person dials. Set lines, no model, and only the real cello command.
 // Where a conversation stands is read back from the daemon's own record each time, so a restart of either program loses nothing.
 // A caller's text is never used: it decides nothing, is never logged and is never sent back. Only counts and signals are read.
 import { spawn } from "node:child_process";
@@ -58,9 +58,9 @@ const COMMAND_LIMIT_MS = 60_000;
 const running = new Set<ReturnType<typeof spawn>>();
 
 // Exit code 3 from wait means its time ran out, which is an answer. Anything else nonzero is a refusal, by name.
-function celloV2(args: readonly string[], input?: string, limitMs = COMMAND_LIMIT_MS): Promise<Record<string, unknown>> {
+function cello(args: readonly string[], input?: string, limitMs = COMMAND_LIMIT_MS): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const child = spawn("cello-v2", args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CELLO_CALLER: "cello-concierge" } });
+    const child = spawn("cello", args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CELLO_CALLER: "cello-concierge" } });
     running.add(child);
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -70,7 +70,7 @@ function celloV2(args: readonly string[], input?: string, limitMs = COMMAND_LIMI
     child.on("error", (cause) => {
       clearTimeout(timer);
       running.delete(child);
-      reject(new CommandFailed("cello_v2_not_runnable", cause.message));
+      reject(new CommandFailed("cello_not_runnable", cause.message));
     });
     child.on("close", (status) => {
       clearTimeout(timer);
@@ -131,7 +131,7 @@ export class Concierge {
     const entries: (Entry & { position: number })[] = [];
     for (;;) {
       const after = entries.at(-1)?.position ?? 0;
-      const page = await celloV2(["transcript", sessionId, "--after", String(after), ...this.#agentArgs()]) as { entries: (Entry & { position: number })[]; more?: boolean };
+      const page = await cello(["transcript", sessionId, "--after", String(after), ...this.#agentArgs()]) as { entries: (Entry & { position: number })[]; more?: boolean };
       // Kept to what a decision uses, so no caller's text is held any longer than the parse.
       for (const e of page.entries) entries.push({ position: e.position, own: e.own, signal: e.signal, closed_their_side: e.closed_their_side, screening: e.screening?.verdict ? { verdict: e.screening.verdict } : undefined });
       if (!page.more) return entries;
@@ -140,23 +140,23 @@ export class Concierge {
 
   async #drain(sessionId: string): Promise<void> {
     for (;;) {
-      const read = await celloV2(["receive", "--session-id", sessionId, ...this.#agentArgs()]) as { more?: boolean };
+      const read = await cello(["receive", "--session-id", sessionId, ...this.#agentArgs()]) as { more?: boolean };
       if (!read.more) return;
     }
   }
 
   async #send(row: SessionRow, line: LineName, signal: "over" | "wrap"): Promise<void> {
-    await celloV2(["send", row.session_id, "-", `--${signal}`, ...this.#agentArgs()], this.#o.lines[line]);
+    await cello(["send", row.session_id, "-", `--${signal}`, ...this.#agentArgs()], this.#o.lines[line]);
     log("concierge.line.sent", { session: row.session_id, caller: row.with_id, line });
   }
 
   async #close(row: SessionRow): Promise<void> {
-    await celloV2(["close-session", row.session_id, ...this.#agentArgs()]);
+    await cello(["close-session", row.session_id, ...this.#agentArgs()]);
     log("concierge.session.closed", { session: row.session_id, caller: row.with_id });
   }
 
   async #callsFrom(caller: string): Promise<number> {
-    const all = await celloV2(["sessions", "--all", ...this.#agentArgs()]) as { sessions: { with_id: string }[] };
+    const all = await cello(["sessions", "--all", ...this.#agentArgs()]) as { sessions: { with_id: string }[] };
     return all.sessions.filter((s) => s.with_id === caller).length;
   }
 
@@ -195,7 +195,7 @@ export class Concierge {
 
   // Each session is looked at only when something about it changed, so a quiet one costs nothing.
   async #sweep(): Promise<void> {
-    const { sessions } = await celloV2(["sessions", ...this.#agentArgs()]) as { sessions: SessionRow[] };
+    const { sessions } = await cello(["sessions", ...this.#agentArgs()]) as { sessions: SessionRow[] };
     const now = Date.now();
     const open = sessions.filter((s) => !s.own_closed && s.state !== "closed");
     const due: { row: SessionRow; seen: Seen }[] = [];
@@ -232,7 +232,7 @@ export class Concierge {
       try {
         await this.#sweep();
         // Rings for a new caller who has said nothing, and returns at once for anything unread. The time limit covers a ring that came mid-sweep.
-        await celloV2(["wait", "--timeout-seconds", String(this.#o.waitSeconds), ...this.#agentArgs()], undefined, (this.#o.waitSeconds + 15) * 1000);
+        await cello(["wait", "--timeout-seconds", String(this.#o.waitSeconds), ...this.#agentArgs()], undefined, (this.#o.waitSeconds + 15) * 1000);
         if (down > 0) log("concierge.daemon.back");
         down = 0;
       } catch (err: unknown) {

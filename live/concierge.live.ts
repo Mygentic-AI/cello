@@ -12,7 +12,7 @@ const url = process.env["CELLO_URL"] as string;
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const programPath = new URL("../concierge/concierge.ts", import.meta.url).pathname;
 const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
-const root = mkdtempSync(join(tmpdir(), "cello-v2-concierge-"));
+const root = mkdtempSync(join(tmpdir(), "cello-concierge-"));
 const homeC = join(root, "concierge");
 const homeP = join(root, "people");
 const conciergeLog = join(root, "concierge.log");
@@ -22,12 +22,12 @@ const SILENT_SECONDS = 45;
 // The program only knows the command by name, as it will once installed.
 const bin = join(root, "bin");
 spawnSync("mkdir", ["-p", bin, homeC, homeP]);
-writeFileSync(join(bin, "cello-v2"), `#!/bin/sh\nexec "${process.execPath}" "${cliPath}" "$@"\n`);
-chmodSync(join(bin, "cello-v2"), 0o755);
+writeFileSync(join(bin, "cello"), `#!/bin/sh\nexec "${process.execPath}" "${cliPath}" "$@"\n`);
+chmodSync(join(bin, "cello"), 0o755);
 
 type Json = Record<string, unknown>;
 function cello(home: string, args: string[], input?: string): { status: number | null; json: Json; stderr: string } {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: home } });
+  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: home } });
   let json: Json = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Json;
@@ -38,7 +38,7 @@ function cello(home: string, args: string[], input?: string): { status: number |
 }
 function ok(home: string, args: string[], input?: string): Json {
   const run = cello(home, args, input);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")}: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")}: ${run.stderr}`);
   return run.json;
 }
 async function until<T>(what: string, check: () => T | undefined | false, seconds = 40): Promise<T> {
@@ -56,7 +56,7 @@ let conciergeId: string;
 function startProgram(): ChildProcess {
   const child = spawn("sh", ["-c", `exec "${process.execPath}" "${programPath}" --agent Concierge --silent-seconds ${SILENT_SECONDS} --max-calls-per-caller 2 2>>"${conciergeLog}"`], {
     stdio: "ignore",
-    env: { ...process.env, CELLO_V2_HOME: homeC, PATH: `${bin}:${process.env["PATH"] as string}` },
+    env: { ...process.env, CELLO_HOME: homeC, PATH: `${bin}:${process.env["PATH"] as string}` },
   });
   return child;
 }

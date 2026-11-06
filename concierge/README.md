@@ -1,6 +1,6 @@
 # The CELLO Concierge
 
-The first agent a new person dials. It's a script with no model, and it uses only the `cello-v2` command.
+The first agent a new person dials. It's a script with no model, and it uses only the `cello` command.
 
 **A caller's experience.** They call, and a reply arrives in about a second, even if they've said nothing. It says what just happened. Their next message gets the next step: connect a second agent. Their next gets a last line, and the Concierge closes its side. That's at most three lines per call.
 
@@ -18,6 +18,6 @@ Options: `--lines <file>`, `--silent-seconds` (300), `--wait-seconds` (5), `--ma
 
 **Restarts.** Where each conversation stands comes from the daemon's record, so killing either program loses nothing and repeats no line. If the daemon is down, the Concierge waits and retries. Bringing the daemon back is its supervisor's job. The silence clock lives in memory, so a restart starts it again.
 
-**Limits.** A caller who has called more than the limit gets one line saying so. The daemon's own limits also apply: 3 open sessions per stranger and 50 for all strangers together by default. Raising those takes a person at a terminal: `cello-v2 settings-set limits.stranger_pool <n> --agent <name>`.
+**Limits.** A caller who has called more than the limit gets one line saying so. The daemon's own limits also apply: 3 open sessions per stranger and 50 for all strangers together by default. Raising those takes a person at a terminal: `cello settings-set limits.stranger_pool <n> --agent <name>`.
 
-**Test.** `CELLO_SERVER_DIR=<server> scripts/concierge-test.sh`: project `cello-v2-concierge`, port 19000. It removes everything it started.
+**Test.** `CELLO_SERVER_DIR=<server> scripts/concierge-test.sh`: project `cello-concierge`, port 21000. It removes everything it started.

@@ -17,13 +17,13 @@ const evidence = join(homedir(), "cello-v2-live-runs", `concierge-stress-${new D
 mkdirSync(evidence, { recursive: true });
 const bin = join(root, "bin");
 mkdirSync(bin);
-writeFileSync(join(bin, "cello-v2"), `#!/bin/sh\nexec "${process.execPath}" "${cliPath}" "$@"\n`);
-chmodSync(join(bin, "cello-v2"), 0o755);
+writeFileSync(join(bin, "cello"), `#!/bin/sh\nexec "${process.execPath}" "${cliPath}" "$@"\n`);
+chmodSync(join(bin, "cello"), 0o755);
 
 type Json = Record<string, unknown>;
 function run(home: string, args: string[], input?: string): Promise<Json> {
   return new Promise((resolve, reject) => {
-    const child = execFile(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_V2_HOME: home }, maxBuffer: 1 << 24 }, (error, stdout, stderr) => {
+    const child = execFile(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_HOME: home }, maxBuffer: 1 << 24 }, (error, stdout, stderr) => {
       if (error && error.code !== 3) reject(new Error(`${args[0] as string}: ${(stderr || stdout || error.message).trim().slice(0, 300)}`));
       else {
         try { resolve(JSON.parse(stdout) as Json); } catch { resolve({}); }
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
   const id = (await run(homeC, ["create-agent", "Concierge"]))["agent_id"] as string;
   process.env["CONCIERGE_ID"] = id;
   await online(homeC, "Concierge");
-  program.child = spawn("sh", ["-c", `exec "${process.execPath}" "${programPath}" --agent Concierge 2>>"${join(evidence, "concierge.log")}"`], { stdio: "ignore", env: { ...process.env, CELLO_V2_HOME: homeC, PATH: `${bin}:${process.env["PATH"] as string}` } });
+  program.child = spawn("sh", ["-c", `exec "${process.execPath}" "${programPath}" --agent Concierge 2>>"${join(evidence, "concierge.log")}"`], { stdio: "ignore", env: { ...process.env, CELLO_HOME: homeC, PATH: `${bin}:${process.env["PATH"] as string}` } });
   const most = Math.max(...levels);
   for (let i = 0; i < most; i++) {
     const home = join(root, `caller${i}`);
@@ -148,8 +148,8 @@ try {
   await main();
 } finally {
   program.child?.kill("SIGKILL");
-  spawnSync(process.execPath, [cliPath, "logout"], { env: { ...process.env, CELLO_V2_HOME: homeC } });
-  for (const home of callerHomes) spawnSync(process.execPath, [cliPath, "logout"], { env: { ...process.env, CELLO_V2_HOME: home } });
+  spawnSync(process.execPath, [cliPath, "logout"], { env: { ...process.env, CELLO_HOME: homeC } });
+  for (const home of callerHomes) spawnSync(process.execPath, [cliPath, "logout"], { env: { ...process.env, CELLO_HOME: home } });
   process.stdout.write(`evidence: ${evidence}\n`);
 }
 process.exit(0);
