@@ -131,7 +131,7 @@ export class Concierge {
   // Written at the top of every pass, after every conversation and through every wait, so a long sweep during a flood
   // and a long wait for a daemon both count as alive. Only a program that is stuck stops writing it.
   #beat(): void {
-    if (this.#o.heartbeat) writeFileSync(this.#o.heartbeat, `${Date.now()}\n`);
+    if (this.#o.heartbeat) writeFileSync(this.#o.heartbeat, `${Date.now()}\n`, { mode: 0o600 });
   }
 
   async #nap(ms: number): Promise<void> {

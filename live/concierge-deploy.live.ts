@@ -3,7 +3,7 @@
 // Run it with scripts/concierge-deploy-test.sh.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -20,6 +20,15 @@ const root = mkdtempSync(join(tmpdir(), "cello-concierge-deploy-"));
 const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
 assert.ok(!lines.first.startsWith("[DRAFT COPY]"), "the shipped lines are still a draft");
 const homeP = join(root, "people");
+const wrapper = join(root, "cello-wrapper");
+writeFileSync(wrapper, `#!/bin/sh
+if [ "$1" = status ] && [ -e /dev/shm/concierge/fake-wedge ]; then
+  printf '{"server":"test","connected":true,"problem":null,"agents":[{"name":"Concierge","online":false,"status":"active"}]}\\n'
+  exit 0
+fi
+exec cello "$@"
+`);
+chmodSync(wrapper, 0o755);
 // The container reaches the server and the issuer on this machine by this name.
 const inside = (address: string): string => address.replace("127.0.0.1", "host.docker.internal");
 
@@ -62,6 +71,7 @@ const hidden = (text: string): string => text.replace(/^./, (c) => `[${c}]`);
 const MATCH = `for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q "$1" && ACTION; done`;
 const signalling = (text: string, signal: "KILL" | "STOP"): void => { inContainer(["sh", "-c", MATCH.replace("ACTION", `kill -${signal} \${p#/proc/}`), "sh", hidden(text)]); };
 const killing = (text: string): void => signalling(text, "KILL");
+const pidOf = (text: string): string => inContainer(["sh", "-c", MATCH.replace("ACTION", "echo ${p#/proc/}"), "sh", hidden(text)]).stdout.trim();
 // Every event the supervisor logged with this name, as the time it happened.
 const events = (event: string): number[] => docker(["logs", name]).stderr.split("\n").filter((l) => l.includes(`"event":"${event}"`)).map((l) => Date.parse((JSON.parse(l) as { at: string }).at));
 const running = (text: string): boolean => inContainer(["sh", "-c", `${MATCH.replace("ACTION", "exit 0")}; exit 1`, "sh", hidden(text)]).status === 0;
@@ -93,7 +103,9 @@ before(async () => {
   // The runbook's command, with this run's server. The container's own supervisor starts the daemon and the Concierge.
   const started = docker(["run", "-d", "--name", name, "--init", "--restart", "unless-stopped", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, "-e", `CELLO_SERVER=${inside(url)}`,
     // Short windows, so the tests below that need one to pass don't each wait two minutes. The runbook's are 120.
-    "-e", "CONCIERGE_OFFLINE_RESTART_SECONDS=15", "-e", "CONCIERGE_STALE_SECONDS=10", "-e", "CONCIERGE_CHECK_SECONDS=5", image]);
+    "-e", "CONCIERGE_OFFLINE_RESTART_SECONDS=15", "-e", "CONCIERGE_STALE_SECONDS=10", "-e", "CONCIERGE_CHECK_SECONDS=5",
+    // The wedge test's way of telling the supervisor the daemon is connected while the agent stays offline.
+    "-v", `${wrapper}:/opt/cello-wrapper:ro`, "-e", "CELLO_BIN=/opt/cello-wrapper", image]);
   assert.equal(started.status, 0, started.stderr);
   await until("the daemon inside the container", () => inContainer(["cello", "status"]).status === 0);
   // The stand-in issuer listens on this machine's own address, so a relay inside the container makes it reachable at the same one.
@@ -174,19 +186,47 @@ test("a stuck Concierge, up but writing no heartbeat, is replaced and the next c
   assert.equal(events("supervisor.concierge.stale").length, stale + 1, "the supervisor should have said the Concierge went quiet");
 });
 
-test("a daemon that stays offline is restarted, each restart waits longer than the last, and it answers once the network is back", async () => {
-  const restarted = events("supervisor.daemon.restarted").length;
+// The daemon reconnects by itself when the server or the network is gone, and keeps its state while it does. Restarting
+// it then would throw that state away for nothing, so the supervisor says so and leaves it alone.
+test("a network cut is left alone: no restart, the same daemon, and calls are answered once it is back", async () => {
+  const restarts = events("supervisor.daemon.restarted").length;
+  const degraded = events("supervisor.remote.degraded").length;
+  const back = events("supervisor.remote.back").length;
+  const pid = pidOf("daemon/main");
+  assert.ok(pid, "the daemon isn't running to begin with");
   assert.equal(docker(["network", "disconnect", "bridge", name]).status, 0);
   try {
-    // 15 seconds offline allowed. The first restart waits 30 before another is allowed, the second 60.
-    const times = await until("two restarts while offline", () => {
-      const all = events("supervisor.daemon.restarted").slice(restarted);
-      return all.length >= 2 && all;
-    }, 120);
-    const [first, second] = times as [number, number];
-    assert.ok(second - first >= 25_000, `the second restart came ${second - first} ms after the first, and should have waited at least 30 s`);
+    // 15 seconds offline is the limit, so 50 is more than three times over it.
+    await until("the supervisor to say the remote is down", () => events("supervisor.remote.degraded").length > degraded, 60);
+    await new Promise((resolve) => setTimeout(resolve, 50_000));
   } finally {
     assert.equal(docker(["network", "connect", "bridge", name]).status, 0);
+  }
+  assert.equal(events("supervisor.daemon.restarted").length, restarts, "the supervisor restarted a daemon that was only waiting for the network");
+  assert.equal(pidOf("daemon/main"), pid, "the daemon was replaced");
+  const caller = await newCaller();
+  const session = call(caller);
+  assert.deepEqual(await hears(caller, session, 1, 120), [lines.first]);
+  await until("the supervisor to say the remote came back", () => events("supervisor.remote.back").length > back, 30);
+});
+
+// The one case a restart can help: the daemon says it is connected, and the agent stays offline. The test gives the
+// supervisor that answer through CELLO_BIN, a wrapper that answers `status` that way while a file exists and runs the real
+// command otherwise. The decision is real. Only what it is told is faked.
+test("a daemon that says it is connected while the agent stays offline is restarted, and each restart waits longer", async () => {
+  const restarted = events("supervisor.daemon.restarted").length;
+  inContainer(["sh", "-c", "touch /dev/shm/concierge/fake-wedge"]);
+  try {
+    // 15 seconds offline allowed. The first restart waits 30 before another is allowed, the second 60.
+    const times = await until("two restarts for a wedged daemon", () => {
+      const all = events("supervisor.daemon.restarted").slice(restarted);
+      return all.length >= 2 && all;
+    }, 150);
+    const [first, second] = times as [number, number];
+    assert.ok(second - first >= 25_000, `the second restart came ${second - first} ms after the first, and should have waited at least 30 s`);
+    assert.match(docker(["logs", name]).stderr, /"reason":"connected, agent offline"/);
+  } finally {
+    inContainer(["sh", "-c", "rm -f /dev/shm/concierge/fake-wedge"]);
   }
   const caller = await newCaller();
   const session = call(caller);

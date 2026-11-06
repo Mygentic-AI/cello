@@ -53,7 +53,8 @@ docker logs concierge
 |---|---|
 | The daemon dies | The supervisor, within a few seconds |
 | The daemon is up and frozen | The supervisor finds it doesn't answer within 20 seconds, kills it and starts another |
-| The daemon is up and the agent is offline | After 120 seconds offline, the supervisor restarts the daemon. Each restart that doesn't help doubles the wait before the next, up to 15 minutes. |
+| The server or the network is down | Nothing. The daemon says it can't reach the server and reconnects by itself, keeping its state, so the supervisor leaves it alone and logs `supervisor.remote.degraded`, then `supervisor.remote.back`. |
+| The daemon says it is connected and the agent stays offline | After 120 seconds, the supervisor restarts the daemon. Each restart that doesn't help doubles the wait before the next, up to 15 minutes. An agent that is suspended or retired is not restarted. |
 | The Concierge program dies | The supervisor, within a few seconds. One that dies at once, again and again, waits longer each time, up to 30 seconds. |
 | The Concierge is up and stuck | It writes a heartbeat as it works. After 120 seconds of none, the supervisor kills it and starts another. |
 | Both, or everything in the container | Docker, because of `--restart unless-stopped` |
@@ -85,11 +86,12 @@ On the CELLO machine, run `infra/concierge/deploy.sh` again instead.
 Say what `docker logs concierge` shows, and stop there.
 
 - `supervisor.daemon.failed` repeating: the daemon can't start. The message says why. `server_changed` means the data belongs to a different server.
-- `supervisor.daemon.frozen`, or `supervisor.daemon.restarted` with `agent offline`: the supervisor found the daemon unwell and replaced it. Seen once, it is fine. Seen over and over, the server or the network is the problem, and the restarts are spacing themselves out.
+- `supervisor.remote.degraded`: the daemon can't reach the server, or the agent is suspended or retired. The supervisor is leaving it alone on purpose. The `detail` says why. For a suspended or retired agent, that is for the owner to change.
+- `supervisor.daemon.frozen`, or `supervisor.daemon.restarted`: the supervisor found the daemon unwell and replaced it. Seen once, it is fine. Seen over and over, the restarts are spacing themselves out, and the cause is not the daemon.
 - `supervisor.concierge.stale`: the Concierge went quiet and was replaced.
 - `concierge.loop.failed` with `unknown_agent`: setup hasn't been run on this data.
 - `concierge.loop.failed` with `daemon_not_running`: the supervisor is bringing the daemon back, and it clears by itself.
 
 ## How this was proved
 
-`scripts/concierge-deploy-test.sh` builds the image, brings a fresh container up with these same commands against a real server, and has real agents call it. It then kills the daemon and the Concierge program, freezes each of them, cuts the container's network for a minute and a half, kills both in the middle of a conversation, kills everything inside at once, and restarts the container. It checks that each call is still answered, the agent's address never changes, no line repeats, and the restarts after an outage space themselves out. It runs with short windows, 10 to 15 seconds in place of 120. It does not reboot a host: only the restart policy is checked.
+`scripts/concierge-deploy-test.sh` builds the image, brings a fresh container up with these same commands against a real server, and has real agents call it. It then kills the daemon and the Concierge program, freezes each of them, cuts the container's network for a minute and checks the daemon is neither restarted nor replaced, tells the supervisor the daemon is connected while the agent stays offline and checks it is restarted with growing gaps, kills both in the middle of a conversation, kills everything inside at once, and restarts the container. It checks that each call is still answered, the agent's address never changes, no line repeats, and the restarts after an outage space themselves out. It runs with short windows, 10 to 15 seconds in place of 120. It does not reboot a host: only the restart policy is checked.

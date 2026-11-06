@@ -14,7 +14,12 @@ here=$(dirname "$0")
 offline_limit="${CONCIERGE_OFFLINE_RESTART_SECONDS:-120}"
 stale_limit="${CONCIERGE_STALE_SECONDS:-120}"
 check_every="${CONCIERGE_CHECK_SECONDS:-30}"
-heartbeat="${CONCIERGE_HEARTBEAT:-/tmp/concierge.heartbeat}"
+# Memory, not disk, and a folder only this user can open: not /tmp, which every program in the container can read, and not
+# /data, which is snapshotted and would be written every second for nothing.
+state_dir="${CONCIERGE_STATE_DIR:-/dev/shm/concierge}"
+mkdir -p -m 700 "$state_dir" || { echo "can't make $state_dir" >&2; exit 1; }
+heartbeat="$state_dir/heartbeat"
+cello_bin="${CELLO_BIN:-cello}"
 # Word-split on purpose: extra flags for the Concierge, like --max-calls-per-caller 5.
 extra="${CONCIERGE_ARGS:-}"
 longest_wait=900
@@ -27,7 +32,7 @@ log() {
 cello_for() {
   seconds=$1
   shift
-  timeout "$seconds" cello "$@"
+  timeout "$seconds" "$cello_bin" "$@"
 }
 
 # The daemon is found by its command line, because a frozen one can't be asked to stop.
@@ -54,15 +59,24 @@ trap stop TERM INT
 lines_args=""
 if [ -n "${CONCIERGE_LINES:-}" ]; then lines_args="--lines $CONCIERGE_LINES"; fi
 
-# The agent's state as the daemon reports it: online, offline, or missing before setup has made it.
+# What the daemon itself says about the agent and its link to the server, as one word and a reason:
+#   online, or missing before setup has made the agent: nothing to do.
+#   remote-down: the daemon can't reach the server and is reconnecting by itself. Its state is worth more than a restart.
+#   stopped: the agent is suspended or retired, which no restart changes.
+#   offline: the daemon says it is connected, and the agent still isn't online. That is a wedge.
+#   unknown: the daemon answered with something unreadable. Treated as offline until it has been so for the limit.
 agent_state() {
-  cello_for 30 agents 2>/dev/null | AGENT="$agent" node -e '
+  cello_for 20 status 2>/dev/null | AGENT="$agent" node -e '
     let text = "";
     process.stdin.on("data", (c) => { text += c; });
     process.stdin.on("end", () => {
       try {
-        const found = JSON.parse(text).agents.find((a) => a.name === process.env.AGENT);
-        console.log(found ? (found.online ? "online" : "offline") : "missing");
+        const s = JSON.parse(text);
+        const a = (s.agents || []).find((x) => x.name === process.env.AGENT);
+        if (!a) console.log("missing");
+        else if (!s.connected) console.log("remote-down " + String(s.problem || "no reason given").replace(/[^ -~]/g, "").slice(0, 200));
+        else if (a.status && a.status !== "active") console.log("stopped " + a.status);
+        else console.log(a.online ? "online" : "offline");
       } catch { console.log("unknown"); }
     });'
 }
@@ -72,6 +86,7 @@ daemon_failures=0
 daemon_retry_at=0
 health_restarts=0
 offline_since=0
+degraded=""
 next_health_restart_at=0
 last_check=0
 concierge_failures=0
@@ -90,7 +105,7 @@ while [ -z "$stopping" ]; do
   fi
   if [ "$status_exit" -ne 0 ]; then
     if [ "$now" -ge "$daemon_retry_at" ]; then
-      if cello_for 60 login --server "$CELLO_SERVER" >/dev/null 2>/tmp/login.err; then
+      if cello_for 60 login --server "$CELLO_SERVER" >/dev/null 2>"$state_dir/login.err"; then
         log supervisor.daemon.started
         daemon_failures=0
       else
@@ -100,33 +115,53 @@ while [ -z "$stopping" ]; do
         daemon_retry_at=$((now + wait_more))
         # Said on the first failure and then now and then, so a long outage doesn't fill the log.
         if [ "$daemon_failures" -eq 1 ] || [ $((daemon_failures % 10)) -eq 0 ]; then
-          log supervisor.daemon.failed "\"failures\":$daemon_failures,\"next_try_seconds\":$wait_more,\"message\":\"$(tr -d '"\\\n' </tmp/login.err | cut -c1-300)\""
+          log supervisor.daemon.failed "\"failures\":$daemon_failures,\"next_try_seconds\":$wait_more,\"message\":\"$(tr -d '\042\134\012' <"$state_dir/login.err" | cut -c1-300)\""
         fi
         # A daemon that neither answers nor can be started again is stuck, so the next try is on a fresh one.
         [ "$daemon_failures" -ge 2 ] && kill_daemon
       fi
     fi
   else
-    # 2. The agent is online. Offline for longer than the limit means the daemon is up and not working.
+    # 2. The agent is online. If the daemon can't reach the server, it reconnects by itself and keeps its state, so it is
+    #    left alone. Only a daemon that says it is connected, with the agent still offline past the limit, is wedged.
     if [ $((now - last_check)) -ge "$check_every" ]; then
       last_check=$now
       state=$(agent_state)
-      if [ "$state" = "online" ] || [ "$state" = "missing" ]; then
-        offline_since=0
-        health_restarts=0
-      elif [ "$state" = "offline" ]; then
-        [ "$offline_since" -eq 0 ] && offline_since=$now
-        if [ $((now - offline_since)) -ge "$offline_limit" ] && [ "$now" -ge "$next_health_restart_at" ]; then
-          health_restarts=$((health_restarts + 1))
-          # Each restart that doesn't bring it online doubles the wait before the next, up to a longest.
-          wait_more=$((offline_limit << (health_restarts < 6 ? health_restarts : 6)))
-          [ "$wait_more" -gt "$longest_wait" ] && wait_more=$longest_wait
-          next_health_restart_at=$((now + wait_more))
-          log supervisor.daemon.restarted "\"reason\":\"agent offline\",\"offline_seconds\":$((now - offline_since)),\"restarts\":$health_restarts,\"next_allowed_seconds\":$wait_more"
-          kill_daemon
+      word=${state%% *}
+      case "$word" in
+        online | missing)
           offline_since=0
-        fi
-      fi
+          health_restarts=0
+          if [ -n "$degraded" ]; then
+            log supervisor.remote.back "\"was\":\"$degraded\""
+            degraded=""
+          fi
+          ;;
+        remote-down | stopped)
+          offline_since=0
+          health_restarts=0
+          if [ "$degraded" != "$word" ]; then
+            degraded=$word
+            # A quote or a backslash in the reason would break the log line, so they go (octal 042 and 134).
+            rest=${state#"$word"}
+            detail=$(printf '%s' "$rest" | tr -d '\042\134')
+            log supervisor.remote.degraded "\"reason\":\"$word\",\"detail\":\"$detail\",\"restarting\":false"
+          fi
+          ;;
+        *)
+          [ "$offline_since" -eq 0 ] && offline_since=$now
+          if [ $((now - offline_since)) -ge "$offline_limit" ] && [ "$now" -ge "$next_health_restart_at" ]; then
+            health_restarts=$((health_restarts + 1))
+            # Each restart that doesn't bring it online doubles the wait before the next, up to a longest.
+            wait_more=$((offline_limit << (health_restarts < 6 ? health_restarts : 6)))
+            [ "$wait_more" -gt "$longest_wait" ] && wait_more=$longest_wait
+            next_health_restart_at=$((now + wait_more))
+            log supervisor.daemon.restarted "\"reason\":\"connected, agent offline\",\"state\":\"$word\",\"offline_seconds\":$((now - offline_since)),\"restarts\":$health_restarts,\"next_allowed_seconds\":$wait_more"
+            kill_daemon
+            offline_since=0
+          fi
+          ;;
+      esac
     fi
   fi
 
