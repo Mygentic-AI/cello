@@ -12,7 +12,7 @@ import type { IpcNotification } from "../src/ipc/protocol.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? "../cello-server";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 
 function compose(...args: string[]): string {
   return execFileSync("docker", ["compose", ...args], { cwd: serverDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

@@ -11,7 +11,7 @@ pnpm run test:live                    # here: the daemon and tools, with a serve
 
 Run them whenever you like. They need nobody's OK.
 
-**Servers in these tests.** A real server requires a verified email signal to register, and real root keys don't exist yet. So the scripts run the same server code with test roots and a test issuer, from `live/docker-compose.test.yml` in `cello-server`, which the server image never contains. `CELLO_TEST_VOUCH=1` gives a signal from that issuer to any client that brought none, so these tests don't prove a daemon presents its own. The hostile cases are in `cello-server`'s live test, with no vouching.
+**Signals in these tests.** A server requires a verified email signal to register. `scripts/test-issuer-env.sh` starts the stand-in issuer, and tells this run's servers to count it as an operator-added issuer, on the production server code. `live/enrolling-cli.ts` redeems a throwaway code for each home's first agent, and later agents get copies from it, so each daemon collects its own signal and presents it. Hostile registration cases are in `cello-server`'s live test. Set `CELLO_ISSUER_DIR` when running from a worktree. For a remote server, its operator sets `CELLO_TRUSTED_ISSUERS` to the output of `node live/issuer-service.ts --print-trusted`.
 
 **The install test** is one of them, and it also runs alone: `pnpm run test:install`. It packs the tarball, installs it into an empty prefix, and uses only the installed binaries from outside this repo. It starts its own server, on project `cello-v2-install` and port 18095 (`CELLO_INSTALL_PORT` changes it). It prints the install time and size. After a failure, it keeps its temporary folder and says where.
 
@@ -56,4 +56,4 @@ Add `--unscripted` to give the sessions a goal instead of fixed lines. That run 
 
 **If it fails,** read `report.json` for the reason and the screens for what the sessions saw. A timeout usually means a session is waiting on something: its screen will say what.
 
-**After changing the server,** redeploy: `scripts/deploy-remote.sh cello-v2-test us-east1-d 136-72-31-96.sslip.io --test-issuer` in `cello-server`. Its protocol copy comes from `scripts/sync-protocol.sh`.
+**After changing the server,** redeploy: `scripts/deploy-remote.sh cello-v2-test us-east1-d 136-72-31-96.sslip.io` in `cello-server`. Its protocol copy comes from `scripts/sync-protocol.sh`.

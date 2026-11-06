@@ -23,7 +23,7 @@ import { SEAL_NOTE, compareTranscripts } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 
 function compose(...args: string[]): string {

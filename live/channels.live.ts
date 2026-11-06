@@ -17,11 +17,13 @@ import { OPERATIONS } from "../src/ipc/operations.ts";
 import { type RosterFile, channelPostAckCodec, channelPostCodec, hashBlob, inRoster, postHash, readRoster, sealKeyEntry, signMemberKey, signRoster } from "../src/protocol/channel.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { channelPostAckBytes, channelPostBytes, type ChannelPostFields, agentAuthBytes, registerBytes } from "../src/protocol/structures.ts";
+import { toHex } from "../src/protocol/encode.ts";
+import { standInSignal } from "./stand-in-issuer.ts";
 import { PROTOCOL_VERSION, fromB64, identityCodec, signatureCodec, toB64 } from "../src/protocol/wire.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18600/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const LOST_WAIT_MS = 8000;
 const homes = { ada: mkdtempSync(join(tmpdir(), "cello-ch-ada-")), bea: mkdtempSync(join(tmpdir(), "cello-ch-bea-")), cyd: mkdtempSync(join(tmpdir(), "cello-ch-cyd-")) };
 type Who = keyof typeof homes;
@@ -132,7 +134,7 @@ class Raw {
   async newAgent(): Promise<Signer> {
     const signer = await signerFromSeeds(generateIdentitySeeds());
     const signature = await signer.sign("cello-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
-    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature) });
+    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature), signal: await standInSignal(toHex(signer.id)) });
     const clientNonce = new Uint8Array(randomBytes(32));
     const proof = await signer.sign("cello-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
     await this.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(proof) });

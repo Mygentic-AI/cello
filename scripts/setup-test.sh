@@ -4,6 +4,8 @@ set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
 export CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$here/../cello-issuer}"
+CELLO_TRUSTED_ISSUERS=$(CELLO_ISSUER_DIR="$CELLO_ISSUER_DIR" node "$here/live/issuer-service.ts" --print-trusted)
+export CELLO_TRUSTED_ISSUERS
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-setup}" CELLO_PORT="${CELLO_PORT:-18950}" CELLO_SERVER_DIR="$server_dir"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD

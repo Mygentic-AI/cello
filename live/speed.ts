@@ -5,6 +5,8 @@
 //   node live/speed.ts --server wss://host/v1 --gentle
 //
 // Raw numbers and the report go to ~/cello-v2-live-runs/speed-<time>/.
+import { identityCodec } from "../src/protocol/wire.ts";
+import { StandInIssuer, standInKeys } from "./stand-in-issuer.ts";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -38,7 +40,7 @@ const { values: args } = parseArgs({
 });
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+const CLI = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
@@ -302,15 +304,19 @@ function conversationSummary(turns: Turn[]): Record<string, unknown> {
 
 const serverDir = args["server-dir"] ?? process.env["CELLO_SERVER_DIR"] ?? join(REPO, "..", "cello-server");
 const overridePath = join(runDir, "compose-override.yml");
+// Each daemon collects a real signal, from an issuer this server is told to count.
+const standIn = await StandInIssuer.start(process.env["CELLO_ISSUER_DIR"] ?? join(REPO, "..", "cello-issuer"), { open: true });
+process.env["CELLO_TEST_ISSUER_URL"] = standIn.url;
+process.env["CELLO_TRUSTED_ISSUERS"] = JSON.stringify([{ address: "127.0.0.1", ...identityCodec.encode((await standInKeys()).publicIdentity) }]);
 const serverProfileDir = join(runDir, "server-prof");
 let composeUp = false;
 
 function compose(...argv: string[]): string {
-  return execFileSync("docker", ["compose", "-p", COMPOSE_PROJECT, "-f", join(serverDir, "docker-compose.yml"), "-f", join(serverDir, "live/docker-compose.test.yml"), "-f", overridePath, "--project-directory", serverDir, ...argv], {
+  return execFileSync("docker", ["compose", "-p", COMPOSE_PROJECT, "-f", join(serverDir, "docker-compose.yml"), "-f", overridePath, "--project-directory", serverDir, ...argv], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, CELLO_TEST_VOUCH: "1", CELLO_PORT: String(LOCAL_PORT), POSTGRES_PASSWORD: localPasswords.postgres, CELLO_APP_PASSWORD: localPasswords.app },
+    env: { ...process.env, CELLO_PORT: String(LOCAL_PORT), POSTGRES_PASSWORD: localPasswords.postgres, CELLO_APP_PASSWORD: localPasswords.app },
   });
 }
 const localPasswords = { postgres: randomBytes(16).toString("hex"), app: randomBytes(16).toString("hex") };
@@ -1188,6 +1194,7 @@ try {
 } finally {
   await cleanUp();
   clearInterval(guardTimer);
+  standIn.stop();
 }
 if (args["cpu-prof"]) {
   results["serverProfile"] = summariseProfiles(serverProfileDir);

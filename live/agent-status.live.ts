@@ -13,11 +13,13 @@ import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/prot
 import { generateSessionEphemeral } from "../src/protocol/key-agreement.ts";
 import { STATUS_DOMAIN } from "../src/protocol/status.ts";
 import { AgentStatus, StatusIssuer, StatusReason, type StatusStatementFields, agentAuthBytes, offerBytes, registerBytes, statusStatementBytes } from "../src/protocol/structures.ts";
+import { toHex } from "../src/protocol/encode.ts";
+import { standInSignal } from "./stand-in-issuer.ts";
 import { identityCodec, signatureCodec, signedOffer, signedStatusStatement, toB64 } from "../src/protocol/wire.ts";
 
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_STATUS_PIDS"];
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `status-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -193,7 +195,7 @@ class Raw {
   async register(): Promise<void> {
     const server = await this.#first;
     const identity = this.signer.publicIdentity;
-    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-register", registerBytes({ serverId: server.id, identity }))) });
+    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-register", registerBytes({ serverId: server.id, identity }))), signal: await standInSignal(toHex(this.signer.id)) });
   }
   async #proof(server: ConnectedServer): Promise<{ clientNonce: string; signature: unknown }> {
     const clientNonce = new Uint8Array(randomBytes(32));
@@ -243,7 +245,7 @@ after(() => {
 
 test("the kill switch stops an agent at once, on each server, and leaves it able to seal", { timeout: 400_000 }, async () => {
   const portal = await signerFromSeeds(generateIdentitySeeds());
-  const portalEnv = { CELLO_TRUSTED_ISSUERS: JSON.stringify([{ address: "issuer.status-test.example", ...identityCodec.encode(portal.publicIdentity) }]) };
+  const portalEnv = { CELLO_TRUSTED_ISSUERS: JSON.stringify([...JSON.parse(process.env["CELLO_TRUSTED_ISSUERS"] as string) as unknown[], { address: "issuer.status-test.example", ...identityCodec.encode(portal.publicIdentity) }]) };
   server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv);
   server(["up", "--name", B.name, "--port", String(B.port), "--no-build"], portalEnv);
   say("two servers up");

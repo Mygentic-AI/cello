@@ -17,7 +17,8 @@ import { checkLogsClean } from "./log-check.ts";
 
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_FED_PIDS"];
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const issuerPort = Number(new URL(process.env["CELLO_TEST_ISSUER_URL"] as string).port);
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `federation-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -151,7 +152,8 @@ function side(name: string, home: Server) {
       const listed = spawnSync("lsof", ["-nP", "-a", "-p", String(self.status().pid), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"], { encoding: "utf8" }).stdout;
       return [...listed.matchAll(/->[^:\n]+:(\d+)/g)].map((m) => Number(m[1]));
     },
-    ports: () => [...new Set(self.connections())].sort(),
+    // The stand-in issuer it collected its signal from isn't a server.
+    ports: () => [...new Set(self.connections())].filter((p) => p !== issuerPort).sort(),
     connectionsTo: (port: number) => self.connections().filter((p) => p === port).length,
   };
   everyone.push(self);

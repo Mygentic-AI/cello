@@ -220,7 +220,8 @@ test("an answer lost after the code was spent is recovered on the next run", asy
 test("the whole path: setup ends on a reply, a repeat changes nothing, and a second agent gets copies with no code", async () => {
   const concierge = newHome();
   await ok(concierge, ["login", "--server", url]);
-  const called = await ok(concierge, ["create-agent", "Concierge"]);
+  // The Concierge registers like anyone, with its own code.
+  const called = await ok(concierge, ["setup", "--yes", "--server", url, "--issuer", issuer.url, "--code", newCode(), "--name", "Concierge", "--json"]);
   const conciergeId = called["agent_id"] as string;
   await ok(concierge, ["settings-set", "away.answering", "false", "--agent", "Concierge"]);
   await ok(concierge, ["use-agent", "--agent", "Concierge"]);

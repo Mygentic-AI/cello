@@ -14,7 +14,7 @@ import { IpcClient } from "../src/ipc/client.ts";
 import { OVER_GUIDANCE, POLICY_GUIDANCE, refusedGuidance } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const FLOOD_MESSAGE_BYTES = 200_000;
 const KNOCKS = 1000;

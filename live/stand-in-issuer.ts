@@ -1,12 +1,13 @@
 // A local issuer for tests only. It reads requests with cello-issuer's own checking code and signs real signals, so
 // a format that drifts from that repo fails here. Its caps and codes are a small copy of that repo's rules, not the real thing.
+import { sha256 } from "@noble/hashes/sha2.js";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { encodeCbor } from "../src/protocol/cbor.ts";
 import { toHex } from "../src/protocol/encode.ts";
-import { type DualSignature, type PublicIdentity, type Signer, generateIdentitySeeds, identityId, signerFromSeeds } from "../src/protocol/identity.ts";
+import { type DualSignature, type PublicIdentity, type Signer, identityId, signerFromSeeds } from "../src/protocol/identity.ts";
 import { type TrustSignalEnvelope, MAX_SIGNAL_LIFETIME_SECONDS, SIGNAL_ID_BYTES, SIGNED_SIGNAL_DOMAIN, TRUST_SIGNAL_DOMAIN, checkSignal, issuerPubkeyField, signSignal } from "../src/protocol/signal.ts";
 
 const DAY = 86_400;
@@ -22,6 +23,16 @@ interface RealContract {
 
 export interface EnvelopeChange { type?: string; expiresAt?: number | null; claim?: string; subjectKind?: "account" | "agent"; subject?: string; address?: string; badSignature?: boolean }
 
+// Fixed, and public here, so a test server can be told to count this issuer before it starts.
+const seed = (name: string): Uint8Array => sha256(new TextEncoder().encode(`cello stand-in issuer: ${name}`));
+export const standInKeys = (): Promise<Signer> => signerFromSeeds({ ed: seed("ed"), pq: seed("pq") });
+
+// A signal from the stand-in for a test that talks to a server by bare socket, with no daemon to collect one.
+export async function standInSignal(agentId: string): Promise<string> {
+  const issuer = new StandInIssuer();
+  return Buffer.from(await issuer.sign(agentId, {}, await standInKeys())).toString("base64url");
+}
+
 export class StandInIssuer {
   readonly codes = new Map<string, "good" | "used">();
   readonly owners = new Map<string, string>();
@@ -33,11 +44,14 @@ export class StandInIssuer {
   #signer!: Signer;
   #contract!: RealContract;
   #port = 0;
+  // For tests about something else: any "live-" code is good, and no owner has a limit.
+  #open = false;
 
-  static async start(issuerDir: string): Promise<StandInIssuer> {
+  static async start(issuerDir: string, opts: { open?: boolean } = {}): Promise<StandInIssuer> {
     const issuer = new StandInIssuer();
+    issuer.#open = opts.open === true;
     issuer.#contract = await import(pathToFileURL(join(issuerDir, "src/server/trust/agent-request.ts")).href) as RealContract;
-    issuer.#signer = await signerFromSeeds(generateIdentitySeeds());
+    issuer.#signer = await standInKeys();
     issuer.#server = createServer((req, res) => void issuer.#handle(req, res));
     await new Promise<void>((resolve) => issuer.#server.listen(0, "127.0.0.1", resolve));
     issuer.#port = (issuer.#server.address() as { port: number }).port;
@@ -48,13 +62,13 @@ export class StandInIssuer {
   get keyHex(): string { return toHex(this.#signer.id); }
   stop(): void { this.#server.closeAllConnections(); this.#server.close(); }
 
-  async sign(agentId: string, change: EnvelopeChange = {}): Promise<Uint8Array> {
+  async sign(agentId: string, change: EnvelopeChange = {}, signer: Signer = this.#signer): Promise<Uint8Array> {
     const now = Math.floor(Date.now() / 1000);
     const envelope: TrustSignalEnvelope = {
       subject_kind: change.subjectKind ?? "account",
       subject: change.subject ?? agentId,
       issuer_kind: "issuer",
-      issuer_pubkey: issuerPubkeyField(this.#signer.publicIdentity),
+      issuer_pubkey: issuerPubkeyField(signer.publicIdentity),
       type: change.type ?? "email",
       schema_version: 1,
       payload: new Uint8Array(encodeCbor({ claim: change.claim ?? EMAIL_CLAIM, verified_at: now })),
@@ -65,7 +79,7 @@ export class StandInIssuer {
       issuer_address: change.address ?? "127.0.0.1",
       signal_id: new Uint8Array(randomBytes(SIGNAL_ID_BYTES)),
     };
-    const file = envelope.expires_at !== null && envelope.expires_at - now > MAX_SIGNAL_LIFETIME_SECONDS ? await this.#tooLong(envelope) : await signSignal(envelope, this.#signer);
+    const file = envelope.expires_at !== null && envelope.expires_at - now > MAX_SIGNAL_LIFETIME_SECONDS ? await this.#tooLong(envelope) : await signSignal(envelope, signer);
     if (change.badSignature) file[file.length - 1] = (file[file.length - 1] as number) ^ 0xff;
     return file;
   }
@@ -100,6 +114,7 @@ export class StandInIssuer {
     const { fields, agentId } = checked.request;
     this.requests.push({ route, agentId });
     if (route === "redeem") {
+      if (this.#open && fields.code?.startsWith("live-")) this.codes.set(fields.code, "good");
       const state = fields.code === null ? undefined : this.codes.get(fields.code);
       if (!state) return refuse(403, "code_unknown", "This code can't be used.");
       if (state === "used") return refuse(403, "code_used", "This code can't be used.");
@@ -123,7 +138,7 @@ export class StandInIssuer {
     const held = await checkSignal(fields.holderSignal, { subject: holderId, now: Math.floor(Date.now() / 1000) });
     if (!held.ok || held.signal.envelope.subject_kind !== "account") return refuse(403, "holder_signal_forged", "This signal can't vouch for anyone.");
     const owner = this.owners.get(holderId) as string;
-    if ([...this.owners.values()].filter((o) => o === owner).length >= AGENT_CAP) return refuse(403, "agent_cap", "This owner has reached its agent limit. Verifying a phone raises it.");
+    if (!this.#open && [...this.owners.values()].filter((o) => o === owner).length >= AGENT_CAP) return refuse(403, "agent_cap", "This owner has reached its agent limit. Verifying a phone raises it.");
     this.owners.set(agentId, owner);
     return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
   }
