@@ -7,6 +7,10 @@ import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
 
 export type SignalStatus = "active" | "superseded";
+// The wallet's `public` column: 0 not public, 1 public, 2 public on the server but being taken back.
+export const PUBLIC_NO = 0;
+export const PUBLIC_YES = 1;
+export const PUBLIC_WITHDRAWING = 2;
 export const CONSENT_ACCEPTED = "accepted";
 
 export interface WalletRow {
@@ -101,6 +105,13 @@ export class SignalStore {
       "UPDATE signal_wallet SET status = 'superseded' WHERE agent_id = ? AND subject_kind = ? AND type = ? AND signal_hash != ? AND issuer_pubkey = ? AND status = 'active'",
       [agentId, subjectKind, type, hash, issuerPubkey],
     );
+    // A replaced signal must not stay public reading as current. The server still holds it, so it's marked for taking back (public = 2).
+    this.#db.run("UPDATE signal_wallet SET public = ? WHERE agent_id = ? AND status = 'superseded' AND public = ?", [PUBLIC_WITHDRAWING, agentId, PUBLIC_YES]);
+  }
+
+  // Public on the server and meant to come back off it: what a replaced signal waits as until the server has confirmed.
+  withdrawing(agentId: Uint8Array): WalletRow[] {
+    return this.#db.all("SELECT * FROM signal_wallet WHERE agent_id = ? AND public = ?", [agentId, PUBLIC_WITHDRAWING]) as WalletRow[];
   }
 
   get(agentId: Uint8Array, hash: string): WalletRow | undefined {
@@ -122,7 +133,7 @@ export class SignalStore {
   }
 
   setPublic(agentId: Uint8Array, hash: string, value: boolean): void {
-    this.#db.run("UPDATE signal_wallet SET public = ? WHERE agent_id = ? AND signal_hash = ?", [value ? 1 : 0, agentId, hash]);
+    this.#db.run("UPDATE signal_wallet SET public = ? WHERE agent_id = ? AND signal_hash = ?", [value ? PUBLIC_YES : PUBLIC_NO, agentId, hash]);
   }
 
   // Active, unexpired and accepted, about the owner, from this issuer: what can vouch for a new agent on this daemon.

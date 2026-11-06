@@ -782,8 +782,11 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Take a public signal back. Also: cello signals unpublish.",
     scoped: true,
     acts: true,
-    description: "Take a signal back from public view: the server deletes its copy at once. Anyone who read it before keeps what they read, and the signal stays in this agent's wallet. A repeat changes nothing.",
-    params: [SIGNAL_HASH],
+    description: "Take a signal back from public view: the server deletes its copy at once. Anyone who read it before keeps what they read, and the signal stays in this agent's wallet. A repeat changes nothing. Give the signal's hash, or its signal_id (signals-list shows both) if the wallet no longer holds it. A public signal that a newer one replaces is taken back automatically, and if that fails the agent is told and the daemon keeps trying.",
+    params: [
+      { ...SIGNAL_HASH, required: false },
+      { name: "signal_id", kind: "string", description: "The signal's own id, 32 hex characters, instead of its hash. For a signal the wallet no longer holds." },
+    ],
   },
   {
     command: "signals-lookup",

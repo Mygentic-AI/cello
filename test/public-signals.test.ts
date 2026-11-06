@@ -8,7 +8,10 @@ import { test } from "node:test";
 import { encodeCbor } from "../src/protocol/cbor.ts";
 import { toHex } from "../src/protocol/encode.ts";
 import { signerFromSeeds } from "../src/protocol/identity.ts";
-import { RootKeysNotConfigured } from "../src/protocol/issuer-list.ts";
+import { randomBytes, webcrypto } from "node:crypto";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { type RootKey, type RootSigner, RootKeysNotConfigured, addRootSignature, encodeIssuerList, encodeSignedIssuerList, rootKeysFrom } from "../src/protocol/issuer-list.ts";
+import { publicSignalsText } from "../src/signals-text.ts";
 import { type TrustSignalEnvelope, issuerPubkeyField, readSignedSignal, signSignal } from "../src/protocol/signal.ts";
 import { Wallet, type WalletHooks } from "../src/daemon/wallet.ts";
 import { SignalStore } from "../src/daemon/signal-store.ts";
@@ -125,4 +128,117 @@ test("a server that can't be reached changes nothing here: a signal isn't marked
   await assert.rejects(down.wallet.unpublish(toHex(ann.id), held.hash), (err: unknown) => err instanceof LocalError && err.code === "server_unreachable");
   assert.equal(down.signals.get(ann.id, held.hash)?.public, 1, "the server still shows it, so it must still say public");
   down.store.close();
+});
+
+// A server that remembers what is published, so a lookup after a change sees what a real one would.
+function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean } } {
+  return { held: new Map(), failing: { on: false } };
+}
+
+function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array }, notes: string[] = [], shippedList: string | null = null, roots: WalletHooks["roots"] = () => { throw new RootKeysNotConfigured("none"); }): { wallet: Wallet; signals: SignalStore; store: Store } {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-public-")), "cello.db"));
+  for (const [signer, name] of [[ann, "Ann"], [bea, "Bea"]] as const) store.insertAgent(signer.id, name, fill(1, 32), fill(2, 32));
+  const hooks: WalletHooks = {
+    keys: () => { throw new Error("not used"); },
+    screen: async (_agent, _issuer, text) => ({ verdict: "allowed", delivered: text }) as never,
+    notify: (_agent, text) => { notes.push(text); },
+    roots,
+    shippedList,
+    publishToServer: async (_agent, file) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file); },
+    unpublishFromServer: async (_agent, id) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.delete(toHex(id)); },
+    readPublic: async () => ({ target: toHex(owner.id), files: [...server.held.values()] }),
+  };
+  return { wallet: new Wallet(store, hooks), signals: new SignalStore(store), store };
+}
+
+test("a public signal that a newer one replaces comes off the server by itself, and a lookup stops returning it", async () => {
+  const server = fakeServer();
+  const notes: string[] = [];
+  const a = walletOn(server, ann, notes);
+  const b = walletOn(server, ann);
+  const old = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(41, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), old.hash);
+  assert.equal(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals.length, 1);
+
+  // The newer one arrives the way a collected one does: stored, which replaces the old, and then the wallet settles.
+  const newer = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(42, 16), issued_at: NOW - 10 }));
+  assert.equal(a.signals.get(ann.id, old.hash)?.status, "superseded");
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "marked for taking back, not left reading as public and current");
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
+  assert.deepEqual(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals, [], "the old signal is no longer returned");
+  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0, "the newer one isn't public until its owner says so");
+  a.store.close();
+  b.store.close();
+});
+
+test("when taking a replaced signal back fails it is said loudly once, stays marked, and is retried until the server takes it", async () => {
+  const server = fakeServer();
+  const notes: string[] = [];
+  const a = walletOn(server, ann, notes);
+  const old = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(51, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), old.hash);
+  server.failing.on = true;
+  await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(52, 16), issued_at: NOW - 10 }));
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
+  assert.equal(notes.length, 1, "told once, not on every try");
+  assert.match(notes[0] as string, /taking it back from the server failed/);
+  assert.match(notes[0] as string, /still public/);
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "still marked, because the server still shows it");
+  assert.equal(server.held.size, 1);
+  server.failing.on = false;
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
+  assert.equal(server.held.size, 0);
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
+  a.store.close();
+});
+
+test("a public signal the wallet no longer holds can still be taken back by its signal id", async () => {
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const held = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "phone", signal_id: fill(61, 16) }));
+  await a.wallet.publish(toHex(ann.id), held.hash);
+  assert.equal(server.held.size, 1);
+  a.store.raw().run("DELETE FROM signal_wallet WHERE agent_id = ?", [ann.id]);
+  await assert.rejects(a.wallet.unpublish(toHex(ann.id), held.hash), (err: unknown) => err instanceof LocalError && err.code === "signal_not_found");
+  assert.deepEqual(await a.wallet.unpublish(toHex(ann.id), undefined, toHex(fill(61, 16))), { signal_id: toHex(fill(61, 16)), public: false });
+  assert.equal(server.held.size, 0);
+  await assert.rejects(a.wallet.unpublish(toHex(ann.id), undefined, "xyz"), (err: unknown) => err instanceof LocalError && err.code === "bad_argument");
+  await assert.rejects(a.wallet.unpublish(toHex(ann.id), held.hash, toHex(fill(61, 16))), (err: unknown) => err instanceof LocalError && err.code === "bad_argument");
+  a.store.close();
+});
+
+test("a lookup of a verified issuer's signal shows no payload, in the answer or in the words a person reads", async () => {
+  const SECRET = "PAYLOAD-TEXT-7731-that-must-not-appear";
+  const p256 = async (name: "enclave" | "kms"): Promise<{ key: RootKey; sign: RootSigner }> => {
+    const pair = (await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const publicKey = new Uint8Array(await webcrypto.subtle.exportKey("raw", pair.publicKey));
+    return { key: { name, algorithm: "p256", publicKey }, sign: { root: name, sign: async (message) => new Uint8Array(await webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, new Uint8Array(message))) } };
+  };
+  const enclave = await p256("enclave");
+  const kms = await p256("kms");
+  const paperSeed = new Uint8Array(randomBytes(32));
+  const paper: RootKey = { name: "paper", algorithm: "ed25519", publicKey: ed25519.getPublicKey(paperSeed) };
+  const roots = rootKeysFrom({ enclave: enclave.key, kms: kms.key, paper });
+  const entry = { name: "trust.example.com", ed: issuer.publicIdentity.ed, pq: issuer.publicIdentity.pq, expires_at: NOW + 200 * 86_400 };
+  let signedList: Parameters<typeof addRootSignature>[0] = { listBytes: encodeIssuerList({ issued_at: NOW - 10, expires_at: NOW + 300 * 86_400, issuers: [entry] }) };
+  for (const signer of [enclave.sign, kms.sign]) signedList = await addRootSignature(signedList, signer, roots);
+  const list = Buffer.from(encodeSignedIssuerList({ signatures: { enclave: null, kms: null, paper: null }, ...signedList })).toString("base64");
+
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const b = walletOn(server, ann, [], list, () => roots);
+  const mine = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "employer", issuer_address: "trust.example.com", payload: new Uint8Array(encodeCbor({ claim: SECRET, detail: SECRET })), signal_id: fill(71, 16) }));
+  await a.wallet.publish(toHex(ann.id), mine.hash);
+
+  const result = await b.wallet.lookup(toHex(bea.id), toHex(ann.id)) as { signals: Record<string, unknown>[] };
+  assert.equal(result.signals[0]?.["issuer_standing"], "recognised", "this must be a verified issuer for the test to mean anything");
+  assert.equal(result.signals[0]?.["counts_as_verified"], true);
+  assert.equal(Object.hasOwn(result.signals[0] as object, "payload"), false);
+  assert.ok(!JSON.stringify(result).includes("payload"), "no payload key anywhere in the answer");
+  assert.ok(!JSON.stringify(result).includes(SECRET), "no payload text anywhere in the answer");
+  assert.ok(!publicSignalsText(result as never).includes(SECRET), "nor in the words a person reads");
+  a.store.close();
+  b.store.close();
 });

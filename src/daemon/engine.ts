@@ -391,6 +391,8 @@ export class Engine {
       this.#catchUpEverywhere();
       this.#retryOutbox();
       this.#retireIdleVisits();
+      // A replaced public signal that the server hasn't yet been told to drop. The wallet limits this to one try a minute.
+      for (const agent of this.#agents.values()) this.wallet.settlePublic(agent.hex).catch((err: unknown) => logEvent("signal.public.settle_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
     }, POSITION_CHECK_MS);
   }
 

@@ -51,6 +51,7 @@ export interface Collected { stored: number; held: number; refused: SignalRefusa
 
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
 const nowSec = (): number => Math.floor(Date.now() / 1000);
+const SETTLE_RETRY_MS = 60_000;
 
 // From a stranger's signal, a type or address is only shown if it's plainly a name, so it can't carry a sentence.
 const plainName = (value: string): string => (/^[A-Za-z0-9_.:-]{1,64}$/.test(value) ? value : "(not a plain name)");
@@ -89,6 +90,8 @@ export class Wallet {
   readonly #signals: SignalStore;
   readonly #store: Store;
   readonly #hooks: WalletHooks;
+  readonly #lastSettle = new Map<string, number>();
+  readonly #warned = new Set<string>();
 
   constructor(store: Store, hooks: WalletHooks) {
     this.#store = store;
@@ -120,7 +123,36 @@ export class Wallet {
       if (this.#signals.put(agentId, checked.signal, file)) result.stored += 1;
       result.held += 1;
     }
+    // A signal this replaced may have been public, and then it has to come off the server too. A failure here never fails the collect.
+    await this.settlePublic(agentHex, true);
     return result;
+  }
+
+  // Takes back from the server every public signal the wallet has replaced, until the server confirms each. A failure is said loudly,
+  // once per signal until it succeeds, and tried again at the next call (the daemon calls this on a timer, at most once a minute).
+  async settlePublic(agentHex: string, force = false): Promise<number> {
+    const waiting = this.#signals.withdrawing(fromHex(agentHex));
+    if (waiting.length === 0) return 0;
+    const now = Date.now();
+    if (!force && now - (this.#lastSettle.get(agentHex) ?? 0) < SETTLE_RETRY_MS) return waiting.length;
+    this.#lastSettle.set(agentHex, now);
+    let left = 0;
+    for (const row of waiting) {
+      try {
+        await this.#hooks.unpublishFromServer(agentHex, readSignedSignal(new Uint8Array(row.file)).envelope.signal_id);
+        this.#signals.setPublic(fromHex(agentHex), row.signal_hash, false);
+        this.#warned.delete(row.signal_hash);
+        logEvent("signal.public.withdrawn", { agent: agentHex, signal: row.signal_hash, reason: "replaced" });
+      } catch (err: unknown) {
+        left += 1;
+        logEvent("signal.public.withdraw_failed", { agent: agentHex, signal: row.signal_hash, message: err instanceof Error ? err.message : String(err) });
+        if (!this.#warned.has(row.signal_hash)) {
+          this.#warned.add(row.signal_hash);
+          this.#hooks.notify(fromHex(agentHex), `A public signal of this agent (${plainName(row.type)}, ${row.signal_hash.slice(0, 12)}…) was replaced by a newer one, but taking it back from the server failed: ${err instanceof Error ? err.message : String(err)}. It is still public and reads as current there. This daemon will keep trying, and you can run: cello signals unpublish ${row.signal_hash.slice(0, 12)}`);
+        }
+      }
+    }
+    return left;
   }
 
   #plain(err: unknown, attempted: string): LocalError {
@@ -244,7 +276,9 @@ export class Wallet {
       default_present: row.default_present === 1,
       consent_state: row.consent_state,
       same_operator: row.same_operator === 1,
-      public: row.public === 1,
+      public: row.public !== 0,
+      taking_back: row.public === 2,
+      signal_id: toHex(readSignedSignal(new Uint8Array(row.file)).envelope.signal_id),
       notes: await this.#notes(agentHex, row, standing),
     };
   }
@@ -304,8 +338,19 @@ export class Wallet {
   }
 
   // The server forgets it first. If it can't be reached the signal stays marked public here, because it is still public there.
-  async unpublish(agentHex: string, prefix: string): Promise<unknown> {
-    const row = this.#find(agentHex, prefix);
+  // By hash for a signal the wallet holds, or by the signal's own id (signals list shows it) for one the wallet no longer holds,
+  // so something published and since lost from the wallet can still be taken back.
+  async unpublish(agentHex: string, prefix: string | undefined, signalIdHex?: string): Promise<unknown> {
+    if ((prefix === undefined) === (signalIdHex === undefined)) throw new LocalError("bad_argument", "Give either the signal's hash or its signal id, one of them.");
+    if (signalIdHex !== undefined) {
+      if (!/^[0-9a-f]{32}$/.test(signalIdHex)) throw new LocalError("bad_argument", "A signal id is 32 hex characters. cello signals list shows it.");
+      await this.#hooks.unpublishFromServer(agentHex, fromHex(signalIdHex));
+      const held = this.#signals.list(fromHex(agentHex)).find((row) => toHex(readSignedSignal(new Uint8Array(row.file)).envelope.signal_id) === signalIdHex);
+      if (held) this.#signals.setPublic(fromHex(agentHex), held.signal_hash, false);
+      logEvent("signal.public.withdrawn", { agent: agentHex, signal: held?.signal_hash ?? "not held" });
+      return { signal_id: signalIdHex, ...(held ? { signal_hash: held.signal_hash } : {}), public: false };
+    }
+    const row = this.#find(agentHex, prefix as string);
     await this.#hooks.unpublishFromServer(agentHex, readSignedSignal(new Uint8Array(row.file)).envelope.signal_id);
     this.#signals.setPublic(fromHex(agentHex), row.signal_hash, false);
     logEvent("signal.public.withdrawn", { agent: agentHex, signal: row.signal_hash });
