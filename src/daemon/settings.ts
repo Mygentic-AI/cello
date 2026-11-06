@@ -26,7 +26,7 @@ export const SETTINGS = {
 // Settings that are words rather than numbers. The same rule: the default is written to the database on first start.
 export const TEXT_SETTINGS = {
   issuer_url: { default: "https://trust.celloprotocol.com", description: "The issuer this daemon redeems codes at and collects signals from. Which issuers count is decided by the signed list, not by this." },
-  concierge_address: { default: "", description: "The agent setup calls to prove this one works. Empty means there's nothing to call yet." },
+  concierge_address: { default: "7cd434a45ac1213f504ac06b55ca70724e4d23dc51a5bf3651ecdce81e87538b@server.celloprotocol.com", description: "The agent setup calls to prove this one works." },
 } as const satisfies Record<string, { default: string; description: string }>;
 export type TextSettingName = keyof typeof TEXT_SETTINGS;
 const TEXT_NAMES = Object.keys(TEXT_SETTINGS) as TextSettingName[];
