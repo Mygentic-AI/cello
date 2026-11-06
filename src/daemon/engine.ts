@@ -2817,6 +2817,8 @@ export class Engine {
         address: formatAddress(agent.hex, this.#url),
         registered: agent.registered,
         online: agent.online,
+        // Callers seal their signals to this key, so until the server has it, calls to this agent carry none.
+        encryption_key: this.#keys.latest(agent.signer.id)?.published === 1 ? "published" : "not published yet",
         status: this.#stopAt(agent, this.#url)?.status ?? "active",
         unread: this.unreadCount(agent.hex),
         sessions: this.#store.sessionsOf(agent.signer.id).map((s) => ({

@@ -149,7 +149,11 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
   assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file and its types per source file, plus these");
 
   const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { private?: boolean; engines?: { node?: string }; bin?: Record<string, string> };
-  assert.equal(manifest.private, true, "nothing can publish this by accident");
+  // The package is no longer private: only a pushed tag publishes it, and the publish workflow refuses a build with no shipped list or Concierge address.
+  assert.notEqual(manifest.private, true, "release-path made the package publishable, and a private flag would block the first release");
+  const workflow = readFileSync(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+  assert.match(workflow, /tags: \['v\*'\]/, "only a tag publishes");
+  assert.match(workflow, /node tools\/check-release\.ts/, "and the release check runs before anything is published");
   assert.equal(manifest.engines?.node, ">=24.7");
   assert.deepEqual(manifest.bin, { "cello": "./dist/cli.js", "cello-mcp": "./dist/mcp.js" });
 
