@@ -16,19 +16,19 @@ const flip = (b: Uint8Array): Uint8Array => { const c = b.slice(); c[0] = (c[0] 
 test("a signature verifies only with both halves intact, the same bytes, the same context and the same key", async () => {
   const signer = await signerFromSeeds(generateIdentitySeeds());
   const other = await signerFromSeeds(generateIdentitySeeds());
-  const sig = await signer.sign("cello-v2-entry", bytes);
+  const sig = await signer.sign("cello-entry", bytes);
   const pub = signer.publicIdentity;
 
-  assert.equal(await verifySignature(pub, "cello-v2-entry", bytes, sig), true);
-  assert.equal(await verifySignature(pub, "cello-v2-entry", bytes, { ...sig, ed: flip(sig.ed) }), false);
-  assert.equal(await verifySignature(pub, "cello-v2-entry", bytes, { ...sig, pq: flip(sig.pq) }), false);
-  assert.equal(await verifySignature(pub, "cello-v2-entry", bytes, { ed: sig.ed, pq: new Uint8Array(0) }), false);
-  assert.equal(await verifySignature(pub, "cello-v2-entry", flip(bytes), sig), false);
-  assert.equal(await verifySignature(pub, "cello-v2-ack", bytes, sig), false);
-  assert.equal(await verifySignature(other.publicIdentity, "cello-v2-entry", bytes, sig), false);
+  assert.equal(await verifySignature(pub, "cello-entry", bytes, sig), true);
+  assert.equal(await verifySignature(pub, "cello-entry", bytes, { ...sig, ed: flip(sig.ed) }), false);
+  assert.equal(await verifySignature(pub, "cello-entry", bytes, { ...sig, pq: flip(sig.pq) }), false);
+  assert.equal(await verifySignature(pub, "cello-entry", bytes, { ed: sig.ed, pq: new Uint8Array(0) }), false);
+  assert.equal(await verifySignature(pub, "cello-entry", flip(bytes), sig), false);
+  assert.equal(await verifySignature(pub, "cello-ack", bytes, sig), false);
+  assert.equal(await verifySignature(other.publicIdentity, "cello-entry", bytes, sig), false);
   // A classical signature from the real key beside a post-quantum one from another key must not pass.
-  const mixed = { ed: sig.ed, pq: (await other.sign("cello-v2-entry", bytes)).pq };
-  assert.equal(await verifySignature(pub, "cello-v2-entry", bytes, mixed), false);
+  const mixed = { ed: sig.ed, pq: (await other.sign("cello-entry", bytes)).pq };
+  assert.equal(await verifySignature(pub, "cello-entry", bytes, mixed), false);
 });
 
 test("an identity covers both public keys, so neither key can be swapped", async () => {

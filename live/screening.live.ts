@@ -1,5 +1,7 @@
 // The screener through the real path: two daemons as separate processes, a real server, one command per call.
 // It uses the deterministic screener, so it needs no model, and big messages are prose because the outbound screen redacts hash-like text.
+import { editSigned } from "../test/edit-signed.ts";
+import { type WireSigned, signedDeliveryAck } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -142,8 +144,8 @@ test("a fresh install says what's really running, hostile text is caught in a ta
   assert.equal(a.ok(["verify-transcript", out, "--seal-key", seal.seal_key])["ok"], true);
 
   // A changed screening number breaks the counterparty's signature.
-  const tampered = JSON.parse(readFileSync(file, "utf8")) as { deliveryAck: { fields: { screenedThrough: number } } };
-  tampered.deliveryAck.fields.screenedThrough += 1;
+  const tampered = JSON.parse(readFileSync(file, "utf8")) as { deliveryAck: WireSigned };
+  editSigned(tampered.deliveryAck, signedDeliveryAck, (s) => { s.screenedThrough -= 1; });
   writeFileSync(file, JSON.stringify(tampered));
   assert.equal(a.run(["verify-seal", file, "--seal-key", seal.seal_key]).json["ok"], false);
 });
@@ -242,9 +244,9 @@ test("a session's very first message, if it's long, still tells its sender the p
   await until("the message read", () => (reader.ok(["receive", "--session-id", firstSession, "--agent", "Rio"]) as unknown as Read).messages[0]);
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const seal = first.ok(["seal", firstSession, "--agent", "Flo"]) as { seal_id: string };
-  const record = first.ok(["export-seal", seal.seal_id, "--agent", "Flo"]) as { deliveryAck: { fields: Record<string, unknown> } };
-  assert.equal(record.deliveryAck.fields["screenedThrough"], 1);
-  assert.ok(!("screeningEtaSeconds" in record.deliveryAck.fields));
+  const record = first.ok(["export-seal", seal.seal_id, "--agent", "Flo"]) as { deliveryAck: WireSigned };
+  assert.equal(signedDeliveryAck.decode(record.deliveryAck).fields.screenedThrough, 1);
+  assert.ok(!("screeningEtaSeconds" in record.deliveryAck));
 });
 
 test("a worker crash delivers nothing, restarts, tells the operator, and can't hold a conversation up for good", async () => {

@@ -69,6 +69,21 @@ CREATE INDEX IF NOT EXISTS entries_by_state ON entries(agent_id, session_id, sta
 -- Every send asks for the author's last entry. Without this, that sorts the author's whole history, bodies included.
 CREATE INDEX IF NOT EXISTS entries_own ON entries(agent_id, session_id, own, id);
 
+-- What was refused, or what proves misbehaviour, exactly as received. Nothing removes it: it's what lets a party show what happened.
+CREATE TABLE IF NOT EXISTS evidence (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    BLOB NOT NULL,
+  session_id  BLOB NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('unverifiable_text', 'refused_entry_landed', 'two_acks')),
+  position    INTEGER NOT NULL,
+  entry       TEXT,
+  ack         TEXT NOT NULL,
+  other_ack   TEXT,
+  ciphertext  BLOB,
+  UNIQUE (agent_id, session_id, kind, position, ack),
+  FOREIGN KEY (agent_id, session_id) REFERENCES sessions(agent_id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS notices (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id   BLOB NOT NULL REFERENCES agents(agent_id),
@@ -142,7 +157,19 @@ CREATE TABLE IF NOT EXISTS standby_told (
 
 export interface AgentRow { agent_id: Uint8Array; name: string; ed_seed: Uint8Array; pq_seed: Uint8Array; registered: number }
 
+export interface EvidenceRow {
+  agent_id: Uint8Array;
+  session_id: Uint8Array;
+  kind: "unverifiable_text" | "refused_entry_landed" | "two_acks";
+  position: number;
+  entry: string | null;
+  ack: string;
+  other_ack: string | null;
+  ciphertext: Uint8Array | null;
+}
+
 export interface SessionRow {
+  frozen: number;
   agent_id: Uint8Array;
   session_id: Uint8Array;
   role: "caller" | "callee";
@@ -251,6 +278,7 @@ export class Store {
     // A database made before federation. Additive, so its conversations carry on, on their own server.
     this.#addColumn("sessions", "server_url", "TEXT");
     this.#addColumn("agents", "removed", "INTEGER NOT NULL DEFAULT 0");
+    this.#addColumn("sessions", "frozen", "INTEGER NOT NULL DEFAULT 0");
   }
 
   #addColumn(table: string, column: string, definition: string): void {
@@ -409,6 +437,11 @@ export class Store {
     return this.#prep("SELECT * FROM entries WHERE agent_id = ? AND session_id = ? AND own = 0 ORDER BY position DESC LIMIT 1").get([agentId, sessionId]) as EntryRow | undefined;
   }
 
+  // Your earliest message landed between these positions, so a reply written at "after" hadn't seen it.
+  firstOwnBetween(agentId: Uint8Array, sessionId: Uint8Array, after: number, before: number): number | undefined {
+    return (this.#prep("SELECT min(position) AS first FROM entries WHERE agent_id = ? AND session_id = ? AND own = 1 AND position > ? AND position < ?").get([agentId, sessionId, after, before]) as { first: number | null }).first ?? undefined;
+  }
+
   standbyTold(agentId: Uint8Array, sessionId: Uint8Array, position: number): boolean {
     return this.#prep("SELECT 1 FROM standby_told WHERE agent_id = ? AND session_id = ? AND position = ?").get([agentId, sessionId, position]) !== undefined;
   }
@@ -430,6 +463,19 @@ export class Store {
 
   firstUnreadToAnswer(agentId: Uint8Array, sessionId: Uint8Array, readPosition: number): number | undefined {
     return (this.#prep("SELECT min(position) AS first FROM entries WHERE agent_id = ? AND session_id = ? AND state = 'received' AND withheld = 0 AND position > ?").get([agentId, sessionId, readPosition]) as { first: number | null }).first ?? undefined;
+  }
+
+  addEvidence(row: EvidenceRow): void {
+    this.#prep("INSERT OR IGNORE INTO evidence (agent_id, session_id, kind, position, entry, ack, other_ack, ciphertext) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run([row.agent_id, row.session_id, row.kind, row.position, row.entry, row.ack, row.other_ack, row.ciphertext]);
+  }
+
+  evidence(agentId: Uint8Array, sessionId: Uint8Array): EvidenceRow[] {
+    return this.#prep("SELECT agent_id, session_id, kind, position, entry, ack, other_ack, ciphertext FROM evidence WHERE agent_id = ? AND session_id = ? ORDER BY id").all([agentId, sessionId]) as unknown as EvidenceRow[];
+  }
+
+  unverifiablePositions(agentId: Uint8Array, sessionId: Uint8Array): number[] {
+    return (this.#prep("SELECT DISTINCT position FROM evidence WHERE agent_id = ? AND session_id = ? AND kind = 'unverifiable_text' ORDER BY position").all([agentId, sessionId]) as { position: number }[]).map((row) => row.position);
   }
 
   markWithheld(id: number, detail: string): void {

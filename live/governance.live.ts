@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { socketPath } from "../src/daemon/paths.ts";
 import { IpcClient } from "../src/ipc/client.ts";
+import { OVER_GUIDANCE, POLICY_GUIDANCE, refusedGuidance } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
 const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
@@ -20,7 +21,7 @@ const KNOCKS = 1000;
 
 type Json = Record<string, unknown>;
 interface Message { position: number; from: string; from_id: string; text?: string; blocked?: boolean; screening?: { verdict: string; reason?: string } }
-interface Read { messages: Message[]; notices: { text: string }[]; policies?: { policy?: { type: string; level: string; text: string } }[] }
+interface Read { messages: Message[]; notices: { text: string }[]; policies?: { policy?: { type: string; level: string; text: string } }[]; guidance?: { text: string }[] }
 interface SessionView { session_id: string; tier: string; with: string; bytes_received: number; byte_limit: number; same_daemon?: boolean; screening: { level: string; from: string } }
 
 class Machine {
@@ -243,6 +244,8 @@ test("guards: each agent has its own, and personal data, rate and language are r
   const refused = await until("the message from Jan", () => read(b, "Hob").messages.find((m) => m.position === 1 && m.blocked));
   assert.equal(refused.text, undefined);
   assert.match(refused.screening?.reason ?? "", /outside the languages/);
+  const record = b.ok(["transcript", other, "--agent", "Hob"]);
+  assert.equal(record["quarantined_guidance"], refusedGuidance(1), "the record says what a refused message is, and nothing it needs");
   const log = b.ok(["screening-log", "--agent", "Hob"]) as unknown as { screened: { verdict: string; reason: string }[] };
   assert.ok(log.screened.some((s) => /outside the languages/.test(s.reason ?? "")));
 });
@@ -264,6 +267,7 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
   b.ok(["send", session, "first", "--over", "--agent", "Lou"]);
   const before = await until("the first message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(before.policies, undefined);
+  assert.deepEqual(before.guidance?.map((g) => g.text), [OVER_GUIDANCE]);
 
   assert.match(a.person(["policy-approve", proposed["proposal_id"] as string, "--agent", "Kay"]), /"approved":true/);
   a.ok(["send", session, "reply", "--over", "--agent", "Kay"]);
@@ -271,6 +275,7 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
   b.ok(["send", session, "second", "--over", "--agent", "Lou"]);
   const after = await until("the second message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(after.policies?.[0]?.policy?.text, conduct);
+  assert.deepEqual(after.guidance?.map((g) => g.text), [POLICY_GUIDANCE, OVER_GUIDANCE], "the policy's meaning stacks with the signal's");
 
   // A narrower level wins whole, and NONE stops the walk.
   const none = a.ok(["policy-propose", "--none", "--scope", "contact", "--target", bId, "--type", "conduct", "--agent", "Kay"]);

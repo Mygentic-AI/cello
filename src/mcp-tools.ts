@@ -22,7 +22,7 @@ function schemaOf(param: Param): z.ZodType {
     ? z.enum(param.allowed as [string, ...string[]])
     : param.kind === "number" ? z.number() : param.kind === "boolean" ? z.boolean() : z.string();
   const described = base.describe(param.description);
-  return param.required ? described : described.optional();
+  return param.required && !param.daemonEnforced ? described : described.optional();
 }
 
 export function inputSchema(op: Operation): Record<string, z.ZodType> {

@@ -199,8 +199,8 @@ class Stranger {
     return {
       identity: identityCodec.encode(identity),
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity }))),
-      signature: signatureCodec.encode(await this.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-visit", registerBytes({ serverId: proveFor, identity }))),
+      signature: signatureCodec.encode(await this.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
   async visit(): Promise<void> {
@@ -210,7 +210,7 @@ class Stranger {
     const server = await this.server;
     const own = await generateSessionEphemeral();
     const fields = { serverId: serverId ?? server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 60_000 };
-    return signedOffer.encode({ fields, signature: await this.signer.sign("cello-v2-session-offer", offerBytes(fields)) });
+    return signedOffer.encode({ fields, signature: await this.signer.sign("cello-session-offer", offerBytes(fields)) });
   }
   send(offer: ReturnType<typeof signedOffer.encode>): Promise<unknown> {
     return this.link.call("session.offer", { agent: toB64(this.signer.id), offer });

@@ -1,4 +1,5 @@
 // The kill switch, with real daemons on two real servers. Run it with scripts/status-test.sh, which cleans up whatever happens.
+import { signedAck } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -141,6 +142,8 @@ type Side = ReturnType<typeof side>;
 async function create(who: Side): Promise<{ id: string; address: string }> {
   who.login();
   const made = who.must(["create-agent", who.name]);
+  // Nobody is attached here, and an away visit would answer and close on the first message, which isn't what this tests.
+  who.must(["settings-set", "away.answering", "false", "--agent", who.name]);
   await until(`${who.name} online`, () => who.status().agents.every((a) => a.online));
   return { id: made["agent_id"] as string, address: made["address"] as string };
 }
@@ -190,11 +193,11 @@ class Raw {
   async register(): Promise<void> {
     const server = await this.#first;
     const identity = this.signer.publicIdentity;
-    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-v2-register", registerBytes({ serverId: server.id, identity }))) });
+    await this.link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(await this.signer.sign("cello-register", registerBytes({ serverId: server.id, identity }))) });
   }
   async #proof(server: ConnectedServer): Promise<{ clientNonce: string; signature: unknown }> {
     const clientNonce = new Uint8Array(randomBytes(32));
-    return { clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await this.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))) };
+    return { clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await this.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: server.id, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))) };
   }
   async auth(): Promise<{ standing: { status: string } }> {
     return await this.link.call("auth", { agentId: this.agent, ...await this.#proof(await this.#first) }) as { standing: { status: string } };
@@ -208,14 +211,14 @@ class Raw {
     return await this.link.call("visit", {
       identity: identityCodec.encode(identity),
       ...await this.#proof(server),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-visit", registerBytes({ serverId: server.id, identity }))),
     }) as { standing: { status: string } };
   }
   async offer(calleeId: string): Promise<unknown> {
     const server = await this.#first;
     const own = await generateSessionEphemeral();
     const fields = { serverId: server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 600_000 };
-    return this.link.call("session.offer", { agent: this.agent, offer: signedOffer.encode({ fields, signature: await this.signer.sign("cello-v2-session-offer", offerBytes(fields)) }) });
+    return this.link.call("session.offer", { agent: this.agent, offer: signedOffer.encode({ fields, signature: await this.signer.sign("cello-session-offer", offerBytes(fields)) }) });
   }
   stop(): void {
     this.link.stop();
@@ -309,7 +312,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(logged?.verified, true);
   const began = logged?.log.at(-1);
   assert.deepEqual([began?.status, began?.issuer], ["suspended", "server"]);
-  const lastAck = Number(sql(A, `SELECT ack->'fields'->>'time' FROM entries WHERE session_id = '\\x${session}' ORDER BY position DESC LIMIT 1`));
+  const lastAck = signedAck.decode(JSON.parse(sql(A, `SELECT ack FROM entries WHERE session_id = '\\x${session}' ORDER BY position DESC LIMIT 1`))).fields.time;
   assert.ok(lastAck <= Date.parse(began?.witnessed_at as string), "the last message is dated after the suspension");
   report["suspension_witnessed_at"] = began?.witnessed_at;
   say("the signed log shows when it began, and all the witnessed messages are before it");

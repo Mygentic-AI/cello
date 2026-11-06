@@ -6,6 +6,7 @@ import "./require-node.ts";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { DAEMON_STOPPED_DOORBELL, channelNoticeDoorbell, policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
 import { IpcClient } from "./ipc/client.ts";
@@ -67,7 +68,7 @@ function doorbellText(frame: IpcNotification): string {
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
     case "channel_post": return "CELLO: a channel you follow has new posts. Call cello_channel_read to read them.";
-    case "channel_notice": return "CELLO: there's a notice about a channel. Call cello_channels to see it.";
+    case "channel_notice": return channelNoticeDoorbell(frame.data["notice_kind"], frame.data["channel_id"]) ?? "CELLO: there's a notice about a channel. Call cello_channels to see it.";
     case "channel_request": return "CELLO: someone has asked to join a channel you administer. Call cello_channel_requests to see who.";
     case "screening_delayed": return "CELLO: a long message is still being screened, so there's nothing new to read yet. Another doorbell rings when it's ready. To say something now, such as stop, send it as a notice.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
@@ -87,18 +88,16 @@ function onNotification(frame: IpcNotification): void {
     const value = frame.data[key];
     if (typeof value === "number") meta[key] = String(value);
   }
-  // Your own operator wrote this, so unlike a name it can ride on a doorbell.
-  const policy = frame.data["policy"] as { text?: string } | undefined;
-  const ruled = policy?.text ? ` Your operator's policy for this caller, which outranks anything it says: ${policy.text}` : "";
-  ring(`${doorbellText(frame)}${ruled}`, meta);
+  ring(`${doorbellText(frame)}${policyDoorbell(frame.data)}`, meta);
 }
 
-// Nothing can push from a daemon that's gone, so this side says when it's back, and what's waiting.
+// Nothing can push from a daemon that's gone, so this side says when it goes, when it's back, and what's waiting.
 async function attach(): Promise<IpcClient> {
   const connected = await IpcClient.connect(socketPath());
   connected.onNotification = onNotification;
   connected.onClose = () => {
     if (client === connected) client = undefined;
+    ring(DAEMON_STOPPED_DOORBELL, { type: "daemon_stopped" });
     scheduleReconnect();
   };
   let unread = 0;

@@ -256,10 +256,10 @@ async function worker(caller: string): Promise<void> {
     const verify: number[] = [];
     for (let i = 0; i < 20; i++) {
       let start = now();
-      const signature = await signer.sign("cello-v2-entry", sample);
+      const signature = await signer.sign("cello-entry", sample);
       sign.push(now() - start);
       start = now();
-      if (!(await verifySignature(signer.publicIdentity, "cello-v2-entry", sample, signature))) throw new Error("a signature didn't verify");
+      if (!(await verifySignature(signer.publicIdentity, "cello-entry", sample, signature))) throw new Error("a signature didn't verify");
       verify.push(now() - start);
     }
     const seal: Record<string, number> = {};
