@@ -1,4 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Socket, createConnection } from "node:net";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -6,8 +7,10 @@ import { createInterface } from "node:readline";
 import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
+import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
+import { currentSetting } from "./settings.ts";
 import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
 
@@ -130,6 +133,7 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   logEvent("daemon.stopping");
+  void accountPage?.close();
   channels.stop();
   engine.stop();
   for (const socket of sockets) socket.destroy();
@@ -199,7 +203,13 @@ function governed(method: string, params: Record<string, unknown>): unknown {
   }
 }
 
-async function handle(socket: Socket, method: string, params: Record<string, unknown>): Promise<unknown> {
+// A call with no socket behind it can't be woken or kept waiting, so the two that need one refuse by name.
+function needSocket(socket: Socket | undefined, method: string): Socket {
+  if (!socket) throw new LocalError("needs_connection", `${method} needs the connection of a session, so it can't be asked this way.`);
+  return socket;
+}
+
+async function handle(socket: Socket | undefined, method: string, params: Record<string, unknown>): Promise<unknown> {
   // Channel actions stop with everything else. The server refuses them too, so this only saves the trip and covers what's read from here.
   if (method.startsWith("channel_") && typeof params["agent"] === "string") engine.assertCanAct(engine.resolveAgent(params["agent"]));
   switch (method) {
@@ -207,7 +217,13 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       // A fact about this thread, measured here. It's the longest it has been held up since the last time anyone asked.
       const longestStallMs = Math.max(0, Math.round(mainThreadDelay.max / 1e6 - STALL_RESOLUTION_MS));
       mainThreadDelay.reset();
-      return { pid: process.pid, home, main_thread: { longest_stall_ms: longestStallMs }, ...(engine.status() as object) };
+      return { pid: process.pid, home, main_thread: { longest_stall_ms: longestStallMs }, account_page: accountPageState, ...(engine.status() as object) };
+    }
+    // The link carries the secret, so it goes only to a person at a terminal.
+    case "account": {
+      requirePerson(params);
+      if (!accountPage) throw new LocalError("account_page_unavailable", `The account page isn't running: ${accountPageState.problem ?? "it hasn't started yet"}.`);
+      return { url: `http://127.0.0.1:${accountPage.port}/#${accountPageToken}` };
     }
     case "create_agent":
       return engine.createAgent(text(params, "name"));
@@ -241,8 +257,9 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       listeners.set(agent, set);
       const caller = text(params, "caller");
       // Selecting an agent twice must not ring twice.
-      if (![...set].some((listener) => listener.socket === socket && listener.caller === caller && !listener.onBell)) {
-        set.add({ socket, caller, releaseOnClose: true });
+      const own = needSocket(socket, method);
+      if (![...set].some((listener) => listener.socket === own && listener.caller === caller && !listener.onBell)) {
+        set.add({ socket: own, caller, releaseOnClose: true });
       }
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
@@ -270,7 +287,7 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
       engine.assertCanAct(agent);
       const unread = engine.unreadCount(agent);
       if (unread > 0) return { event: "unread", unread };
-      return waitForEvent(socket, agent, text(params, "caller"), seconds);
+      return waitForEvent(needSocket(socket, method), agent, text(params, "caller"), seconds);
     }
     case "close_session":
       return engine.close(acting(params), text(params, "session_id"));
@@ -378,6 +395,37 @@ async function handle(socket: Socket, method: string, params: Record<string, unk
   }
 }
 
+// The page's secret lives in the encrypted database with everything else, so moving the database moves the link's meaning.
+const ACCOUNT_PAGE_TOKEN_KEY = "account_page.token";
+let accountPageToken = store.getConfig(ACCOUNT_PAGE_TOKEN_KEY);
+if (!accountPageToken) {
+  accountPageToken = randomBytes(32).toString("hex");
+  store.setConfig(ACCOUNT_PAGE_TOKEN_KEY, accountPageToken);
+}
+let accountPage: RunningAccountPage | undefined;
+// What status says about the page, from what happened when it tried to start.
+let accountPageState: { listening: boolean; port?: number; problem?: string } = { listening: false };
+
+// A port someone else holds costs the page, never the daemon.
+async function startAccountPage(): Promise<void> {
+  const port = currentSetting(store, "account_page_port");
+  try {
+    accountPage = await serveAccountPage({
+      host: "127.0.0.1",
+      port,
+      token: accountPageToken as string,
+      call: (method, params) => handle(undefined, method, params),
+      allowedHosts: (bound) => [`127.0.0.1:${bound}`, `localhost:${bound}`],
+    });
+    accountPageState = { listening: true, port: accountPage.port };
+    logEvent("account_page.listening", { port: accountPage.port });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    accountPageState = { listening: false, port, problem: `port ${port} could not be used (${reason}). Change it with: cello settings-set account_page_port <port>, then log in again` };
+    logEvent("account_page.unavailable", { port, reason });
+  }
+}
+
 const ipc = createServer((socket) => {
   sockets.add(socket);
   const respond = (response: IpcResponse, afterWrite?: () => void): void => {
@@ -421,6 +469,7 @@ await new Promise<void>((resolve) => ipc.listen({ path, readableAll: false, writ
 logEvent("daemon.listening", { pid: process.pid, server: serverUrl });
 await engine.start();
 channels.start();
+await startAccountPage();
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

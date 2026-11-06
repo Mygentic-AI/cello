@@ -19,6 +19,7 @@ export const SETTINGS = {
   channel_lost_wait_seconds: { default: 3_600, min: 1, max: 2_592_000, description: "How long a missing channel post is asked for before a reader calls it lost and moves on, and its publisher is told. A change takes effect at once." },
   channel_default_retention_days: { default: 7, min: 1, max: 3_650, description: "How long a new channel keeps posts unless channel-create says otherwise. The server sets the most it allows." },
   channel_local_retention_days: { default: 30, min: 1, max: 36_500, description: "How long this machine keeps channel posts it has read, and your own posts in its log. Positions and unread posts are kept." },
+  account_page_port: { default: 7421, min: 1024, max: 65_535, description: "The port on this machine where the account page is served, to this machine only. If something else holds it, the daemon says so and goes on without the page. A change takes effect at the next login." },
   channel_read_wait_seconds: { default: 20, min: 0, max: 60, description: "How long channel-read waits for posts to be screened. What isn't ready by then is listed as still screening, and a doorbell rings when it is." },
 } as const satisfies Record<string, Setting>;
 

@@ -56,6 +56,17 @@ const DEFINITIONS: readonly Definition[] = [
     params: [],
   },
   {
+    command: "account",
+    group: "Setup",
+    summary: "For a person: print the link to this machine's account page.",
+    scoped: false,
+    acts: false,
+    personOnly: true,
+    description: "For a person at a terminal, and never available as a tool, because the link carries the secret that opens the page. Prints the link to the account page this daemon serves, to this machine only. The page shows your agents, their signals, contacts, settings and guards. It only reads: anything that loosens a guard is done here at the terminal.",
+    plain: (result: { url: string }) => `${result.url}\n`,
+    params: [],
+  },
+  {
     command: "create-agent",
     group: "Setup",
     summary: "Create a new agent on this machine and register it.",
