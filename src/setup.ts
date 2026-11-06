@@ -18,7 +18,7 @@ export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [
 
 Set up CELLO on this machine: start the background program, create an agent's key, redeem your code for a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
-  --code       The code from your admission email. A second agent on this machine doesn't need one.
+  --code       The code from your admission email. A second agent on this machine doesn't need one. - reads it from stdin.
   --name       The agent's name, which is only a label. The default is agent.
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.
@@ -41,6 +41,12 @@ class SetupFailed extends Error {
     super(message);
     this.code = code;
   }
+}
+
+async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function options(args: string[]): Record<string, string | true> {
@@ -150,6 +156,12 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
   let client: IpcClient | undefined;
   try {
     const flags = options(args);
+    // --code - reads the code from stdin, so a program passing it on never shows it in a process list.
+    if (flags["code"] === "-") {
+      const piped = (await readAll(process.stdin)).trim();
+      if (!piped) return refuse("code_required", "--code - reads the code from stdin, and stdin was empty.");
+      flags["code"] = piped;
+    }
     const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
     await moveOldVersion(host, say);
     if (!text("code") && !existsSync(databasePath())) return refuse("code_required", HOW_TO_GET_A_CODE);
