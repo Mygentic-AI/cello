@@ -1,4 +1,5 @@
 // The kill switch, with real daemons on two real servers. Run it with scripts/status-test.sh, which cleans up whatever happens.
+import { REAL_CLI, cliFor } from "./cli-path.ts";
 import { signedAck } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -19,7 +20,7 @@ import { identityCodec, signatureCodec, signedOffer, signedStatusStatement, toB6
 
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_STATUS_PIDS"];
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
+const cliPath = REAL_CLI;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `status-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -94,7 +95,7 @@ function side(name: string, home: Server) {
   const dir = mkdtempSync(join(tmpdir(), `cello-v2-status-${name}-`));
   const env = { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` };
   const run = (args: string[], input?: string): Run => {
-    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
+    const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
     let json: Record<string, unknown> = {};
     try {
       json = JSON.parse(done.stdout || done.stderr) as Record<string, unknown>;
@@ -130,7 +131,7 @@ function side(name: string, home: Server) {
       const terminal: NodeJS.ProcessEnv = { ...env };
       delete terminal["CELLO_CALLER"];
       if (caller) terminal["CELLO_CALLER"] = caller;
-      const done = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: terminal });
+      const done = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: terminal });
       assert.equal(done.status, 0, `the terminal didn't run: ${done.stderr}`);
       return done.stdout;
     },

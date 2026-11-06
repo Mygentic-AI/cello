@@ -5,6 +5,7 @@
 //   node live/speed.ts --server wss://host/v1 --gentle
 //
 // Raw numbers and the report go to ~/cello-v2-live-runs/speed-<time>/.
+import { cliFor } from "./cli-path.ts";
 import { identityCodec } from "../src/protocol/wire.ts";
 import { StandInIssuer, standInKeys } from "./stand-in-issuer.ts";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -40,7 +41,6 @@ const { values: args } = parseArgs({
 });
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
 
-const CLI = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
@@ -105,7 +105,7 @@ class Home {
   run(argv: string[], caller: string | undefined, input?: string, extraEnv: Record<string, string> = {}): Promise<Run> {
     return new Promise((resolve) => {
       const started = performance.now();
-      const child: ChildProcess = spawn(process.execPath, [CLI, ...argv], {
+      const child: ChildProcess = spawn(process.execPath, [cliFor(argv), ...argv], {
         env: { ...process.env, CELLO_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });

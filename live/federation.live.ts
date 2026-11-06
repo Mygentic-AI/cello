@@ -1,5 +1,6 @@
 // Two servers that have never heard of each other. An agent on one holds a real conversation with an agent on the other,
 // and neither server learns more than it should. Run it with scripts/federation-test.sh, which cleans up whatever happens.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -18,7 +19,6 @@ import { checkLogsClean } from "./log-check.ts";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_FED_PIDS"];
 const issuerPort = Number(new URL(process.env["CELLO_TEST_ISSUER_URL"] as string).port);
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `federation-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -105,7 +105,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 function side(name: string, home: Server) {
   let dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
   const run = (args: string[]): Run => {
-    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` } });
+    const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` } });
     let json: Record<string, unknown> = {};
     try {
       json = JSON.parse(done.stdout || done.stderr) as Record<string, unknown>;

@@ -1,5 +1,6 @@
 // Contacts, tiers, limits, guards and policies through the real path: separate daemons, a real server, one command per call.
 // Who may loosen what is the point of most of this, so each loosening is tried from a pipe, as an agent would, then at a real terminal.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import Database from "@signalapp/sqlcipher";
@@ -14,7 +15,6 @@ import { IpcClient } from "../src/ipc/client.ts";
 import { OVER_GUIDANCE, POLICY_GUIDANCE, refusedGuidance } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const FLOOD_MESSAGE_BYTES = 200_000;
 const KNOCKS = 1000;
@@ -30,7 +30,7 @@ class Machine {
     this.home = home ?? mkdtempSync(join(tmpdir(), "cello-v2-gov-"));
   }
   run(args: string[], input?: string): { status: number | null; stderr: string; json: Json } {
-    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
+    const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};
     try {
       json = JSON.parse(run.stdout || run.stderr) as Json;
@@ -52,7 +52,7 @@ class Machine {
   }
   // A real terminal: the code is read off the screen and typed back.
   person(args: string[]): string {
-    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: this.home } });
+    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: this.home } });
     assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
     return run.stdout;
   }

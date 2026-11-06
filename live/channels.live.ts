@@ -1,5 +1,6 @@
 // Channels with real processes: a real server, three daemons in their own homes, and a bare socket playing the attacker.
 // The hostile cases work on the real database as its owner, and with the server's real signing key. Run it with scripts/live-channels.sh.
+import { cliFor } from "./cli-path.ts";
 import { channelInfoCodec, channelMemberKeyCodec } from "../src/protocol/channel.ts";
 import type { WireSigned } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
@@ -23,7 +24,6 @@ import { PROTOCOL_VERSION, fromB64, identityCodec, signatureCodec, toB64 } from 
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18600/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const LOST_WAIT_MS = 8000;
 const homes = { ada: mkdtempSync(join(tmpdir(), "cello-ch-ada-")), bea: mkdtempSync(join(tmpdir(), "cello-ch-bea-")), cyd: mkdtempSync(join(tmpdir(), "cello-ch-cyd-")) };
 type Who = keyof typeof homes;
@@ -31,7 +31,7 @@ const names: Record<Who, string> = { ada: "Ada", bea: "Bea", cyd: "Cyd" };
 const ids = {} as Record<Who, string>;
 
 function run(who: Who, args: string[], input?: string): { status: number | null; json: Record<string, unknown>; stderr: string } {
-  const result = spawnSync(process.execPath, [cliPath, ...args], {
+  const result = spawnSync(process.execPath, [cliFor(args), ...args], {
     encoding: "utf8", input, maxBuffer: 16_000_000,
     env: { ...process.env, CELLO_HOME: homes[who] },
   });

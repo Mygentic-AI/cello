@@ -1,5 +1,6 @@
 // The tools and wake-up as Claude Code sees them, over real stdio, against a real daemon and server.
 // It doesn't prove Claude Code acts on a doorbell. Only the live test with real sessions proves that.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -16,9 +17,8 @@ import { OPERATIONS } from "../src/ipc/operations.ts";
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-mcp-"));
 const env = { ...process.env, CELLO_HOME: home } as Record<string, string>;
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
-const cli = (...args: string[]): string => execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env });
+const cli = (...args: string[]): string => execFileSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env });
 
 const ChannelEvent = z.object({
   method: z.literal("notifications/claude/channel"),

@@ -1,5 +1,6 @@
 // A whole conversation by command line alone, with no MCP anywhere: real processes, one call each.
 // This is what any agent that can run a shell command gets. Run it with scripts/live-test.sh.
+import { REAL_CLI, cliFor } from "./cli-path.ts";
 import { editSigned } from "../test/edit-signed.ts";
 import type { WireSigned } from "../src/protocol/wire.ts";
 import { signedEntry } from "../src/protocol/wire.ts";
@@ -23,7 +24,7 @@ import { SEAL_NOTE, compareTranscripts } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
-const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
+const cliPath = REAL_CLI;
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 
 function compose(...args: string[]): string {
@@ -36,7 +37,7 @@ function sql(query: string): string {
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
 function cello(args: string[], input?: string, caller?: string, inHome = home): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
+  const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -924,7 +925,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
   // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
   const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
-    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {
       let json: Record<string, unknown> = {};
       try {
         json = JSON.parse(stdout || stderr) as Record<string, unknown>;
