@@ -94,7 +94,7 @@ const create = (m: Machine, name: string): string => {
   return id;
 };
 async function call(a: Machine, aName: string, bId: string, extra: string[] = []): Promise<Json> {
-  const made = a.ok(["initiate-session", bId, "--agent", aName, ...extra]);
+  const made = a.ok(["initiate-session", bId, "--anyway", "--agent", aName, ...extra]);
   const session = made["session_id"] as string;
   await until("the session to open", () => (a.ok(["sessions", "--agent", aName]) as unknown as { sessions: { session_id: string; state: string }[] }).sessions.find((s) => s.session_id === session)?.state === "active");
   return made;
@@ -154,6 +154,6 @@ test("each side shows its signals with a call, sealed, and each reads what the o
   assert.equal(presented(bea, "Bea", quiet["session_id"] as string).yours_sent, 0);
 
   // Refused before anything is sent: a hash that isn't hers, and one that isn't fit to show.
-  ann.refused(["initiate-session", beaId, "--signals", "deadbeefdeadbeef", "--agent", "Ann"], "signal_not_found");
-  ann.refused(["initiate-session", beaId, "--signals", beaEmail.signal_hash, "--agent", "Ann"], "signal_not_found");
+  ann.refused(["initiate-session", beaId, "--anyway", "--signals", "deadbeefdeadbeef", "--agent", "Ann"], "signal_not_found");
+  ann.refused(["initiate-session", beaId, "--anyway", "--signals", beaEmail.signal_hash, "--agent", "Ann"], "signal_not_found");
 });
