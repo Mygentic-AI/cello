@@ -32,4 +32,4 @@ rmdir "$lock"
 held=""
 cd "$here"
 # One file at a time, because the daemon test stops the shared server on purpose. The install test starts its own server.
-CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-concurrency=1 --test-force-exit --test-timeout=240000 ${CELLO_LIVE_FILES:-live/daemon.live.ts live/mcp.live.ts live/cli.live.ts live/screening.live.ts live/governance.live.ts live/away.live.ts live/install.live.ts}
+CELLO_URL="ws://127.0.0.1:$CELLO_PORT/v1" node --test --test-concurrency=1 --test-force-exit --test-timeout=240000 ${CELLO_LIVE_FILES:-live/daemon.live.ts live/mcp.live.ts live/cli.live.ts live/screening.live.ts live/governance.live.ts live/public-signals.live.ts live/away.live.ts live/install.live.ts}
