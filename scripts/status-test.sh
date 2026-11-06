@@ -5,6 +5,8 @@ set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
 project="${CELLO_STATUS_PROJECT:-cello-v2-status}"
+# Servers require a verified email signal, and each daemon here collects a real one.
+. "$here/scripts/test-issuer-env.sh"
 mkdir -p "$HOME/cello-v2-live-runs"
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from this repo's. In cello-server, run scripts/sync-protocol.sh and commit." >&2

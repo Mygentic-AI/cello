@@ -133,7 +133,7 @@ export class ServerLink {
       const serverNonce = fromB64(hello.serverNonce, "serverNonce");
       const id = identityId(identity);
       const proof = serverAuthBytes({ serverId: id, clientNonce, serverNonce });
-      if (!(await verifySignature(identity, "cello-v2-server-auth", proof, signatureCodec.decode(hello.signature, "signature")))) {
+      if (!(await verifySignature(identity, "cello-server-auth", proof, signatureCodec.decode(hello.signature, "signature")))) {
         throw new Error("the server's proof of identity didn't verify");
       }
       const refusal = this.#events.checkIdentity(identity);

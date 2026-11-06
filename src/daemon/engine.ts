@@ -2,7 +2,7 @@
 // After any restart, the same catch-up path runs: resend what's pending, then read from position.
 import { createHash, randomBytes } from "node:crypto";
 import { openSessionContent, sealSessionContent } from "../protocol/aead.ts";
-import { ChainVerifier, type ChainFault, type WitnessedEntry, verifyTranscript } from "../protocol/chain.ts";
+import { ChainVerifier, type ChainFault, type WitnessedEntry, provesTwoAcks, verifyTranscript, witnessed } from "../protocol/chain.ts";
 import { ZERO_HASH, equalBytes, toHex } from "../protocol/encode.ts";
 import { type PublicIdentity, type Signer, generateIdentitySeeds, identityId, signerFromSeeds, verifySignature } from "../protocol/identity.ts";
 import { deriveSessionSecrets, destroySessionEphemeral, generateSessionEphemeral } from "../protocol/key-agreement.ts";
@@ -25,7 +25,6 @@ import {
   acceptBytes,
   refuseBytes,
   agentAuthBytes,
-  assignmentBytes,
   ciphertextHash,
   confirmBytes,
   deliveryAckBytes,
@@ -36,6 +35,11 @@ import {
   registerBytes,
   sealRequestBytes,
   structureHash,
+  type Body,
+  MAX_REFUSED_POSITIONS,
+  bodyBytes,
+  refusedList,
+  readBodyBytes,
 } from "../protocol/structures.ts";
 import {
   LONG_CIPHERTEXT_BYTES,
@@ -66,6 +70,9 @@ import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
 import { LocalError, requirePerson } from "./errors.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
+import { productionRootKeys } from "../protocol/issuer-roots.ts";
+import { SHIPPED_ISSUER_LIST } from "../shipped-issuer-list.ts";
+import { type Collected, HOW_TO_GET_A_CODE, Wallet } from "./wallet.ts";
 import type { ChannelHost } from "./channels.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
@@ -76,6 +83,7 @@ import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
+import { compareTranscripts, type ChannelNoticeKind, LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
 
 const SEND_WINDOW_MS = 10 * 60 * 1000;
 const INITIATE_WAIT_MS = 20_000;
@@ -91,6 +99,7 @@ const STILL_UPLOADING = Symbol("still uploading");
 // One reply's message text. Replies are built whole on the one thread every agent shares, and a string can't pass about 512 MB.
 const MAX_REPLY_BYTES = 8_000_000;
 export const CONFIG_SERVER_URL = "server_url";
+const DEFAULT_AGENT_NAME = "agent";
 const CONFIG_SERVER_IDENTITY = "server_identity";
 const CONFIG_SEAL_KEY = "seal_key";
 const CONFIG_SEAL_LOG_HEAD = "seal_log_head";
@@ -104,13 +113,13 @@ const LATEST_DATE_MS = 8.64e15;
 const SCREENED_ACK_DELAY_MS = 1_000;
 const SENDER_BACKLOG_CHECK_MS = 250;
 const CONFIG_MODEL_EVER_RAN = "screener_model_ever_ran";
-const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello-v2 screener install";
+const MODEL_MISSING = "This agent's database used the screening model, and the model isn't installed on this machine, so only the deterministic rules are running. To add it, a person runs: cello screener install";
 const WORKER_CRASH_TELL_EVERY_MS = 60_000;
 const SIGNAL_VALUES: readonly unknown[] = ["over", "standby", "wrap"];
 const BYTE_LIMIT_REASON = "this conversation is past its byte limit";
 
-const greetingKey = (contentKey: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/greeting").update(contentKey).digest());
-const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-v2/session/refusal").update(sharedSecret).digest());
+const greetingKey = (contentKey: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-session-greeting").update(contentKey).digest());
+const refusalKey = (sharedSecret: Uint8Array): Uint8Array => new Uint8Array(createHash("sha256").update("cello-session-refusal").update(sharedSecret).digest());
 
 // Only these words ever come out of a refusal, whatever the other side put in it.
 function refusalSentence(opened: Uint8Array | null): string {
@@ -141,6 +150,8 @@ export interface Doorbell {
   session_id?: string;
   from_id?: string;
   channel_id?: string;
+  // Fixed words, chosen here: what a channel_notice doorbell says.
+  notice_kind?: ChannelNoticeKind;
   position?: number;
   about_seconds?: number;
 }
@@ -175,20 +186,15 @@ interface AgentContext {
   hex: string;
   name: string;
   registered: boolean;
+  // Still getting its first signal, so it stays off the server until it has one.
+  awaitingSignal: boolean;
+  // Why it isn't online, in the server's words, for whoever asks next.
+  problem?: string;
   online: boolean;
   statuses: Map<string, AgentStatusRow>;
 }
 
 interface Standing { status: AgentStatusRow["status"]; reason: string; record: StatusRecordOnWire | null }
-
-interface Body {
-  n: string;
-  text: string;
-  signal: Signal | null;
-  est_minutes: number | null;
-  // On a close: this daemon ended the visit under the one-message rule. It's only ever a fixed line on the other side.
-  one_message?: true;
-}
 
 function parseHex(value: unknown, bytes: number, name: string): Uint8Array {
   if (typeof value !== "string" || value.length !== bytes * 2 || !/^[0-9a-fA-F]+$/.test(value)) {
@@ -197,15 +203,8 @@ function parseHex(value: unknown, bytes: number, name: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, "hex"));
 }
 
-function parseBody(bytes: Uint8Array): Body | null {
-  try {
-    const body = JSON.parse(new TextDecoder().decode(bytes)) as Body;
-    if (typeof body.text !== "string") return null;
-    return body;
-  } catch {
-    return null;
-  }
-}
+const parseBody = readBodyBytes;
+const UNVERIFIABLE_REASON = "its text isn't what its author signed";
 
 interface OpenStandby {
   by: "you" | "other_side";
@@ -291,6 +290,7 @@ export class Engine {
   readonly #rates = new Map<string, { max: number; window: number; limiter: OutboundRateLimiter }>();
   readonly #refusals = new Map<string, string>();
   readonly governance: Governance;
+  readonly wallet: Wallet;
   readonly #away: Away;
   #lastCrashTold = 0;
   #modelMissingTold = false;
@@ -300,6 +300,20 @@ export class Engine {
     this.#events = events;
     this.#url = url;
     this.#settings = loadSettings(store);
+    this.wallet = new Wallet(store, {
+      keys: (agentHex) => {
+        const row = store.agents().find((candidate) => toHex(candidate.agent_id) === agentHex);
+        if (!row) throw new LocalError("unknown_agent", noAgentGuidance(agentHex));
+        return { identity: this.#requireAgent(agentHex).signer.publicIdentity, seeds: { ed: new Uint8Array(row.ed_seed), pq: new Uint8Array(row.pq_seed) } };
+      },
+      screen: (agentHex, issuerHex, text) => this.channelHost().screen(agentHex, `signal:${issuerHex}`, 0, issuerHex, text),
+      notify: (agentId, text) => {
+        const agent = this.#agents.get(toHex(agentId));
+        if (agent) this.#notify(agent, null, text);
+      },
+      roots: productionRootKeys,
+      shippedList: SHIPPED_ISSUER_LIST,
+    });
     this.governance = new Governance(store, {
       notify: (agentId, text) => {
         const agent = this.#agents.get(toHex(agentId));
@@ -332,12 +346,12 @@ export class Engine {
 
   async start(): Promise<void> {
     const pinned = this.#store.getConfig(CONFIG_SERVER_URL);
-    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_V2_HOME.`);
+    if (pinned && pinned !== this.#url) throw new LocalError("server_changed", `this data belongs to ${pinned}, not ${this.#url}. Use a separate CELLO_HOME.`);
     this.#store.setConfig(CONFIG_SERVER_URL, this.#url);
     for (const row of this.#store.agents()) {
       const signer = await signerFromSeeds({ ed: row.ed_seed, pq: row.pq_seed });
       const statuses = new Map(this.#store.statusRows(signer.id).map((status) => [status.server_url, status]));
-      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, online: false, statuses });
+      this.#agents.set(toHex(signer.id), { signer, hex: toHex(signer.id), name: row.name, registered: row.registered === 1, awaitingSignal: row.awaiting_signal === 1, online: false, statuses });
       this.governance.writeDefaults(signer.id);
     }
     this.#checkStandbys();
@@ -401,7 +415,7 @@ export class Engine {
       if (route.home) {
         const clientNonce = new Uint8Array(randomBytes(32));
         const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
-        const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+        const signature = await agent.signer.sign("cello-agent-auth", proof);
         await route.longLink.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature), long: true }, LONG_CALL_TIMEOUT_MS);
       } else {
         await route.longLink.call("visit", { ...await this.#visitProof(agent, server), long: true }, LONG_CALL_TIMEOUT_MS);
@@ -537,8 +551,8 @@ export class Engine {
     return {
       identity: identityCodec.encode(identity),
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-v2-visit", registerBytes({ serverId: server.id, identity }))),
-      signature: signatureCodec.encode(await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
+      nameSignature: signatureCodec.encode(await agent.signer.sign("cello-visit", registerBytes({ serverId: server.id, identity }))),
+      signature: signatureCodec.encode(await agent.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
 
@@ -744,13 +758,15 @@ export class Engine {
   }
 
   async #bringOnline(agent: AgentContext, server: ConnectedServer): Promise<void> {
+    if (agent.awaitingSignal) return;
     try {
+      agent.problem = undefined;
       if (!agent.registered) await this.#register(agent);
       while (this.#server === server) {
         try {
           const clientNonce = new Uint8Array(randomBytes(32));
           const proof = agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce });
-          const signature = await agent.signer.sign("cello-v2-agent-auth", proof);
+          const signature = await agent.signer.sign("cello-agent-auth", proof);
           const answer = await this.#link.call("auth", { agentId: toB64(agent.signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) }) as { standing: Standing };
           agent.online = true;
           logEvent("agent.online", { agent: agent.hex });
@@ -770,14 +786,17 @@ export class Engine {
         }
       }
     } catch (err: unknown) {
-      logEvent("agent.bring_online_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) });
+      agent.problem = err instanceof Error ? err.message : String(err);
+      logEvent("agent.bring_online_failed", { agent: agent.hex, message: agent.problem });
     }
   }
 
   async #register(agent: AgentContext): Promise<void> {
     const identity = agent.signer.publicIdentity;
-    const signature = await agent.signer.sign("cello-v2-register", registerBytes({ serverId: this.#serverId(), identity }));
-    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature) });
+    const signature = await agent.signer.sign("cello-register", registerBytes({ serverId: this.#serverId(), identity }));
+    // The verified email a server asks for. A server that doesn't require one leaves it unread.
+    const email = this.wallet.emailFile(agent.hex);
+    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature), ...(email ? { signal: toB64(email) } : {}) });
     this.#store.markRegistered(agent.signer.id);
     agent.registered = true;
     logEvent("agent.registered", { agent: agent.hex });
@@ -911,15 +930,16 @@ export class Engine {
   // Tiers and policy aren't in this iteration, so a daemon takes every validly signed call.
   // A definite no: the caller never waits out the offer. No session row is kept here, and the server takes it off this agent's
   // list, so a restart doesn't count it twice. The reason goes to the caller's own key, so the server can't read it.
-  async #refuseOffer(agent: AgentContext, fields: OfferFields, refusal: { code: RefusalCode; limit?: number }): Promise<void> {
+  async #refuseOffer(agent: AgentContext, offer: Signed<OfferFields>, refusal: { code: RefusalCode; limit?: number }): Promise<void> {
+    const { fields } = offer;
     const { ciphertext, sharedSecret } = await mlKemEncapsulate(fields.mlKemPublic);
     const refuseFields = {
-      offerHash: structureHash(offerBytes(fields)),
+      offerHash: structureHash(offer.bytes),
       mlKemCiphertext: ciphertext,
       sealedReason: sealSessionContent(refusalKey(sharedSecret), new TextEncoder().encode(JSON.stringify(refusal))),
     };
     sharedSecret.fill(0);
-    const signature = await agent.signer.sign("cello-v2-session-refuse", refuseBytes(refuseFields));
+    const signature = await agent.signer.sign("cello-session-refuse", refuseBytes(refuseFields));
     await this.#link.call("session.refuse", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), refusal: signedRefuse.encode({ fields: refuseFields, signature }) });
     this.governance.noteRefusal(agent.signer.id, agent.hex, toHex(fields.callerId), refusal.code);
   }
@@ -927,9 +947,8 @@ export class Engine {
   // What the caller's daemon says it heard. Only a callee's signature can make this happen, and only fixed sentences come out.
   async #onRefused(agent: AgentContext, local: SessionRow, wire: WireSigned): Promise<void> {
     const refusal = signedRefuse.decode(wire, "refusal");
-    const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
-    if (!equalBytes(refusal.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this refusal answers a different offer");
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-refuse", refuseBytes(refusal.fields), refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
+    if (!equalBytes(refusal.fields.offerHash, structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes))) throw new Error("this refusal answers a different offer");
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-session-refuse", refusal.bytes, refusal.signature))) throw new Error("this refusal isn't signed by the agent called");
     const sharedSecret = await mlKemDecapsulate(local.mlkem_seed as Uint8Array, refusal.fields.mlKemCiphertext);
     const opened = openSessionContent(refusalKey(sharedSecret), refusal.fields.sealedReason);
     sharedSecret.fill(0);
@@ -949,24 +968,25 @@ export class Engine {
     const callerKeys = identityCodec.decode(wire.callerIdentity, "callerIdentity");
     if (!equalBytes(identityId(callerKeys), fields.callerId)) throw new Error("the caller's keys don't match the caller's id");
     if (!equalBytes(fields.serverId, this.#serverId())) throw new Error("this offer names a different server");
-    if (!(await verifySignature(callerKeys, "cello-v2-session-offer", offerBytes(fields), offer.signature))) throw new Error("this offer isn't signed by its caller");
+    if (!(await verifySignature(callerKeys, "cello-session-offer", offer.bytes, offer.signature))) throw new Error("this offer isn't signed by its caller");
     if (fields.expiresAt <= Date.now()) {
       logEvent("session.offer_expired", { session: toHex(fields.sessionId) });
       return;
     }
-    const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, fields));
+    const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, offer));
     if (!accept) return;
     await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
     logEvent("session.accepted", { agent: agent.hex, session: toHex(fields.sessionId) });
   }
 
   // Tier first, before any key material exists. The new session is on disk when this returns, so the next call counts it.
-  async #admitOffer(agent: AgentContext, wire: SessionOnWire, fields: OfferFields): Promise<WireSigned | undefined> {
+  async #admitOffer(agent: AgentContext, wire: SessionOnWire, offer: Signed<OfferFields>): Promise<WireSigned | undefined> {
+    const { fields } = offer;
     // A stopped agent's tiers don't get a say, and a refused knock isn't counted against the caller.
     this.#refuseIfStopped(agent, this.#url);
     const refusal = this.governance.admit(agent.signer.id, fields.callerId);
     if (refusal) {
-      await this.#refuseOffer(agent, fields, refusal);
+      await this.#refuseOffer(agent, offer, refusal);
       return undefined;
     }
     const own = await generateSessionEphemeral();
@@ -980,13 +1000,13 @@ export class Engine {
     });
     const salt = generateSaltContribution();
     const acceptFields = {
-      offerHash: structureHash(offerBytes(fields)),
+      offerHash: structureHash(offer.bytes),
       x25519Public: own.publicKey,
       mlKemCiphertext: ciphertext,
       sealedSalt: sealSessionContent(contentKey, salt),
       sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))),
     };
-    const signature = await agent.signer.sign("cello-v2-session-accept", acceptBytes(acceptFields));
+    const signature = await agent.signer.sign("cello-session-accept", acceptBytes(acceptFields));
     const accept = signedAccept.encode({ fields: acceptFields, signature });
     this.#store.insertSession({
       agent_id: agent.signer.id,
@@ -1020,8 +1040,8 @@ export class Engine {
     const accept = signedAccept.decode(wireAccept, "accept");
     const keys = this.#counterpartyKeys(local);
     const offerFields = signedOffer.decode(JSON.parse(local.offer)).fields;
-    if (!equalBytes(accept.fields.offerHash, structureHash(offerBytes(offerFields)))) throw new Error("this accept answers a different offer");
-    if (!(await verifySignature(keys, "cello-v2-session-accept", acceptBytes(accept.fields), accept.signature))) throw new Error("this accept isn't signed by the agent called");
+    if (!equalBytes(accept.fields.offerHash, structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes))) throw new Error("this accept answers a different offer");
+    if (!(await verifySignature(keys, "cello-session-accept", accept.bytes, accept.signature))) throw new Error("this accept isn't signed by the agent called");
     const seed = local.mlkem_seed;
     const secret = local.x25519_secret;
     if (!seed || !secret) throw new Error("this session's own key halves are missing");
@@ -1037,8 +1057,8 @@ export class Engine {
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     const ownSalt = generateSaltContribution();
     this.#takeOfferedName(agent, local, contentKey, accept.fields.sealedName);
-    const confirmFields = { acceptHash: structureHash(acceptBytes(accept.fields)), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
-    const signature = await agent.signer.sign("cello-v2-session-confirm", confirmBytes(confirmFields));
+    const confirmFields = { acceptHash: structureHash(accept.bytes), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
+    const signature = await agent.signer.sign("cello-session-confirm", confirmBytes(confirmFields));
     this.#store.updateSession(agent.signer.id, local.session_id, {
       state: "accepted",
       accept: JSON.stringify(wireAccept),
@@ -1064,9 +1084,8 @@ export class Engine {
   async #finishAsCallee(agent: AgentContext, local: SessionRow, wireConfirm: WireSigned, wireAssignment: WireSigned): Promise<void> {
     const confirm = signedConfirm.decode(wireConfirm, "confirm");
     const keys = this.#counterpartyKeys(local);
-    const acceptFields = signedAccept.decode(JSON.parse(local.accept as string)).fields;
-    if (!equalBytes(confirm.fields.acceptHash, structureHash(acceptBytes(acceptFields)))) throw new Error("this confirm answers a different accept");
-    if (!(await verifySignature(keys, "cello-v2-session-confirm", confirmBytes(confirm.fields), confirm.signature))) throw new Error("this confirm isn't signed by the caller");
+    if (!equalBytes(confirm.fields.acceptHash, structureHash(signedAccept.decode(JSON.parse(local.accept as string)).bytes))) throw new Error("this confirm answers a different accept");
+    if (!(await verifySignature(keys, "cello-session-confirm", confirm.bytes, confirm.signature))) throw new Error("this confirm isn't signed by the caller");
     const peerSalt = openSessionContent(local.session_key as Uint8Array, confirm.fields.sealedSalt);
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     this.#takeOfferedName(agent, local, local.session_key as Uint8Array, confirm.fields.sealedName);
@@ -1093,7 +1112,7 @@ export class Engine {
       }
       let screened: string;
       try {
-        screened = (await this.#screenOutbound(agent, text, {}, `cello-v2 settings --agent ${agent.hex}`)).text;
+        screened = (await this.#screenOutbound(agent, text, {}, `cello settings --agent ${agent.hex}`)).text;
       } catch (err: unknown) {
         // A worker that's restarting says nothing about the text, so that one tries again at the next catch-up.
         if (err instanceof LocalError && err.code === "screener_unavailable") return;
@@ -1104,10 +1123,10 @@ export class Engine {
         return;
       }
       const fields = {
-        offerHash: structureHash(offerBytes(signedOffer.decode(JSON.parse(local.offer)).fields)),
+        offerHash: structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes),
         sealedText: sealSessionContent(greetingKey(local.session_key as Uint8Array), new TextEncoder().encode(screened)),
       };
-      const signature = await agent.signer.sign("cello-v2-session-greeting", greetingBytes(fields));
+      const signature = await agent.signer.sign("cello-session-greeting", greetingBytes(fields));
       wire = JSON.stringify(signedGreeting.encode({ fields, signature }));
       this.#away.setVisit(agent.signer.id, local.session_id, "due", wire);
     }
@@ -1139,12 +1158,12 @@ export class Engine {
       reject("too_large");
       return;
     }
-    const offerHash = structureHash(offerBytes(signedOffer.decode(JSON.parse(local.offer)).fields));
+    const offerHash = structureHash(signedOffer.decode(JSON.parse(local.offer)).bytes);
     if (!equalBytes(greeting.fields.offerHash, offerHash)) {
       reject("answers_a_different_offer");
       return;
     }
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-session-greeting", greetingBytes(greeting.fields), greeting.signature))) {
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-session-greeting", greeting.bytes, greeting.signature))) {
       reject("bad_signature");
       return;
     }
@@ -1163,7 +1182,7 @@ export class Engine {
     const agent = this.#agents.get(agentHex);
     if (!agent) return;
     this.#nextChannelJob -= 1;
-    const bytes = new TextEncoder().encode(JSON.stringify({ text: new TextDecoder().decode(row.body as Uint8Array) }));
+    const bytes = bodyBytes({ n: new Uint8Array(0), text: new TextDecoder().decode(row.body as Uint8Array), signal: null, est_minutes: null });
     const sessionHex = toHex(row.session_id);
     this.#screening.add({
       entryId: this.#nextChannelJob, agentHex, sessionHex: `greeting:${sessionHex}`, position: 0, senderHex: toHex(row.sender_id), bytes: bytes.length, arrived: Date.now(),
@@ -1215,10 +1234,10 @@ export class Engine {
       sessionId: local.session_id,
       callerId: local.role === "caller" ? agent.signer.id : local.counterparty_id,
       calleeId: local.role === "caller" ? local.counterparty_id : agent.signer.id,
-      confirmHash: structureHash(confirmBytes(signedConfirm.decode(wireConfirm).fields)),
+      confirmHash: structureHash(signedConfirm.decode(wireConfirm).bytes),
     };
     const matches = (Object.keys(expected) as (keyof typeof expected)[]).every((key) => equalBytes(assignment.fields[key], expected[key]));
-    if (!matches || !(await verifySignature(this.#serverIdentity(this.#urlOf(local)), "cello-v2-session-assignment", assignmentBytes(assignment.fields), assignment.signature))) {
+    if (!matches || !(await verifySignature(this.#serverIdentity(this.#urlOf(local)), "cello-session-assignment", assignment.bytes, assignment.signature))) {
       throw new Error("the server's assignment doesn't match this session's setup");
     }
     this.#store.updateSession(agent.signer.id, local.session_id, {
@@ -1254,7 +1273,8 @@ export class Engine {
       participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)],
     });
     for (const row of this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position)) {
-      verifier.adopt(signedEntry.decode(JSON.parse(row.entry)).fields);
+      const entry = signedEntry.decode(JSON.parse(row.entry));
+      verifier.adopt(entry.fields, structureHash(entry.bytes), signedAck.decode(JSON.parse(row.ack as string)).fields.time);
     }
     this.#verifiers.set(key, verifier);
     return verifier;
@@ -1266,6 +1286,10 @@ export class Engine {
     if (!local || (local.state !== "active" && local.state !== "closed") || this.#urlOf(local) !== route.url) return;
     const position = signedAck.decode(item.ack).fields.position;
     const verifier = this.#verifier(agent, local);
+    if (position <= verifier.position) {
+      await this.#checkRepeat(agent, local, item);
+      return;
+    }
     // A long message's push carries no text, so #settle fetches it.
     if (item.ciphertext !== null && position === verifier.position + 1 && (await this.#ingest(agent, local, item))) {
       await this.#deliver(agent, this.#store.session(agent.signer.id, sessionId) as SessionRow);
@@ -1315,7 +1339,7 @@ export class Engine {
       if (outcome.status === "landed") {
         this.#notify(agent, local.session_id, `Your message "${preview}" has now landed at position ${outcome.position}.`);
       } else if (outcome.status === "refused") {
-        this.#notify(agent, local.session_id, `Your message "${preview}" was not sent: ${outcome.code}, ${outcome.message}.`);
+        this.#notify(agent, local.session_id, `Your message "${preview}" was not sent: ${outcome.code}, ${outcome.message}. ${LOST_MESSAGE_GUIDANCE}`);
       } else {
         return;
       }
@@ -1354,33 +1378,45 @@ export class Engine {
   }
 
   async #ingest(agent: AgentContext, local: SessionRow, item: WitnessedOnWire): Promise<boolean> {
-    let witnessed: WitnessedEntry;
+    let landing: WitnessedEntry;
     let entry: Signed<EntryFields>;
     try {
       entry = signedEntry.decode(item.entry, "entry");
       const ack = signedAck.decode(item.ack, "ack");
-      witnessed = { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };
+      landing = witnessed(entry, ack);
     } catch (err: unknown) {
       this.#hold(agent, local, `malformed_frame: ${err instanceof Error ? err.message : String(err)}`, local.verified_position + 1);
       return false;
     }
     const verifier = this.#verifier(agent, local);
-    const position = witnessed.ack.position;
-    if (position <= verifier.position) return true;
-    const fault: ChainFault | null = await verifier.check(witnessed);
+    const position = landing.ack.position;
+    if (position <= verifier.position) {
+      await this.#checkRepeat(agent, local, item);
+      return true;
+    }
+    const fault: ChainFault | null = await verifier.check(landing);
     if (fault) {
       this.#hold(agent, local, fault, position);
       return false;
     }
     const closing = entry.fields.kind === EntryKind.close;
     const fromMe = equalBytes(entry.fields.authorId, agent.signer.id);
-    const hash = entryHash(entry.fields);
+    const hash = structureHash(entry.bytes);
     let body: Uint8Array | undefined;
+    let unverifiable: Uint8Array | undefined;
 
     if (fromMe) {
       const own = this.#store.ownEntryByHash(agent.signer.id, local.session_id, hash);
       if (!own) {
         this.#hold(agent, local, "own_entry_unknown", position);
+        return false;
+      }
+      // Your daemon told you this was refused, and the server landed it anyway. It stays out of your record, and you're told.
+      if (own.state === "not_sent") {
+        this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "refused_entry_landed", position, entry: JSON.stringify(item.entry), ack: JSON.stringify(item.ack), other_ack: null, ciphertext: null });
+        logEvent("session.refused_entry_landed", { agent: agent.hex, session: toHex(local.session_id), position });
+        this.#notify(agent, local.session_id, `The server is claiming position ${position} for a message you were told was refused: "${parseBody(own.body)?.text.slice(0, 120) ?? ""}". This agent doesn't accept that, the proof is kept (see evidence), and the session stops here. Don't rely on this server for this conversation.`);
+        this.#hold(agent, local, "refused_entry_landed", position);
         return false;
       }
       body = own.body;
@@ -1390,12 +1426,19 @@ export class Engine {
         return false;
       }
       const ciphertext = fromB64(item.ciphertext, "ciphertext");
-      const opened = equalBytes(ciphertextHash(ciphertext), entry.fields.ciphertextHash) ? openSessionContent(local.session_key as Uint8Array, ciphertext) : null;
-      if (!opened || !equalBytes(saltedContentHash(local.salt as Uint8Array, opened), entry.fields.contentHash)) {
+      // Text that isn't what the author signed a hash of came from the server, which can send the right text next time.
+      if (!equalBytes(ciphertextHash(ciphertext), entry.fields.ciphertextHash)) {
         this.#hold(agent, local, "text_does_not_match_signature", position);
         return false;
       }
-      body = opened;
+      const opened = openSessionContent(local.session_key as Uint8Array, ciphertext);
+      if (opened && equalBytes(saltedContentHash(local.salt as Uint8Array, opened), entry.fields.contentHash)) body = opened;
+      else {
+        // The author signed text that can't be what it says, and those same bytes fail every time. Holding here would let one bad
+        // message stop the reader for good, so the bytes are kept as evidence, the words aren't shown, and reading carries on.
+        unverifiable = ciphertext;
+        body = new Uint8Array(0);
+      }
     }
 
     const ownClosed = local.own_closed === 1 || (closing && fromMe);
@@ -1403,7 +1446,7 @@ export class Engine {
     const nowClosed = ownClosed && peerClosed;
     // The words are this daemon's, not the other side's. A close by hand doesn't carry the mark, so it doesn't get them.
     const closedOnGreeting = closing && !fromMe && local.role === "caller" && parseBody(body as Uint8Array)?.one_message === true && !this.#store.lastPeerEntry(agent.signer.id, local.session_id) && (this.#away.greeting(agent.signer.id, local.session_id)?.verdict ?? "rejected") !== "rejected";
-    const counted = !fromMe && !closing ? this.#countBytes(agent, local, (body as Uint8Array).length, witnessed.ack.time) : undefined;
+    const counted = !fromMe && !closing && !unverifiable ? this.#countBytes(agent, local, (body as Uint8Array).length, landing.ack.time) : undefined;
     try {
       this.#store.transaction(() => {
         if (fromMe) {
@@ -1422,11 +1465,15 @@ export class Engine {
             // Nobody will read it, and the signed hashes are what the chain and a seal rest on, so past the limit a flood costs no disk for its words.
             body: counted?.withheld ? new Uint8Array(0) : (body as Uint8Array),
           });
+          if (unverifiable) {
+            this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: UNVERIFIABLE_REASON, score: null, ran: { deterministic: false, model: false } }));
+            this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "unverifiable_text", position, entry: JSON.stringify(item.entry), ack: JSON.stringify(item.ack), other_ack: null, ciphertext: unverifiable });
+          }
           if (counted?.withheld) this.#store.markWithheld(this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number, JSON.stringify({ delivered: null, findings: [], reason: BYTE_LIMIT_REASON, score: null, ran: { deterministic: false, model: false, model_failed_copies: 0 } } satisfies VerdictDetail));
         }
         this.#store.updateSession(agent.signer.id, local.session_id, {
           ...(counted ? { bytes_received: counted.total, bytes_told: counted.told } : {}),
-          last_activity_at: witnessed.ack.time,
+          last_activity_at: landing.ack.time,
           verified_position: position,
           own_closed: ownClosed ? 1 : 0,
           peer_closed: peerClosed ? 1 : 0,
@@ -1444,7 +1491,11 @@ export class Engine {
     // Told once, and it rings no doorbell per message, so a flood past the limit can't keep waking anyone or cost a screen.
     if (counted?.tellNow) this.#notify(agent, local.session_id, `This conversation has passed its limit of ${counted.limit} bytes, so what it sends from now on isn't delivered. ${counted.resets ? "The count starts again after a quiet spell." : "The count doesn't reset at this tier."} The other side isn't told. Either side can start a new conversation.`);
     // Stored, but not deliverable until it has a verdict. Its doorbell rings then, from #onVerdict.
-    if (!fromMe && !counted?.withheld) {
+    if (unverifiable) {
+      logEvent("session.unverifiable_text", { agent: agent.hex, session: sessionHex, position });
+      this.#notify(agent, local.session_id, `The message at position ${position} from ${this.#who(agent, local)} isn't what its author signed, so it wasn't delivered. The bytes are kept (see evidence), and this agent's signed delivery ack lists it as refused. Later messages can still be read.`);
+    }
+    if (!fromMe && !counted?.withheld && !unverifiable) {
       const entryId = this.#store.entryIdAt(agent.signer.id, local.session_id, position) as number;
       this.#screening.add({ entryId, agentHex: agent.hex, sessionHex, position, senderHex: toHex(local.counterparty_id), bytes: (body as Uint8Array).length, arrived: Date.now() });
     }
@@ -1457,10 +1508,41 @@ export class Engine {
       logEvent("session.closed", { agent: agent.hex, session: sessionHex });
       this.#events.ring(agent.hex, { ...bell, type: "session_closed" });
     }
-    const written = counted?.withheld ? null : parseBody(body as Uint8Array);
-    const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, witnessed.ack.time) : undefined;
+    const written = counted?.withheld || unverifiable ? null : parseBody(body as Uint8Array);
+    const due = !closing && written?.signal === "standby" ? standbyDue(written.est_minutes, landing.ack.time) : undefined;
     if (due !== undefined) this.#armStandbyCheck(due);
     return true;
+  }
+
+  // A different signed ack at a position already held. An ack the server didn't sign is dropped, because anyone can send junk.
+  // Two it did sign is proof of misbehaviour: it's kept, the operator is told, and the session takes no more messages from this side.
+  async #checkRepeat(agent: AgentContext, local: SessionRow, item: WitnessedOnWire): Promise<void> {
+    const position = signedAck.decode(item.ack, "ack").fields.position;
+    const held = this.#store.ackAt(agent.signer.id, local.session_id, position);
+    if (!held) return;
+    const proved = await provesTwoAcks(this.#serverIdentity(this.#urlOf(local)), signedAck.decode(JSON.parse(held)), signedAck.decode(item.ack, "ack"));
+    if (!proved) return;
+    this.#store.addEvidence({ agent_id: agent.signer.id, session_id: local.session_id, kind: "two_acks", position, entry: JSON.stringify(item.entry), ack: held, other_ack: JSON.stringify(item.ack), ciphertext: null });
+    if (local.frozen === 1) return;
+    this.#store.updateSession(agent.signer.id, local.session_id, { frozen: 1 });
+    logEvent("session.frozen", { agent: agent.hex, session: toHex(local.session_id), position });
+    this.#notify(agent, local.session_id, `The server signed two different things at position ${position}, which it must never do. This session is frozen: you can still read and seal, and you can't send. The proof is kept (see evidence). Tell whoever runs this server.`);
+  }
+
+  evidence(agentHex: string, sessionHex: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    return {
+      frozen: local.frozen === 1,
+      evidence: this.#store.evidence(agent.signer.id, local.session_id).map((row) => ({
+        kind: row.kind,
+        position: row.position,
+        entry: row.entry === null ? null : JSON.parse(row.entry) as unknown,
+        ack: JSON.parse(row.ack) as unknown,
+        other_ack: row.other_ack === null ? null : JSON.parse(row.other_ack) as unknown,
+        ciphertext: row.ciphertext === null ? null : toB64(row.ciphertext),
+      })),
+    };
   }
 
   // ---- Standbys past their time. Only the two daemons can see these, so all of this is local, and it only tells. ----
@@ -1557,13 +1639,17 @@ export class Engine {
   // Runs only after the text is stored and decrypted. This signature is what lets the server remove it.
   // It also says how far screening has got, so it goes again when that moves, or when the screen is held up.
   async #deliver(agent: AgentContext, local: SessionRow, etaSeconds = 0): Promise<void> {
-    const through = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
+    const refused = this.#store.unverifiablePositions(agent.signer.id, local.session_id);
+    const latest = Math.max(this.#latestFromPeer(agent, local), local.delivered_through);
+    // The signed list has a limit, so a flood of bad messages stops the ack there rather than growing it without end.
+    const past = refused[MAX_REFUSED_POSITIONS];
+    const through = past === undefined ? latest : Math.min(latest, past - 1);
     if (through === 0) return;
     const screened = Math.min(this.#screenedThrough(agent, local), through);
     if (through === local.delivered_through && screened <= local.acked_screened && etaSeconds === 0) return;
     const ack = signedAck.decode(JSON.parse(this.#store.ackAt(agent.signer.id, local.session_id, through) as string)).fields;
-    const fields = { sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened };
-    const signature = await agent.signer.sign("cello-v2-delivery-ack", deliveryAckBytes(fields));
+    const fields = { serverId: this.#serverId(this.#urlOf(local)), sessionId: local.session_id, readerId: agent.signer.id, throughPosition: through, entryHash: ack.entryHash, root: ack.root, screenedThrough: screened, refused: refusedList(refused.filter((position) => position <= through)) };
+    const signature = await agent.signer.sign("cello-delivery-ack", deliveryAckBytes(fields));
     // The rough time goes beside the ack, unsigned: a seal may keep the ack, and this number means nothing an hour later.
     await this.#routeFor(agent, local).link.call("delivery.ack", { agent: toB64(agent.signer.id), deliveryAck: signedDeliveryAck.encode({ fields, signature }), screeningEtaSeconds: etaSeconds });
     this.#store.updateSession(agent.signer.id, local.session_id, { delivered_through: through, acked_screened: screened });
@@ -1575,7 +1661,7 @@ export class Engine {
     const { fields } = signed;
     const local = this.#store.session(agent.signer.id, fields.sessionId);
     if (!local || !equalBytes(fields.readerId, local.counterparty_id)) return;
-    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-v2-delivery-ack", deliveryAckBytes(fields), signed.signature))) return;
+    if (!(await verifySignature(this.#counterpartyKeys(local), "cello-delivery-ack", signed.bytes, signed.signature))) return;
     if (fields.screenedThrough > local.peer_screened_through) this.#store.updateSession(agent.signer.id, local.session_id, { peer_screened_through: fields.screenedThrough });
     const position = fields.screenedThrough + 1;
     // Nothing signs the time, so it's only ever a number in a notice, and only a whole one gets that far.
@@ -1788,7 +1874,7 @@ export class Engine {
       const server = route.home ? this.#server : route.server;
       if (!server) return { server: url, reachable: false, problem: "still connecting" };
       const clientNonce = new Uint8Array(randomBytes(32));
-      const signature = await agent.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }));
+      const signature = await agent.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: server.id, agentId: agent.signer.id, serverNonce: server.nonce, clientNonce }));
       const answer = await this.#call(() => route.link.call("agent.status.read", { identity: identityCodec.encode(agent.signer.publicIdentity), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(signature) })) as { status: string; reason: string; records: StatusRecordOnWire[] };
       const checked = await checkStatusLog(answer.records, agent.signer.id, this.#serverIdentity(url));
       if (!checked.ok) throw new LocalError("status_log_bad", `${url}: ${checked.message}`);
@@ -1873,9 +1959,9 @@ export class Engine {
   }
 
   async #append(agent: AgentContext, local: SessionRow, kind: EntryFields["kind"], mode: EntryFields["mode"], body: Body): Promise<AttemptOutcome> {
-    const bodyBytes = new TextEncoder().encode(JSON.stringify(body));
-    const ciphertext = sealSessionContent(local.session_key as Uint8Array, bodyBytes);
-    if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", `this message is ${bodyBytes.length} bytes, over the limit of about 1 MB`);
+    const encodedBody = bodyBytes(body);
+    const ciphertext = sealSessionContent(local.session_key as Uint8Array, encodedBody);
+    if (ciphertext.length > MAX_CIPHERTEXT_BYTES) throw new LocalError("too_large", tooLargeMessage(encodedBody.length));
 
     const verifier = this.#verifier(agent, local);
     const firstUnread = this.#store.firstUnreadToAnswer(agent.signer.id, local.session_id, local.read_position);
@@ -1886,6 +1972,7 @@ export class Engine {
     const last = this.#store.lastOwnEntry(agent.signer.id, local.session_id);
     const lastFields = last ? signedEntry.decode(JSON.parse(last.entry)).fields : undefined;
     const fields: EntryFields = {
+      serverId: this.#serverId(this.#urlOf(local)),
       sessionId: local.session_id,
       authorId: agent.signer.id,
       authorSeq: (lastFields?.authorSeq ?? 0) + 1,
@@ -1894,11 +1981,11 @@ export class Engine {
       readRoot,
       kind,
       mode,
-      contentHash: saltedContentHash(local.salt as Uint8Array, bodyBytes),
+      contentHash: saltedContentHash(local.salt as Uint8Array, encodedBody),
       ciphertextHash: ciphertextHash(ciphertext),
       notAfter: Date.now() + SEND_WINDOW_MS,
     };
-    const signature = await agent.signer.sign("cello-v2-entry", entryBytes(fields));
+    const signature = await agent.signer.sign("cello-entry", entryBytes(fields));
     // On disk before it goes anywhere, so a crash after this point can only resend identical bytes.
     this.#store.insertEntry({
       agent_id: agent.signer.id,
@@ -1908,7 +1995,7 @@ export class Engine {
       own: 1,
       entry: JSON.stringify(signedEntry.encode({ fields, signature })),
       ciphertext,
-      body: bodyBytes,
+      body: encodedBody,
     });
     const row = this.#store.lastOwnEntry(agent.signer.id, local.session_id) as EntryRow;
     return this.#attempt(agent, local, row);
@@ -1921,9 +2008,15 @@ export class Engine {
   }
 
   #requireSession(agent: AgentContext, sessionHex: string): SessionRow {
-    const local = this.#store.session(agent.signer.id, parseHex(sessionHex, 16, "session id"));
-    if (!local) throw new LocalError("unknown_session", "this agent has no such session");
-    return local;
+    // A short id isn't an id at all, but a piece of a real one is a paste that got cut.
+    if (typeof sessionHex === "string" && /^[0-9a-fA-F]+$/.test(sessionHex) && sessionHex.length < 32 && this.#store.sessionsOf(agent.signer.id).some((row) => toHex(row.session_id).startsWith(sessionHex.toLowerCase()))) {
+      throw new LocalError("unknown_session", TRUNCATED_SESSION_GUIDANCE);
+    }
+    const id = parseHex(sessionHex, 16, "session id");
+    const local = this.#store.session(agent.signer.id, id);
+    if (local) return local;
+    const another = [...this.#agents.values()].some((other) => this.#store.session(other.signer.id, id) !== undefined);
+    throw new LocalError("unknown_session", another ? OTHER_AGENTS_SESSION_GUIDANCE : NO_SESSION_GUIDANCE);
   }
 
   // Returns an outcome rather than throwing for anything the agent can act on.
@@ -1946,16 +2039,17 @@ export class Engine {
     const rate = this.#rateFor(agent);
     const limited = rate?.peek(agent.hex);
     if (limited?.limited) throw new LocalError("rate_limited", limited.guidance as string);
-    if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", `signal must be one of ${SIGNALS.join(", ")}`);
+    if (!SIGNALS.includes(signal)) throw new LocalError("missing_signal", SIGNAL_ERROR);
     if (signal === "standby" && standbyDue(estMinutes, Date.now()) === undefined) throw new LocalError("missing_est_minutes", "standby needs est_minutes, a positive number of minutes until your follow-up");
-    const screened = await this.#screenOutbound(agent, text, params, `cello-v2 send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
+    const screened = await this.#screenOutbound(agent, text, params, `cello send ${sessionHex} - --allow-flagged --over --agent ${agent.hex}`);
     // A notice is how "stop" gets through, so it never waits. These waits are outside the lane, so what arrives meanwhile isn't held up.
     const paced = notice ? {} : await this.#paceForReader(agent, this.#requireSession(agent, sessionHex).session_id);
     return this.#lane(agentHex, sessionHex, async () => {
       let local = this.#requireSession(agent, sessionHex);
       this.#refuseIfStopped(agent, this.#urlOf(local));
-      if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", `this session is ${local.state}`);
-      if (local.own_closed) throw new LocalError("session_closed", "you've already closed this session");
+      if (local.state !== "active") throw new LocalError(local.state === "closed" ? "session_closed" : "session_not_active", local.state === "closed" ? SESSION_CLOSED_GUIDANCE : `this session is ${local.state}`);
+      if (local.own_closed) throw new LocalError("session_closed", `you've already closed this session. ${SESSION_CLOSED_GUIDANCE}`);
+      if (local.frozen === 1) throw new LocalError("session_frozen", "the server signed two different things at one position, so this session takes nothing more from you. You can still read and seal it. The proof is kept: see evidence.");
       if (local.fault) throw new LocalError("session_holding", `this session is holding: ${local.fault}. It rechecks by itself.`);
       if (!notice && this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) {
         const deliverable = this.#store.deliverableCount(agent.signer.id, local.session_id, local.read_position);
@@ -1972,7 +2066,7 @@ export class Engine {
           throw new LocalError("previous_send_pending", "your previous message hasn't reached the server yet, so this one wasn't queued. Try again once it has.");
         }
       }
-      const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: screened.text, signal, est_minutes: estMinutes ?? null };
+      const body: Body = { n: new Uint8Array(randomBytes(16)), text: screened.text, signal, est_minutes: estMinutes ?? null };
       const outcome = await this.#append(agent, local, EntryKind.message, notice ? EntryMode.notice : EntryMode.reply, body);
       if (outcome.status === "landed") {
         rate?.record(agent.hex);
@@ -2009,14 +2103,18 @@ export class Engine {
     this.#refuseIfStopped(agent, this.#urlOf(local));
     if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
     await this.#resendPending(agent, local);
+    // Their close is an entry too, and it isn't a message anyone could have read.
+    const lastPeer = this.#store.lastPeerEntry(agent.signer.id, local.session_id);
+    const theirCloseUnread = local.peer_closed === 1 && lastPeer !== undefined && (lastPeer.position as number) > local.read_position;
+    const neverRead = this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) - (theirCloseUnread ? 1 : 0);
     // Durable before the close goes, so a crash anywhere after this still ends in a seal.
     this.#store.addSealWant(agent.signer.id, local.session_id, SEAL_EVERYTHING_HELD);
-    const body: Body = { n: toB64(new Uint8Array(randomBytes(16))), text: "", signal: null, est_minutes: null, ...(oneMessage ? { one_message: true as const } : {}) };
+    const body: Body = { n: new Uint8Array(randomBytes(16)), text: "", signal: null, est_minutes: null, ...(oneMessage ? { one_message: true as const } : {}) };
     const outcome = await this.#append(agent, this.#store.session(agent.signer.id, local.session_id) as SessionRow, EntryKind.close, EntryMode.notice, body);
     const report = await this.#reportSend(agent, local, outcome) as { sent: boolean };
     const seal = report.sent ? await this.#sealAfterClose(agent, local.session_id) : notSealedYet("the close hasn't reached the server");
     const fresh = this.#store.session(agent.signer.id, local.session_id) as SessionRow;
-    return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report };
+    return { closed: report.sent, state: fresh.state, peer_closed: fresh.peer_closed === 1, seal, ...report, ...(report.sent && neverRead > 0 ? { unread_count: neverRead, unread_warning: unreadWarning(neverRead, sessionHex) } : {}) };
   }
 
   // ---- Sealing ----
@@ -2047,8 +2145,8 @@ export class Engine {
     if (!this.#isOnline(agent, route)) return notSealedYet(route.link.problem ?? "this agent isn't online yet");
     const root = this.#verifier(agent, local).rootAt(through);
     if (!root) throw new Error(`no root is held for position ${through}`);
-    const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, throughPosition: through, root };
-    const signature = await agent.signer.sign("cello-v2-seal-request", sealRequestBytes(fields));
+    const fields = { serverId: this.#serverId(route.url), sessionId, sealerId: agent.signer.id, counterpartyId: local.counterparty_id, throughPosition: through, root };
+    const signature = await agent.signer.sign("cello-seal-request", sealRequestBytes(fields));
     let answer: { record: SealRecordOnWire; logProof: string[] | null };
     try {
       answer = await route.link.call("seal.request", {
@@ -2061,7 +2159,7 @@ export class Engine {
       if (err instanceof ServerRefused && SEAL_RETRY_CODES.includes(err.code)) return notSealedYet(`${err.code}: ${err.message}`);
       if (err instanceof ServerRefused) {
         this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
-        throw new LocalError(err.code, err.message);
+        throw new LocalError(err.code, err.code === "seal_root_mismatch" ? `${err.message}. ${compareTranscripts(toHex(sessionId))}` : err.message);
       }
       throw err;
     }
@@ -2075,13 +2173,13 @@ export class Engine {
     }
     const head = record.log.head.fields;
     this.#store.transaction(() => {
-      this.#store.addSeal(agent.signer.id, sealId(record.certificate.fields), sessionId, JSON.stringify(answer.record));
+      this.#store.addSeal(agent.signer.id, sealId(record.certificate.bytes), sessionId, JSON.stringify(answer.record));
       this.#store.removeSealWant(agent.signer.id, sessionId, wanted);
       this.#store.setConfig(this.#pinKey(CONFIG_SEAL_KEY, route.url), toHex(head.sealKeyId));
       if (head.size > (this.#knownSealLogHead(route.url)?.size ?? 0)) this.#store.setConfig(this.#pinKey(CONFIG_SEAL_LOG_HEAD, route.url), JSON.stringify({ size: head.size, root: toB64(head.root) }));
     });
     logEvent("seal.stored", { agent: agent.hex, session: toHex(sessionId), through });
-    return { sealed: true, ...sealSummary(record), statement: describeSeal(record) };
+    return { sealed: true, ...sealSummary(record), statement: describeSeal(record), note: SEAL_NOTE };
   }
 
   #knownSealLogHead(url: string): { size: number; root: Uint8Array } | undefined {
@@ -2107,7 +2205,7 @@ export class Engine {
     const check = await checkSealRecord(raw, sealKeyId);
     if (!check.ok) throw new LocalError(check.fault, check.message);
     const cert = check.record.certificate.fields;
-    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", `the server sealed a different history from the one you hold at position ${through}`);
+    if (!equalBytes(cert.root, root)) throw new LocalError("seal_root_mismatch", sealMismatchMessage(through, toHex(local.session_id)));
     const subject = equalBytes(cert.sessionId, local.session_id) && equalBytes(cert.sealerId, agent.signer.id) && equalBytes(cert.counterpartyId, local.counterparty_id) && cert.throughPosition === through;
     if (!subject) throw new LocalError("seal_wrong_subject", "the server's certificate isn't for this seal: its session, parties or position differ");
     if (cert.tip < local.verified_position || (local.state === "closed" && cert.closed !== 1)) {
@@ -2182,7 +2280,7 @@ export class Engine {
     const built = await buildTranscript({
       ...choice,
       session: toHex(local.session_id),
-      sealCommand: `cello-v2 seal ${toHex(local.session_id)} --agent ${agent.name}`,
+      sealCommand: `cello seal ${toHex(local.session_id)} --agent ${agent.name}`,
       entries: this.#store.verifiedEntries(agent.signer.id, local.session_id, local.verified_position).map((row) => ({
         position: row.position as number,
         entry: JSON.parse(row.entry) as WireSigned,
@@ -2198,18 +2296,84 @@ export class Engine {
 
   // ---- What agents and people ask for ----
 
-  async createAgent(name: string): Promise<unknown> {
-    if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
-    if ([...this.#agents.values()].some((a) => a.name === name)) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
-    const seeds = generateIdentitySeeds();
-    const signer = await signerFromSeeds(seeds);
+  #newAgent(name: string, seeds: ReturnType<typeof generateIdentitySeeds>, signer: Signer, awaitingSignal: boolean): AgentContext {
     this.#store.insertAgent(signer.id, name, seeds.ed, seeds.pq);
-    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, online: false, statuses: new Map() };
+    if (awaitingSignal) this.#store.setAwaitingSignal(signer.id, true);
+    const agent: AgentContext = { signer, hex: toHex(signer.id), name, registered: false, awaitingSignal, online: false, statuses: new Map() };
     this.#agents.set(agent.hex, agent);
     this.governance.writeDefaults(signer.id);
+    return agent;
+  }
+
+  #describeNew(agent: AgentContext): Record<string, unknown> {
+    const note = agent.online ? {} : { note: `saved, but not online yet: ${agent.problem ?? this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
+    return { name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
+  }
+
+  #checkNewName(name: string): void {
+    if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
+  }
+
+  async #signalThenOnline(agent: AgentContext, get: () => Promise<Collected>): Promise<Collected> {
+    const got = await get();
+    if (!this.wallet.hasEmail(agent.hex)) {
+      const why = got.refused.map((r) => r.message).join("; ") || "it sent none";
+      throw new LocalError("no_email_signal", `The issuer didn't give this agent a verified email signal it could keep: ${why}. Nothing was registered. Run the same command again, and if it says the same, write to support@celloprotocol.com.`);
+    }
+    agent.awaitingSignal = false;
+    this.#store.setAwaitingSignal(agent.signer.id, false);
     if (this.#server) await this.#bringOnline(agent, this.#server);
-    const note = agent.online ? {} : { note: `saved, but not online yet: ${this.#link.problem ?? "the server didn't take it"}. It registers by itself once the server is reachable.` };
-    return { name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
+    return got;
+  }
+
+  // A second agent gets copies from the one already enrolled. With nothing to vouch for it, it registers bare, and a server that requires a signal refuses it by name.
+  async createAgent(name: string): Promise<unknown> {
+    this.#checkNewName(name);
+    const existing = [...this.#agents.values()].find((a) => a.name === name);
+    if (existing && !existing.awaitingSignal) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
+    if (existing) return this.#enrollExisting(existing, undefined);
+    const holder = this.wallet.holderAmong([...this.#agents.keys()]);
+    const seeds = generateIdentitySeeds();
+    const signer = await signerFromSeeds(seeds);
+    const agent = this.#newAgent(name, seeds, signer, holder !== undefined);
+    if (holder) return this.#enrollExisting(agent, undefined);
+    if (this.#server) await this.#bringOnline(agent, this.#server);
+    return this.#describeNew(agent);
+  }
+
+  async #enrollExisting(agent: AgentContext, code: string | undefined): Promise<unknown> {
+    const holder = this.wallet.holderAmong([...this.#agents.keys()].filter((hex) => hex !== agent.hex));
+    const got = await this.#signalThenOnline(agent, async () => {
+      if (holder) return this.wallet.copyFromHolder(agent.hex, holder);
+      // A first answer that was lost, or a signal that has lapsed: the issuer may already know this agent, which spends no code.
+      try {
+        const collected = await this.wallet.collect(agent.hex);
+        if (this.wallet.hasEmail(agent.hex)) return collected;
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
+      }
+      if (!code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
+      return this.wallet.redeem(agent.hex, code);
+    });
+    return { ...this.#describeNew(agent), signals_held: got.held, signals_refused: got.refused };
+  }
+
+  // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
+  async enrollAgent(name: string | undefined, code: string | undefined): Promise<unknown> {
+    const agents = [...this.#agents.values()];
+    const chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
+    if (chosen && this.wallet.hasEmail(chosen.hex)) {
+      if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
+      return { ...this.#describeNew(chosen), already_set_up: true };
+    }
+    if (chosen) return this.#enrollExisting(chosen, code);
+    const newName = name ?? DEFAULT_AGENT_NAME;
+    this.#checkNewName(newName);
+    const holder = this.wallet.holderAmong(agents.map((a) => a.hex));
+    if (!holder && !code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
+    const seeds = generateIdentitySeeds();
+    const signer = await signerFromSeeds(seeds);
+    return this.#enrollExisting(this.#newAgent(newName, seeds, signer, true), code);
   }
 
   // What channels.ts needs from here. It shares an agent's keys and the server link, and nothing about any conversation.
@@ -2226,7 +2390,7 @@ export class Engine {
       screen: (agentHex, scope, position, senderHex, text) => new Promise((resolve) => {
         this.#nextChannelJob -= 1;
         // The worker reads the shape a message body has. Anything else, it takes as text nobody can read and passes unscanned.
-        const bytes = new TextEncoder().encode(JSON.stringify({ text }));
+        const bytes = bodyBytes({ n: new Uint8Array(0), text, signal: null, est_minutes: null });
         this.#screening.add({ entryId: this.#nextChannelJob, agentHex, sessionHex: scope, position, senderHex, bytes: bytes.length, arrived: Date.now(), channelText: { bytes, done: resolve } });
       }),
       screenOutbound: async (agentHex, text, params, retry) => {
@@ -2240,7 +2404,7 @@ export class Engine {
     const byId = this.#agents.get(nameOrId);
     if (byId) return byId.hex;
     for (const agent of this.#agents.values()) if (agent.name === nameOrId) return agent.hex;
-    throw new LocalError("unknown_agent", `no agent named ${nameOrId} on this machine`);
+    throw new LocalError("unknown_agent", noAgentGuidance(nameOrId));
   }
 
   agentName(agentHex: string): string {
@@ -2254,7 +2418,7 @@ export class Engine {
     // You blocked them, so calling them is a stop sign. A person can drive through it, once.
     const dialled = /^[0-9a-fA-F]{64}/.exec(target)?.[0];
     if (dialled && this.governance.contacts.tierOf(agent.signer.id, parseHex(dialled, 32, "target")) === TIER.BLOCKED) {
-      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello-v2 initiate-session ${target} --agent ${agent.hex}`);
+      requirePerson(params, `${agent.name} has blocked this agent, and this would call it anyway.`, `cello initiate-session ${target} --agent ${agent.hex}`);
     }
     let address: ReturnType<typeof parseAddress>;
     try {
@@ -2292,7 +2456,7 @@ export class Engine {
       mlKemPublic: own.mlKemPublic,
       expiresAt: Date.now() + this.#settings.offer_lifetime_minutes * 60_000,
     };
-    const signature = await agent.signer.sign("cello-v2-session-offer", offerBytes(fields));
+    const signature = await agent.signer.sign("cello-session-offer", offerBytes(fields));
     const offer = signedOffer.encode({ fields, signature });
     const activated = new Promise<void>((resolve) => this.#activation.set(agent.hex + sessionHex, resolve));
     await this.#lane(agentHex, sessionHex, async () => {
@@ -2348,6 +2512,7 @@ export class Engine {
     const reads: { sessionId: Uint8Array; through: number }[] = [];
     const screening: unknown[] = [];
     const policies: unknown[] = [];
+    const guidance: { session_id: string; text: string }[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
     for (const local of sessions) {
@@ -2358,30 +2523,46 @@ export class Engine {
       const page = this.#store.unreadPage(agent.signer.id, local.session_id, local.read_position, room);
       const unread = page.rows;
       more ||= page.more;
+      // The newest signal says whose move it is. A close after it only leaves wrap standing: they've gone, so nobody expects a reply.
+      let lastSignal: unknown = null;
+      let blocked = 0;
+      const lag = this.#replyLag(agent, local, unread);
       for (const row of unread) {
         room -= row.body.length;
         const closing = signedEntry.decode(JSON.parse(row.entry)).fields.kind === EntryKind.close;
+        const shown = shownMessage(row, closing);
+        lastSignal = closing ? (lastSignal === "wrap" ? "wrap" : null) : shown["signal"] ?? null;
+        if (shown["blocked"] === true) blocked += 1;
         messages.push({
           session_id: toHex(local.session_id),
           from: this.#who(agent, local),
           from_id: toHex(local.counterparty_id),
           position: row.position,
-          ...shownMessage(row, closing),
+          ...shown,
         });
       }
+      let hasPolicy = false;
       if (unread.length > 0) {
         reads.push({ sessionId: local.session_id, through: (unread.at(-1) as EntryRow).position as number });
         const conduct = this.governance.conductFor(agent.signer.id, toHex(local.session_id), toHex(local.counterparty_id), this.governance.contacts.tierOf(agent.signer.id, local.counterparty_id), unread.length);
-        if (Object.keys(conduct).length > 0) policies.push({ session_id: toHex(local.session_id), ...conduct });
+        if (Object.keys(conduct).length > 0) {
+          policies.push({ session_id: toHex(local.session_id), ...conduct });
+          hasPolicy = true;
+        }
       }
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
+      if (unread.length > 0) {
+        for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || Boolean(held), finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
+          guidance.push({ session_id: toHex(local.session_id), text });
+        }
+      }
     }
     const notices = this.#store.notices(agent.signer.id);
     const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
     const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
-      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -2394,6 +2575,21 @@ export class Engine {
         });
       },
     };
+  }
+
+  // Their newest replies, counted back from the end, that were signed without having seen a message of yours.
+  #replyLag(agent: AgentContext, local: SessionRow, rows: readonly EntryRow[]): { replies: number; unseenPosition: number } | undefined {
+    let replies = 0;
+    let unseenPosition: number | undefined;
+    for (const row of [...rows].reverse()) {
+      const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
+      if (fields.kind === EntryKind.close) continue;
+      const unseen = this.#store.firstOwnBetween(agent.signer.id, local.session_id, fields.readPosition, row.position as number);
+      if (unseen === undefined) break;
+      replies += 1;
+      unseenPosition ??= unseen;
+    }
+    return unseenPosition === undefined ? undefined : { replies, unseenPosition };
   }
 
   // These four only read. None moves a read position, so looking never counts as reading.
@@ -2458,7 +2654,8 @@ export class Engine {
         ...shownMessage(row, closing),
       };
     });
-    return { session_id: toHex(local.session_id), with: this.#who(agent, local), with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(page.more ? { more: true } : {}) };
+    const refused = entries.filter((entry) => (entry as { blocked?: boolean }).blocked === true).length;
+    return { session_id: toHex(local.session_id), with: this.#who(agent, local), with_id: toHex(local.counterparty_id), state: local.state, read_position: local.read_position, entries, ...(refused > 0 ? { quarantined_count: refused, quarantined_guidance: refusedGuidance(refused) } : {}), ...(page.more ? { more: true } : {}) };
   }
 
   // What can be read right now. A message still being screened isn't in it, or a caller would be told to read and find nothing.
@@ -2475,7 +2672,7 @@ export class Engine {
     const items: WitnessedEntry[] = this.#store.signedRecord(agent.signer.id, local.session_id, local.verified_position).map((row) => {
       const entry = signedEntry.decode(JSON.parse(row.entry));
       const ack = signedAck.decode(JSON.parse(row.ack as string));
-      return { fields: entry.fields, signature: entry.signature, ack: ack.fields, ackSignature: ack.signature };
+      return witnessed(entry, ack);
     });
     const report = await verifyTranscript({ sessionId: local.session_id, server: this.#serverIdentity(this.#urlOf(local)), participants: [agent.signer.publicIdentity, this.#counterpartyKeys(local)] }, items);
     return { ok: report.ok, position: report.position, root: toHex(report.root), fault: report.fault ?? null, fault_at: report.faultAt ?? null };

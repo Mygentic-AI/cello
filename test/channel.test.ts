@@ -41,7 +41,7 @@ async function makePost(signer: Signer, channel: Uint8Array, seq: number, over: 
   const title = ENC.encode("title");
   const body = ENC.encode("Approved");
   const fields: ChannelPostFields = { channelId: channel, generation: 1, authorId: signer.id, authorSeq: seq, publishedAt: 1000, titleHash: hashBlob(title), bodyHash: hashBlob(body), ...over };
-  const signature = await signer.sign("cello-v2-channel-post", channelPostBytes(fields));
+  const signature = await signer.sign("cello-channel-post", channelPostBytes(fields));
   return { post: channelPostCodec.encode({ fields, signature }), title: toB64(title), body: toB64(body) };
 }
 
@@ -52,7 +52,7 @@ test("a record proves itself: another channel's id or someone else's signature i
   assert.ok(await readRecord(file, channel.id));
   assert.equal(await readRecord(file, (await newSigner()).id), null, "another channel's id");
   const stranger = await newSigner();
-  assert.equal(await readRecord({ ...file, adminSignature: signatureCodec.encode(await stranger.sign("cello-v2-channel-record", new Uint8Array(1))) }, channel.id), null, "someone else's signature");
+  assert.equal(await readRecord({ ...file, adminSignature: signatureCodec.encode(await stranger.sign("cello-channel-record", new Uint8Array(1))) }, channel.id), null, "someone else's signature");
   assert.equal(await readRecord({ ...file, admin: identityCodec.encode(stranger.publicIdentity) }, channel.id), null, "someone else claiming to be its admin");
 });
 
@@ -98,7 +98,7 @@ test("the roster keeps a server out: a swapped member key, an added member or a 
 
   // Alice's identity with Mallory's key, signed by Mallory: what it would take to be handed the group key.
   const fields = { channelId: channel.id, agentId: alice.id, x25519Public: malloryKeys.x25519Public, mlKemPublic: malloryKeys.mlKemPublic, requestedAt: 1 };
-  const swapped: RosterMemberFile = { identity: identityCodec.encode(alice.publicIdentity), memberKey: channelMemberKeyCodec.encode({ fields, signature: await mallory.sign("cello-v2-channel-member-key", channelMemberKeyBytes(fields)) }) };
+  const swapped: RosterMemberFile = { identity: identityCodec.encode(alice.publicIdentity), memberKey: channelMemberKeyCodec.encode({ fields, signature: await mallory.sign("cello-channel-member-key", channelMemberKeyBytes(fields)) }) };
   assert.equal(await readRoster(await signRoster(channel, null, 1, [swapped]), channel.publicIdentity), null, "a member key its member didn't sign");
   assert.equal(await readRoster({ ...first, members: [swapped] }, channel.publicIdentity), null, "members changed under the channel key's signature");
   assert.equal(await readRoster({ ...first, members: [honest, await signMemberKey(mallory, channel.id, malloryKeys, 1)] }, channel.publicIdentity), null, "a member added under the signature");
@@ -106,7 +106,7 @@ test("the roster keeps a server out: a swapped member key, an added member or a 
   assert.equal(await readRoster(await signRoster(channel, null, 1, [await signMemberKey(alice, (await newSigner()).id, aliceKeys, 1)]), channel.publicIdentity), null, "a member key signed for another channel");
 
   // Key order must not matter: the database reorders stored JSON.
-  const reordered = JSON.parse(JSON.stringify({ members: first.members.map((m) => ({ memberKey: { signature: m.memberKey.signature, fields: m.memberKey.fields }, identity: m.identity })), roster: first.roster })) as unknown;
+  const reordered = JSON.parse(JSON.stringify({ members: first.members.map((m) => ({ memberKey: { signature: m.memberKey.signature, bytes: m.memberKey.bytes }, identity: m.identity })), roster: first.roster })) as unknown;
   assert.ok(await readRoster(reordered, channel.publicIdentity), "the same roster with its JSON keys reordered");
 
   const second = await readRoster(await signRoster(channel, { revision: checked.fields.revision, hash: checked.hash }, 1, []), channel.publicIdentity);

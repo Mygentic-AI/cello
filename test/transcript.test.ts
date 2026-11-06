@@ -1,5 +1,7 @@
 // A forged file or a wrong statement wouldn't show against honest parties, so these lie on purpose.
 // Some forgeries use stolen server and seal keys: the worst case for what the file claims is bound.
+import { type Body, bodyBytes, readBodyBytes, refusedList } from "../src/protocol/structures.ts";
+import { editSigned, sessionOpening } from "./edit-signed.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -9,8 +11,8 @@ import { RunningMerkle, consistencyPath } from "../src/protocol/merkle.ts";
 import { saltedContentHash } from "../src/protocol/salt.ts";
 import { type SealRecordOnWire, SEAL_RECORD_FORMAT, encodeHashes, sealId } from "../src/protocol/seal.ts";
 import { EntryKind, EntryMode, type EntryFields, type SealCertificateFields, ackBytes, ciphertextHash, deliveryAckBytes, entryBytes, entryHash, sealCertificateBytes, sealKeyBindingBytes, sealLogHeadBytes, sealRequestBytes, structureHash } from "../src/protocol/structures.ts";
-import { type HeldEntry, type TranscriptOnWire, type TranscriptRequest, buildTranscript, checkTranscript, readBody } from "../src/protocol/transcript.ts";
-import { fromB64, identityCodec, signatureCodec, signedAck, signedDeliveryAck, signedEntry, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "../src/protocol/wire.ts";
+import { type HeldEntry, type TranscriptOnWire, type TranscriptRequest, TRANSCRIPT_FORMAT, buildTranscript, checkTranscript, readBody } from "../src/protocol/transcript.ts";
+import { type WireSigned, fromB64, identityCodec, signatureCodec, signedAck, signedDeliveryAck, signedEntry, signedSealCertificate, signedSealLogHead, signedSealRequest, toB64 } from "../src/protocol/wire.ts";
 
 interface Cast { sealKey: Signer; server: Signer; alice: Signer; bob: Signer; carol: Signer }
 
@@ -23,7 +25,7 @@ const SESSION = new Uint8Array(16).fill(7);
 const SALT = new Uint8Array(randomBytes(32));
 
 function bodyOf(text: string, signal: string | null = "over"): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ n: toB64(new Uint8Array(randomBytes(16))), text, signal, est_minutes: null }));
+  return bodyBytes({ n: new Uint8Array(randomBytes(16)), text, signal: signal as Body["signal"], est_minutes: null });
 }
 
 interface Line { author: Signer; body: Uint8Array; kind?: EntryKind }
@@ -39,6 +41,7 @@ async function chainOf(c: Cast, lines: readonly Line[], sessionId = SESSION, sal
     const head = heads.get(line.author);
     const position = held.length + 1;
     const fields: EntryFields = {
+      serverId: c.server.id,
       sessionId,
       authorId: line.author.id,
       authorSeq: (head?.seq ?? 0) + 1,
@@ -59,8 +62,8 @@ async function chainOf(c: Cast, lines: readonly Line[], sessionId = SESSION, sal
     const ack = { serverId: c.server.id, sessionId, position, entryHash: hash, root, time: 1_000 + position };
     held.push({
       position,
-      entry: signedEntry.encode({ fields, signature: await line.author.sign("cello-v2-entry", entryBytes(fields)) }),
-      ack: signedAck.encode({ fields: ack, signature: await c.server.sign("cello-v2-ack", ackBytes(ack)) }),
+      entry: signedEntry.encode({ fields, signature: await line.author.sign("cello-entry", entryBytes(fields)) }),
+      ack: signedAck.encode({ fields: ack, signature: await c.server.sign("cello-ack", ackBytes(ack)) }),
       body: line.body,
     });
   }
@@ -82,6 +85,7 @@ interface SealOptions {
   // What the counterparty really signed, when the chain in the seal is a rewritten one.
   ackedHashes?: readonly Uint8Array[];
   ackEntryHash?: Uint8Array;
+  refused?: number[];
 }
 
 async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionId = SESSION): Promise<SealRecordOnWire> {
@@ -89,9 +93,9 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
   const ackThrough = options.ackThrough === undefined ? n : options.ackThrough;
   const hashes = chain.hashes;
   const acked = options.ackedHashes ?? hashes;
-  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, throughPosition: n, root: rootOf(hashes, n) };
+  const request = { serverId: c.server.id, sessionId, sealerId: c.alice.id, counterpartyId: c.bob.id, throughPosition: n, root: rootOf(hashes, n) };
   const requestBytes = sealRequestBytes(request);
-  const ack = ackThrough === null ? null : { sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0 };
+  const ack = ackThrough === null ? null : { serverId: c.server.id, sessionId, readerId: c.bob.id, throughPosition: ackThrough, entryHash: options.ackEntryHash ?? acked[ackThrough - 1] as Uint8Array, root: rootOf(acked, ackThrough), screenedThrough: 0, refused: refusedList(options.refused ?? []) };
   const fields: SealCertificateFields = {
     sealKeyId: c.sealKey.id,
     serverId: c.server.id,
@@ -102,32 +106,33 @@ async function sealOf(c: Cast, chain: Chain, options: SealOptions = {}, sessionI
     root: request.root,
     throughPosition: n,
     tip: options.tip ?? n,
-    closed: options.closed ?? 1,
+    closed: options.closed ?? 0,
     receivedThrough: ack ? Math.min(ack.throughPosition, n) : 0,
     deliveryAckHash: ack ? structureHash(deliveryAckBytes(ack)) : ZERO_HASH,
     time: options.time ?? 5_000,
   };
   const log = new RunningMerkle();
   const path = log.nextLeafPath();
-  const head = { sealKeyId: c.sealKey.id, size: 1, root: log.append(sealId(fields)), time: 5_000 };
+  const head = { sealKeyId: c.sealKey.id, size: 1, root: log.append(sealId(sealCertificateBytes(fields))), time: 5_000 };
   const proof = ack === null || ack.throughPosition === n ? [] : consistencyPath(hashes.slice(0, Math.max(n, ack.throughPosition)), Math.min(n, ack.throughPosition));
   return {
     format: SEAL_RECORD_FORMAT,
-    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-v2-seal-certificate", sealCertificateBytes(fields)) }),
-    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-v2-seal-request", requestBytes) }),
-    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-v2-delivery-ack", deliveryAckBytes(ack)) }) : null,
+    certificate: signedSealCertificate.encode({ fields, signature: await c.sealKey.sign("cello-seal-certificate", sealCertificateBytes(fields)) }),
+    request: signedSealRequest.encode({ fields: request, signature: await c.alice.sign("cello-seal-request", requestBytes) }),
+    ...(await sessionOpening(c.server, sessionId, c.alice, c.bob)),
+    deliveryAck: ack ? signedDeliveryAck.encode({ fields: ack, signature: await c.bob.sign("cello-delivery-ack", deliveryAckBytes(ack)) }) : null,
     deliveryProof: encodeHashes(proof),
     sealer: identityCodec.encode(c.alice.publicIdentity),
     counterparty: identityCodec.encode(c.bob.publicIdentity),
     sealKey: identityCodec.encode(c.sealKey.publicIdentity),
     server: identityCodec.encode(c.server.publicIdentity),
-    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-v2-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
-    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-v2-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
+    sealKeyBinding: signatureCodec.encode(await c.server.sign("cello-seal-key-binding", sealKeyBindingBytes({ serverId: c.server.id, sealKeyId: c.sealKey.id }))),
+    log: { index: 0, head: signedSealLogHead.encode({ fields: head, signature: await c.sealKey.sign("cello-seal-log-head", sealLogHeadBytes(head)) }), path: encodeHashes(path) },
   };
 }
 
 function request(chain: Chain, seals: readonly SealRecordOnWire[], choice: Partial<TranscriptRequest>): TranscriptRequest {
-  return { session: "s", sealCommand: "cello-v2 seal s --agent Alice", entries: chain.held, seals, salt: SALT, reveal: undefined, all: false, sealId: undefined, ...choice };
+  return { session: "s", sealCommand: "cello seal s --agent Alice", entries: chain.held, seals, salt: SALT, reveal: undefined, all: false, sealId: undefined, ...choice };
 }
 
 async function exported(chain: Chain, seal: SealRecordOnWire, choice: Partial<TranscriptRequest> = { all: true }): Promise<TranscriptOnWire> {
@@ -179,7 +184,7 @@ test("everything revealed: each message says who wrote it and what it rests on, 
   assert.match(statement["rests_on_the_sender_and_the_server"] as string, /Positions 4: the counterparty's signature on the entry stands behind the words/);
   assert.match(statement["rests_on_the_sender_and_the_server"] as string, /Positions 5: only the signature of the person who made this file/);
   assert.match(statement["who_chose"] as string, /one party.*chose what to reveal/);
-  assert.match(statement["hidden"] as string, /Nothing is hidden/);
+  assert.match(statement["hidden"] as string, /hadn't closed/);
   assert.match(statement["ciphertext"] as string, /isn't checked here/);
   assert.doesNotMatch(JSON.stringify(statement), /proves? (that )?.*(true|agreed)\b/i);
 });
@@ -234,8 +239,8 @@ test("each forgery fails by name", async () => {
 
   // A body attributed to the wrong author, three ways. The file carries no author beside a body.
   await expect("malformed_transcript", (f) => { (f.revealed[0] as unknown as Record<string, string>)["author"] = "someone else"; });
-  await expect("ack_wrong_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.bob.id); });
-  await expect("not_participant", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.carol.id); });
+  await expect("ack_wrong_entry", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = c.bob.id; }); });
+  await expect("not_participant", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = c.carol.id; }); });
 
   // An entry from another session, with the same parties.
   const elsewhere = await chainOf(c, conversation(c), new Uint8Array(16).fill(8));
@@ -257,11 +262,11 @@ test("each forgery fails by name", async () => {
 
   // A wrong salt can't open anything. A bad seal is still caught by the seal's own checks.
   await expect("body_does_not_match", (f) => { f.salt = toB64(new Uint8Array(32).fill(1)); });
-  await expect("bad_seal_signature", (f) => { (f.seal.certificate.fields as Record<string, number>)["receivedThrough"] = 5; });
-  await expect("malformed_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, number>)["kind"] = 9; });
+  await expect("bad_seal_signature", (f) => { editSigned(f.seal.certificate, signedSealCertificate, (s) => { s.receivedThrough = 5; }); });
+  await expect("malformed_transcript", (f) => { f.entries[0]!.entry.bytes = "AA"; });
 
   // Things nobody can read.
-  await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["format"] = "cello-v2-seal"; });
+  await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["format"] = "cello-seal"; });
   await expect("malformed_transcript", (f) => { (f as unknown as Record<string, number>)["salt"] = 1; });
   await expect("malformed_transcript", (f) => { (f as unknown as Record<string, string>)["verified"] = "yes"; });
   assert.equal(await faultOf(c, "not an object"), "malformed_transcript");
@@ -309,7 +314,7 @@ test("stolen server and seal keys can't touch what the counterparty signed, and 
 
   // Words with Bob's name on them need Bob's key, even above M.
   const asBob = structuredClone(await exported(rewritten, above));
-  (asBob.entries[4]?.entry.fields as Record<string, string>)["authorId"] = toB64(c.bob.id);
+  editSigned(asBob.entries[4]!.entry, signedEntry, (s) => { s.authorId = c.bob.id; });
   assert.equal(await faultOf(c, asBob), "ack_wrong_entry");
 });
 
@@ -330,16 +335,16 @@ test("the salt: an exact length, and guesses about a hidden body need its random
   const hidden = chain.held[1] as HeldEntry;
   const target = signedEntry.decode(hidden.entry).fields.contentHash;
   const salt = fromB64(file.salt, "salt");
-  const guess = (n: string): Uint8Array => saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "I offer $1M", signal: "over", est_minutes: null })));
-  assert.notDeepEqual(guess(toB64(new Uint8Array(16))), target);
+  const guess = (n: Uint8Array): Uint8Array => saltedContentHash(salt, bodyBytes({ n, text: "I offer $1M", signal: "over", est_minutes: null }));
+  assert.notDeepEqual(guess(new Uint8Array(16)), target);
   // With the random value the same guess does match, which is what shows this test can fail.
-  assert.deepEqual(guess((JSON.parse(new TextDecoder().decode(hidden.body as Uint8Array)) as { n: string }).n), target);
+  assert.deepEqual(guess(readBodyBytes(hidden.body as Uint8Array)!.n), target);
 });
 
 test("a hidden body with no random value can be guessed at, so it's refused until it's shown", async () => {
   const c = await cast();
-  const noValue = new TextEncoder().encode(JSON.stringify({ text: "yes", signal: "over", est_minutes: null }));
-  const shortValue = new TextEncoder().encode(JSON.stringify({ n: "AAAA", text: "no", signal: "over", est_minutes: null }));
+  const noValue = bodyBytes({ n: new Uint8Array(0), text: "yes", signal: "over", est_minutes: null });
+  const shortValue = bodyBytes({ n: new Uint8Array(3), text: "no", signal: "over", est_minutes: null });
   const chain = await chainOf(c, [
     { author: c.alice, body: bodyOf("Do you accept?") },
     { author: c.bob, body: noValue },
@@ -358,7 +363,7 @@ test("a hidden body with no random value can be guessed at, so it's refused unti
 test("a body that can't be parsed is still a body its author signed, and it's shown as it is", async () => {
   const c = await cast();
   const repeated = new TextEncoder().encode(`{"n":"${toB64(new Uint8Array(16))}","text":"yes","text":"no","signal":"over"}`);
-  const closeWithWords = new TextEncoder().encode(JSON.stringify({ n: toB64(new Uint8Array(16)), text: "and another thing", signal: null, est_minutes: null }));
+  const closeWithWords = bodyBytes({ n: new Uint8Array(16), text: "and another thing", signal: null, est_minutes: null });
   const raw = [
     new Uint8Array([0xff, 0xfe, 0x00]),
     new TextEncoder().encode("not json"),
@@ -369,9 +374,9 @@ test("a body that can't be parsed is still a body its author signed, and it's sh
   const chain = await chainOf(c, [
     ...raw.map((body) => ({ author: c.bob, body })),
     { author: c.bob, body: closeWithWords, kind: EntryKind.close },
-    { author: c.bob, body: new Uint8Array([0xff]), kind: EntryKind.close },
+    { author: c.alice, body: new Uint8Array([0xff]), kind: EntryKind.close },
   ]);
-  const { messages } = await reportOf(c, await exported(chain, await sealOf(c, chain)));
+  const { messages } = await reportOf(c, await exported(chain, await sealOf(c, chain, { closed: 1 })));
   for (const [i, body] of raw.entries()) {
     assert.deepEqual([messages[i]?.unreadable, messages[i]?.text, messages[i]?.body_base64url], [true, undefined, toB64(body)], `body ${i}`);
   }
@@ -394,7 +399,7 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
 
   const none = await buildTranscript(request(chain, [], { all: true }));
   assert.deepEqual(none.ok ? null : none.fault, "no_seal_covers");
-  assert.match(none.ok ? "" : none.message, /Run: cello-v2 seal s --agent Alice/);
+  assert.match(none.ok ? "" : none.message, /Run: cello seal s --agent Alice/);
   assert.equal(await faultFor([part], { all: true }), "no_seal_covers", "all can't quietly mean less than everything held");
   assert.equal(await faultFor([part], { reveal: "4" }), "no_seal_covers");
   assert.equal(await faultFor([whole], { reveal: "1-99999999999" }), "no_seal_covers");
@@ -407,7 +412,7 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
     return built.file.entries.length;
   };
   assert.equal(await pick({ reveal: "1" }), 5);
-  const partId = Buffer.from(sealId(signedSealCertificate.decode(part.certificate).fields)).toString("hex");
+  const partId = Buffer.from(sealId(signedSealCertificate.decode(part.certificate).bytes)).toString("hex");
   assert.equal(await pick({ reveal: "1", sealId: partId }), 3);
   assert.equal(await pick({ all: true, sealId: partId }), 3, "all with a named seal means all that seal covers");
 
@@ -424,4 +429,46 @@ test("exporting needs an explicit choice and a seal that covers it", async () =>
   assert.deepEqual(noAck.ok ? null : noAck.fault, "record_incomplete");
   const wrongSalt = await buildTranscript(request(chain, [whole], { all: true, salt: new Uint8Array(32).fill(1) }));
   assert.deepEqual(wrongSalt.ok ? null : wrongSalt.fault, "export_failed_own_check");
+});
+
+// A hostile server, using only its own keys over a real chain: both of these used to pass every check.
+test("a seal dated before its messages, and closed with no close entries, are refused", async () => {
+  const c = await cast();
+  const lines = [{ author: c.alice, body: bodyOf("hello") }, { author: c.bob, body: bodyOf("hi") }];
+  const chain = await chainOf(c, lines);
+  assert.equal(await faultOf(c, await exported2(chain, await sealOf(c, chain, { closed: 0 }))), null, "the honest one passes");
+  assert.equal(await faultOf(c, await exported2(chain, await sealOf(c, chain, { closed: 0, time: 1 }))), "seal_predates_entries");
+  assert.equal(await faultOf(c, await exported2(chain, await sealOf(c, chain, { closed: 1 }))), "closed_without_close_entries");
+
+  const closed = await chainOf(c, [...lines, { author: c.alice, body: bodyOf("", null), kind: EntryKind.close }, { author: c.bob, body: bodyOf("", null), kind: EntryKind.close }]);
+  assert.equal(await faultOf(c, await exported2(closed, await sealOf(c, closed, { closed: 1 }))), null, "a real close passes");
+  assert.match((await reportOf(c, await exported2(closed, await sealOf(c, closed, { closed: 1 })))).statement["hidden"] as string, /Nothing is hidden/);
+  assert.equal(await faultOf(c, await exported2(closed, await sealOf(c, closed, { closed: 0 }))), "closed_without_close_entries", "and hiding one is caught too");
+  const partial = await sealOf(c, closed, { n: 2, tip: 4, closed: 1 });
+  assert.equal(await faultOf(c, await exported2(closed, partial)), null, "a partial seal of a closed session can't show the closes, and doesn't have to");
+});
+
+// Builds the file without the export's own check, so the reader's check is what's under test.
+async function exported2(chain: Chain, seal: SealRecordOnWire): Promise<TranscriptOnWire> {
+  const n = signedSealCertificate.decode(seal.certificate).fields.throughPosition;
+  const covered = chain.held.slice(0, n);
+  return { format: TRANSCRIPT_FORMAT, seal, entries: covered.map((row) => ({ entry: row.entry, ack: row.ack as WireSigned })), salt: toB64(SALT), revealed: covered.map((row) => ({ position: row.position, body: toB64(row.body as Uint8Array) })) };
+}
+
+// A hostile author signs a hash of words it never sent, then shows those words with the salt. The reader's signed list is what answers it.
+test("words the counterparty refused don't read as received, and the refusal can't be cut out", async () => {
+  const c = await cast();
+  const chain = await chainOf(c, [{ author: c.alice, body: bodyOf("hello") }, { author: c.alice, body: bodyOf("Bob agrees to pay $1M") }, { author: c.bob, body: bodyOf("hi") }]);
+  const seal = await sealOf(c, chain, { refused: [2] });
+  const file = await exported(chain, seal);
+  const { messages, statement } = await reportOf(c, file);
+  assert.deepEqual(messages.map((m) => m.basis), ["counterparty_signature", "refused_by_counterparty", "counterparty_signature"]);
+  assert.match(statement["refused_by_the_counterparty"] as string, /Positions 2:/);
+  assert.doesNotMatch(statement["bound_by_the_counterparty_signature"] as string, /Positions 1-3|, 2/);
+
+  const cut = structuredClone(file);
+  editSigned(cut.seal.deliveryAck as WireSigned, signedDeliveryAck, (s) => { s.refused = new Uint8Array(0); });
+  assert.equal(await faultOf(c, cut), "delivery_ack_mismatch", "the certificate names the ack as signed");
+  const unsigned = await sealOf(c, chain, {});
+  assert.equal((await reportOf(c, await exported(chain, unsigned))).messages[1]?.basis, "counterparty_signature");
 });

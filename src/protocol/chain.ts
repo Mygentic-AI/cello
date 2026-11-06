@@ -3,20 +3,31 @@
 import { ZERO_HASH, equalBytes, toHex } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, identityId, verifySignature } from "./identity.ts";
 import { EMPTY_ROOT, RunningMerkle } from "./merkle.ts";
-import { type AckFields, type EntryFields, ackBytes, entryBytes, entryHash } from "./structures.ts";
+import { type AckFields, type EntryFields, EntryKind, structureHash } from "./structures.ts";
+import type { Signed } from "./wire.ts";
 
 export interface WitnessedEntry {
   fields: EntryFields;
   signature: DualSignature;
+  // The bytes each signature covers, as received. Verifying over these means a later encoder can't turn an old record into a forgery.
+  bytes: Uint8Array;
   ack: AckFields;
   ackSignature: DualSignature;
+  ackBytes: Uint8Array;
+}
+
+export function witnessed(entry: Signed<EntryFields>, ack: Signed<AckFields>): WitnessedEntry {
+  return { fields: entry.fields, signature: entry.signature, bytes: entry.bytes, ack: ack.fields, ackSignature: ack.signature, ackBytes: ack.bytes };
 }
 
 export type ChainFault =
-  | "malformed_entry"
   | "wrong_session"
+  | "entry_wrong_server"
   | "not_participant"
   | "bad_entry_signature"
+  | "entry_after_close"
+  | "entry_expired"
+  | "ack_time_backwards"
   | "bad_author_seq"
   | "bad_author_chain"
   | "read_beyond_tip"
@@ -54,6 +65,8 @@ export class ChainVerifier {
   readonly #authors = new Map<string, AuthorHead>();
   readonly #roots: Uint8Array[] = [EMPTY_ROOT];
   readonly #merkle = new RunningMerkle();
+  readonly #closed = new Set<string>();
+  #lastAckTime = 0;
 
   constructor(parties: ChainParties) {
     this.#parties = parties;
@@ -69,6 +82,14 @@ export class ChainVerifier {
     return this.#merkle.root();
   }
 
+  get lastAckTime(): number {
+    return this.#lastAckTime;
+  }
+
+  hasClosed(authorId: Uint8Array): boolean {
+    return this.#closed.has(toHex(authorId));
+  }
+
   rootAt(position: number): Uint8Array | undefined {
     return this.#roots[position];
   }
@@ -78,25 +99,24 @@ export class ChainVerifier {
   }
 
   // Runs every check, and advances only if all of them pass.
-  // Records come from outside, so a row that can't be encoded is a fault to report, not an exception.
   async check(item: WitnessedEntry): Promise<ChainFault | null> {
-    try {
-      entryBytes(item.fields);
-      ackBytes(item.ack);
-    } catch (err: unknown) {
-      if (err instanceof RangeError) return "malformed_entry";
-      throw err;
-    }
-    const { fields, signature, ack, ackSignature } = item;
+    const { fields, signature, bytes, ack, ackSignature, ackBytes } = item;
     if (!equalBytes(fields.sessionId, this.#parties.sessionId)) return "wrong_session";
+    if (!equalBytes(fields.serverId, this.#serverId)) return "entry_wrong_server";
     const author = this.#keysById.get(toHex(fields.authorId));
     if (!author) return "not_participant";
-    const hash = entryHash(fields);
+    const hash = structureHash(bytes);
 
     if (ack.position !== this.position + 1) return "bad_position";
     if (!equalBytes(ack.serverId, this.#serverId)) return "ack_wrong_server";
     if (!equalBytes(ack.sessionId, this.#parties.sessionId)) return "ack_wrong_session";
     if (!equalBytes(ack.entryHash, hash)) return "ack_wrong_entry";
+
+    if (this.#closed.has(toHex(fields.authorId))) return "entry_after_close";
+    // The author's not_after binds the server, whose ack carries the time. A refused message can't be landed later,
+    // and the time can't be pushed back to get under it, because acks never go backwards.
+    if (ack.time < this.#lastAckTime) return "ack_time_backwards";
+    if (ack.time > fields.notAfter) return "entry_expired";
 
     const chainFault = authorChainFault(fields, this.#authors.get(toHex(fields.authorId)));
     if (chainFault) return chainFault;
@@ -107,19 +127,30 @@ export class ChainVerifier {
     const next = RunningMerkle.fromBytes(this.position, this.#merkle.toBytes());
     if (!equalBytes(ack.root, next.append(hash))) return "ack_wrong_root";
 
-    if (!(await verifySignature(author, "cello-v2-entry", entryBytes(fields), signature))) return "bad_entry_signature";
-    if (!(await verifySignature(this.#parties.server, "cello-v2-ack", ackBytes(ack), ackSignature))) return "bad_ack_signature";
+    if (!(await verifySignature(author, "cello-entry", bytes, signature))) return "bad_entry_signature";
+    if (!(await verifySignature(this.#parties.server, "cello-ack", ackBytes, ackSignature))) return "bad_ack_signature";
 
-    this.adopt(fields, hash);
+    this.adopt(fields, hash, ack.time);
     return null;
   }
 
   // Rebuilds state from rows this machine already checked and stored, without repeating the signature work.
-  adopt(fields: EntryFields, hash: Uint8Array = entryHash(fields)): void {
+  adopt(fields: EntryFields, hash: Uint8Array, ackTime: number): void {
     const root = this.#merkle.append(hash);
     this.#roots.push(root);
     this.#authors.set(toHex(fields.authorId), { seq: fields.authorSeq, hash });
+    if (fields.kind === EntryKind.close) this.#closed.add(toHex(fields.authorId));
+    this.#lastAckTime = ackTime;
   }
+}
+
+// Two acks at one position, both signed by the server, are server misbehaviour anyone can check with its public key.
+export async function provesTwoAcks(server: PublicIdentity, a: Signed<AckFields>, b: Signed<AckFields>): Promise<boolean> {
+  if (equalBytes(a.bytes, b.bytes)) return false;
+  if (a.fields.position !== b.fields.position || !equalBytes(a.fields.sessionId, b.fields.sessionId)) return false;
+  const serverId = identityId(server);
+  if (!equalBytes(a.fields.serverId, serverId) || !equalBytes(b.fields.serverId, serverId)) return false;
+  return (await verifySignature(server, "cello-ack", a.bytes, a.signature)) && (await verifySignature(server, "cello-ack", b.bytes, b.signature));
 }
 
 export interface ChainReport {

@@ -5,6 +5,9 @@
 //   node live/speed.ts --server wss://host/v1 --gentle
 //
 // Raw numbers and the report go to ~/cello-v2-live-runs/speed-<time>/.
+import { cliFor } from "./cli-path.ts";
+import { identityCodec } from "../src/protocol/wire.ts";
+import { StandInIssuer, standInKeys } from "./stand-in-issuer.ts";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -38,7 +41,6 @@ const { values: args } = parseArgs({
 });
 if (args.local === Boolean(args.server)) throw new Error("say exactly one of --local or --server <url>");
 
-const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 const BOT = new URL("./speed-bot.ts", import.meta.url).pathname;
 const REPO = new URL("..", import.meta.url).pathname;
 const SECONDS = Number(args.seconds);
@@ -103,8 +105,8 @@ class Home {
   run(argv: string[], caller: string | undefined, input?: string, extraEnv: Record<string, string> = {}): Promise<Run> {
     return new Promise((resolve) => {
       const started = performance.now();
-      const child: ChildProcess = spawn(process.execPath, [CLI, ...argv], {
-        env: { ...process.env, CELLO_V2_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
+      const child: ChildProcess = spawn(process.execPath, [cliFor(argv), ...argv], {
+        env: { ...process.env, CELLO_HOME: this.path, ...(caller ? { CELLO_CALLER: caller } : {}), ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       const out: Buffer[] = [];
@@ -302,6 +304,10 @@ function conversationSummary(turns: Turn[]): Record<string, unknown> {
 
 const serverDir = args["server-dir"] ?? process.env["CELLO_SERVER_DIR"] ?? join(REPO, "..", "cello-server");
 const overridePath = join(runDir, "compose-override.yml");
+// Each daemon collects a real signal, from an issuer this server is told to count.
+const standIn = await StandInIssuer.start(process.env["CELLO_ISSUER_DIR"] ?? join(REPO, "..", "cello-issuer"), { open: true });
+process.env["CELLO_TEST_ISSUER_URL"] = standIn.url;
+process.env["CELLO_TRUSTED_ISSUERS"] = JSON.stringify([{ address: "127.0.0.1", ...identityCodec.encode((await standInKeys()).publicIdentity) }]);
 const serverProfileDir = join(runDir, "server-prof");
 let composeUp = false;
 
@@ -548,7 +554,7 @@ async function ciphertextStillOffered(home: Home, url: string, agentName: string
     const server = await connected;
     const clientNonce = new Uint8Array(randomBytes(32));
     const proof = agentAuthBytes({ serverId: server.id, agentId: signer.id, serverNonce: server.nonce, clientNonce });
-    await link.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await signer.sign("cello-v2-agent-auth", proof)) });
+    await link.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(await signer.sign("cello-agent-auth", proof)) });
     let offered = 0;
     for (const hex of sessions) {
       let after = 0;
@@ -1047,10 +1053,10 @@ async function anatomy(): Promise<void> {
     for (let i = 0; i < times; i++) await work();
     return Number(((performance.now() - started) / times).toFixed(3));
   };
-  const signature = await signer.sign("cello-v2-entry", small);
+  const signature = await signer.sign("cello-entry", small);
   const primitives: Record<string, number> = {
-    signTwiceMs: await timed(() => signer.sign("cello-v2-entry", small)),
-    verifyTwiceMs: await timed(() => verifySignature(signer.publicIdentity, "cello-v2-entry", small, signature)),
+    signTwiceMs: await timed(() => signer.sign("cello-entry", small)),
+    verifyTwiceMs: await timed(() => verifySignature(signer.publicIdentity, "cello-entry", small, signature)),
   };
   const key = new Uint8Array(randomBytes(32));
   const salt = new Uint8Array(randomBytes(32));
@@ -1188,6 +1194,7 @@ try {
 } finally {
   await cleanUp();
   clearInterval(guardTimer);
+  standIn.stop();
 }
 if (args["cpu-prof"]) {
   results["serverProfile"] = summariseProfiles(serverProfileDir);

@@ -1,4 +1,4 @@
-# cello-v2
+# cello (repo: cello-v2)
 
 The CELLO client: daemon, commands and Claude Code tools. The design is in the spec in `trustless-cello/docs/planning/rewrite/SPEC-v2.0.md`, and the current scope is in `BUILD-PLAN.md` beside it. The server is in the separate `cello-server` repo.
 
@@ -16,7 +16,7 @@ Old code is reference. Copy only what the current work needs, works without the 
 - **Identity and state never live in a connection.** Every call names its agent and caller. The holder is a caller, not a socket. A read counts only after the reply is written.
 - Comments say what's not obvious, in a line or two. History belongs in commit messages.
 - Everything signed gets both signatures, Ed25519 and ML-DSA-44, and both must verify.
-- Signed bytes come only from `src/protocol/structures.ts`.
+- Signed bytes come only from `src/protocol/structures.ts`, and `signal.ts` and `issuer-list.ts` beside it for trust signals and the issuer list.
 - Tables key on the agent's id, never its name. SQLCipher only: `node:sqlite` is banned.
 - No mocks in production code, and no silent fallbacks: fail by name.
 - Every wait has an end, and every failure names its cause to the person affected.

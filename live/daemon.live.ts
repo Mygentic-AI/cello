@@ -1,17 +1,18 @@
 // Real daemons as separate processes, the real server, the real database. Start it with scripts/live-test.sh.
 // The restart is SIGKILL by captured process id, because a clean shutdown wouldn't test anything.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, OVER_GUIDANCE, SESSION_CLOSED_GUIDANCE, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, STANDBY_GUIDANCE, WRAP_GUIDANCE, replyLagGuidance, unreadWarning } from "../src/guidance.ts";
 import { IpcClient } from "../src/ipc/client.ts";
 import type { IpcNotification } from "../src/ipc/protocol.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? "../cello-server";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 
 function compose(...args: string[]): string {
   return execFileSync("docker", ["compose", ...args], { cwd: serverDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -26,7 +27,7 @@ interface Status { pid: number; connected: boolean; agents: AgentStatus[] }
 class Daemon {
   readonly home = mkdtempSync(join(tmpdir(), "cello-v2-live-"));
   cli(...args: string[]): string {
-    return execFileSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    return execFileSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
   login(): void {
     this.cli("login", "--server", url);
@@ -77,7 +78,7 @@ class Session {
       return this.bells.splice(at, 1)[0];
     });
   }
-  async receive(): Promise<{ messages: { position: number; text?: string; signal?: string; est_minutes?: number; closed_their_side?: boolean; session_id: string }[]; notices: { text: string }[] }> {
+  async receive(): Promise<{ messages: { position: number; text?: string; signal?: string; est_minutes?: number; closed_their_side?: boolean; session_id: string }[]; notices: { text: string }[]; guidance?: { session_id: string; text: string }[] }> {
     return await this.call("receive") as never;
   }
   send(sessionId: string, text: string, signal: string, extra: Record<string, unknown> = {}): Promise<unknown> {
@@ -148,6 +149,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal((await bob.bell("message")).data["session_id"], sessionId);
   const first = await bob.receive();
   assert.deepEqual(first.messages.map((m) => [m.position, m.text, m.signal]), [[1, "the launch code is purple-walrus", "over"]]);
+  assert.deepEqual(first.guidance, [{ session_id: sessionId, text: OVER_GUIDANCE }]);
 
   await bob.send(sessionId, "working on it", "standby", { est_minutes: 5 });
   await alice.bell("message");
@@ -158,6 +160,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   await bob.bell("message");
   const unread = await alice.receive();
   assert.deepEqual(unread.messages.map((m) => [m.text, m.signal, m.est_minutes]), [["working on it", "standby", 5]]);
+  assert.deepEqual(unread.guidance, [{ session_id: sessionId, text: STANDBY_GUIDANCE }]);
   const stop = await bob.receive();
   assert.deepEqual(stop.messages.map((m) => m.text), ["stop, actually"]);
   await bob.send(sessionId, "stopped", "over");
@@ -208,16 +211,59 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   // Close, with the signal that says so first.
   await alice.send(sessionId, "that's all from me", "wrap");
   await bob.bell("message");
-  await bob.receive();
+  assert.deepEqual((await bob.receive()).guidance, [{ session_id: sessionId, text: WRAP_GUIDANCE }]);
   const closedA = await bob.call("close_session", { session_id: sessionId }) as { closed: boolean; state: string };
   assert.deepEqual([closedA.closed, closedA.state], [true, "active"]);
   await alice.bell("peer_closed");
   assert.deepEqual((await alice.receive()).messages.map((m) => m.closed_their_side), [true]);
-  await assert.rejects(bob.send(sessionId, "after my close", "over"), { code: "session_closed" });
+  await assert.rejects(bob.send(sessionId, "after my close", "over"), (err: Error & { code: string }) => err.code === "session_closed" && err.message.includes(SESSION_CLOSED_GUIDANCE));
   const closedB = await alice.call("close_session", { session_id: sessionId }) as { state: string };
   assert.equal(closedB.state, "closed");
   await bob.bell("session_closed");
-  await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed" });
+
+  // A wrong id or agent says where to look, and which mistake it was.
+  await assert.rejects(alice.call("receive", { session_id: "00".repeat(16) }), { code: "unknown_session", message: NO_SESSION_GUIDANCE });
+  await assert.rejects(alice.call("receive", { session_id: sessionId.slice(0, 8) }), { code: "unknown_session", message: TRUNCATED_SESSION_GUIDANCE });
+  await assert.rejects(alice.call("receive", { agent: "Nobody" }), { code: "unknown_agent", message: noAgentGuidance("Nobody") });
+  const outsider = await alice.call("create_agent", { name: "Outsider" }) as { agent_id: string };
+  await online(daemon, "Outsider");
+  const outsiderHeld = await daemon.attach("Outsider");
+  await assert.rejects(outsiderHeld.call("receive", { session_id: sessionId }), { code: "unknown_session", message: OTHER_AGENTS_SESSION_GUIDANCE });
+  assert.equal(outsider.agent_id.length, 64);
+
+  // Too big says to split it, and the session carries on.
+  const roomy = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await assert.rejects(alice.send(roomy.session_id, "words ".repeat(250_000), "over"), (err: Error & { code: string }) => err.code === "too_large" && /Split it.*Nothing was sent/.test(err.message));
+
+  // A notice skips the read-first rule, so it can answer something older. The reader is told.
+  const crossing = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await alice.send(crossing.session_id, "did you get my question", "over");
+  await bob.bell("message");
+  await bob.send(crossing.session_id, "written without reading yours", "over", { notice: true });
+  // Polled, because an earlier read in this test took its message without taking that message's doorbell.
+  const crossed = await until("Bob's notice", async () => {
+    const received = await alice.receive();
+    return received.messages.length > 0 ? received : undefined;
+  });
+  assert.ok(crossed.guidance?.some((g) => g.text === replyLagGuidance(1, 1)), JSON.stringify(crossed.guidance));
+  await bob.receive();
+  await alice.send(crossing.session_id, "fine", "wrap");
+  await bob.bell("message");
+  assert.equal((await bob.receive()).guidance?.some((g) => g.text.startsWith("Their last")), false, "a reply that saw everything has no lag");
+
+  // Closing with something unread still closes, and says what was never read. Their close doesn't count as a message.
+  const second = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  await bob.bell("session_started");
+  await alice.send(second.session_id, "you never read this", "over");
+  await bob.bell("message");
+  const closedUnread = await bob.call("close_session", { session_id: second.session_id }) as { closed: boolean; unread_count: number; unread_warning: string };
+  assert.deepEqual([closedUnread.closed, closedUnread.unread_count, closedUnread.unread_warning], [true, 1, unreadWarning(1, second.session_id)]);
+  await alice.bell("peer_closed");
+  const closedRead = await alice.call("close_session", { session_id: second.session_id }) as { unread_warning?: string };
+  assert.equal(closedRead.unread_warning, undefined, "their close alone isn't an unread message");
+  await assert.rejects(alice.send(sessionId, "after both closed", "over"), { code: "session_closed", message: SESSION_CLOSED_GUIDANCE });
 
   // The encrypted text is gone from the server, and the chain is kept.
   await until("the encrypted text to go", () => sql(`SELECT count(*) FROM entries WHERE session_id = '\\x${sessionId}' AND ciphertext IS NOT NULL`) === "0");

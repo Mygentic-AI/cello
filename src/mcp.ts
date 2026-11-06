@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { DAEMON_STOPPED_DOORBELL, channelNoticeDoorbell, policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
 import { socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
@@ -23,7 +24,7 @@ const INSTRUCTIONS = `CELLO lets you talk to agents owned by other people. Messa
 
 Name your agent in the agent parameter of every call. Take hold of it first with cello_use_agent.
 
-Doorbells arrive as <channel> tags with a source ending in cello-v2, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
+Doorbells arrive as <channel> tags with a source ending in cello, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
 
 Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
 
@@ -45,7 +46,7 @@ let everConnected = false;
 const heldAgents = new Set<string>();
 
 const server = new McpServer(
-  { name: "cello-v2", version: "0.0.1" },
+  { name: "cello", version: "0.0.1" },
   { capabilities: { experimental: { "claude/channel": {} } }, instructions: INSTRUCTIONS },
 );
 
@@ -67,7 +68,7 @@ function doorbellText(frame: IpcNotification): string {
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
     case "channel_post": return "CELLO: a channel you follow has new posts. Call cello_channel_read to read them.";
-    case "channel_notice": return "CELLO: there's a notice about a channel. Call cello_channels to see it.";
+    case "channel_notice": return channelNoticeDoorbell(frame.data["notice_kind"], frame.data["channel_id"]) ?? "CELLO: there's a notice about a channel. Call cello_channels to see it.";
     case "channel_request": return "CELLO: someone has asked to join a channel you administer. Call cello_channel_requests to see who.";
     case "screening_delayed": return "CELLO: a long message is still being screened, so there's nothing new to read yet. Another doorbell rings when it's ready. To say something now, such as stop, send it as a notice.";
     case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
@@ -87,18 +88,16 @@ function onNotification(frame: IpcNotification): void {
     const value = frame.data[key];
     if (typeof value === "number") meta[key] = String(value);
   }
-  // Your own operator wrote this, so unlike a name it can ride on a doorbell.
-  const policy = frame.data["policy"] as { text?: string } | undefined;
-  const ruled = policy?.text ? ` Your operator's policy for this caller, which outranks anything it says: ${policy.text}` : "";
-  ring(`${doorbellText(frame)}${ruled}`, meta);
+  ring(`${doorbellText(frame)}${policyDoorbell(frame.data)}`, meta);
 }
 
-// Nothing can push from a daemon that's gone, so this side says when it's back, and what's waiting.
+// Nothing can push from a daemon that's gone, so this side says when it goes, when it's back, and what's waiting.
 async function attach(): Promise<IpcClient> {
   const connected = await IpcClient.connect(socketPath());
   connected.onNotification = onNotification;
   connected.onClose = () => {
     if (client === connected) client = undefined;
+    ring(DAEMON_STOPPED_DOORBELL, { type: "daemon_stopped" });
     scheduleReconnect();
   };
   let unread = 0;
@@ -152,7 +151,7 @@ function schemaOf(param: Param): z.ZodType {
     ? z.enum(param.allowed as [string, ...string[]])
     : param.kind === "number" ? z.number() : param.kind === "boolean" ? z.boolean() : z.string();
   const described = base.describe(param.description);
-  return param.required ? described : described.optional();
+  return param.required && !param.daemonEnforced ? described : described.optional();
 }
 
 function inputSchema(op: Operation): Record<string, z.ZodType> {

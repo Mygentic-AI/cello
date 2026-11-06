@@ -1,5 +1,8 @@
 // Channels with real processes: a real server, three daemons in their own homes, and a bare socket playing the attacker.
 // The hostile cases work on the real database as its owner, and with the server's real signing key. Run it with scripts/live-channels.sh.
+import { cliFor } from "./cli-path.ts";
+import { channelInfoCodec, channelMemberKeyCodec } from "../src/protocol/channel.ts";
+import type { WireSigned } from "../src/protocol/wire.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -15,11 +18,12 @@ import { OPERATIONS } from "../src/ipc/operations.ts";
 import { type RosterFile, channelPostAckCodec, channelPostCodec, hashBlob, inRoster, postHash, readRoster, sealKeyEntry, signMemberKey, signRoster } from "../src/protocol/channel.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { channelPostAckBytes, channelPostBytes, type ChannelPostFields, agentAuthBytes, registerBytes } from "../src/protocol/structures.ts";
+import { toHex } from "../src/protocol/encode.ts";
+import { standInSignal } from "./stand-in-issuer.ts";
 import { PROTOCOL_VERSION, fromB64, identityCodec, signatureCodec, toB64 } from "../src/protocol/wire.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18600/v1";
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const LOST_WAIT_MS = 8000;
 const homes = { ada: mkdtempSync(join(tmpdir(), "cello-ch-ada-")), bea: mkdtempSync(join(tmpdir(), "cello-ch-bea-")), cyd: mkdtempSync(join(tmpdir(), "cello-ch-cyd-")) };
 type Who = keyof typeof homes;
@@ -27,9 +31,9 @@ const names: Record<Who, string> = { ada: "Ada", bea: "Bea", cyd: "Cyd" };
 const ids = {} as Record<Who, string>;
 
 function run(who: Who, args: string[], input?: string): { status: number | null; json: Record<string, unknown>; stderr: string } {
-  const result = spawnSync(process.execPath, [cliPath, ...args], {
+  const result = spawnSync(process.execPath, [cliFor(args), ...args], {
     encoding: "utf8", input, maxBuffer: 16_000_000,
-    env: { ...process.env, CELLO_V2_HOME: homes[who] },
+    env: { ...process.env, CELLO_HOME: homes[who] },
   });
   let json: Record<string, unknown> = {};
   try {
@@ -129,10 +133,10 @@ class Raw {
   }
   async newAgent(): Promise<Signer> {
     const signer = await signerFromSeeds(generateIdentitySeeds());
-    const signature = await signer.sign("cello-v2-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
-    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature) });
+    const signature = await signer.sign("cello-register", registerBytes({ serverId: this.serverId, identity: signer.publicIdentity }));
+    await this.call("register", { identity: identityCodec.encode(signer.publicIdentity), signature: signatureCodec.encode(signature), signal: await standInSignal(toHex(signer.id)) });
     const clientNonce = new Uint8Array(randomBytes(32));
-    const proof = await signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
+    const proof = await signer.sign("cello-agent-auth", agentAuthBytes({ serverId: this.serverId, agentId: signer.id, serverNonce: this.nonce, clientNonce }));
     await this.call("auth", { agentId: toB64(signer.id), clientNonce: toB64(clientNonce), signature: signatureCodec.encode(proof) });
     return signer;
   }
@@ -155,7 +159,7 @@ async function rawPost(raw: Raw, signer: Signer, channel: string, seq: number, t
   const title = new TextEncoder().encode("title");
   const body = new TextEncoder().encode(text);
   const fields: ChannelPostFields = { channelId, generation: 1, authorId: signer.id, authorSeq: seq, publishedAt: Date.now(), titleHash: hashBlob(title), bodyHash: hashBlob(body), ...over };
-  const signature = await signWith.sign("cello-v2-channel-post", channelPostBytes(fields));
+  const signature = await signWith.sign("cello-channel-post", channelPostBytes(fields));
   return raw.call("channel.post", {
     agent: toB64(signer.id), channel: toB64(channelId),
     post: channelPostCodec.encode({ fields, signature }), title: toB64(title), body: toB64(new TextEncoder().encode(sentBody ?? text)),
@@ -280,7 +284,7 @@ test("forged and replayed posts are refused by the server, with an honest poster
   const title = new TextEncoder().encode("title");
   const body = new TextEncoder().encode("Repeat me");
   const fields: ChannelPostFields = { channelId, generation: 1, authorId: pia.id, authorSeq: 2, publishedAt: Date.now(), titleHash: hashBlob(title), bodyHash: hashBlob(body) };
-  const signed = channelPostCodec.encode({ fields, signature: await pia.sign("cello-v2-channel-post", channelPostBytes(fields)) });
+  const signed = channelPostCodec.encode({ fields, signature: await pia.sign("cello-channel-post", channelPostBytes(fields)) });
   const params = { agent: toB64(pia.id), channel: toB64(channelId), post: signed, title: toB64(title), body: toB64(body) };
   const once = await raw.call("channel.post", params) as { ack: unknown };
   const twice = await raw.call("channel.post", params) as { ack: unknown };
@@ -433,12 +437,12 @@ test("a hostile server: an old post re-issued under a new number, a changed body
   const server = await signerFromSeeds({ ed: fromB64(keyFile.ed, "ed"), pq: fromB64(keyFile.pq, "pq") });
   const stored = JSON.parse(sql(`SELECT row_to_json(p) FROM (SELECT post, encode(post_hash, 'hex') AS h, encode(title, 'hex') AS t, encode(body, 'hex') AS b, encode(author_id, 'hex') AS a, author_seq, generation FROM channel_posts WHERE channel_id = ${bytea(channel)} AND position = 1) p`)) as { post: never; t: string; b: string; a: string; author_seq: number; generation: number };
   const reissue = async (position: number): Promise<void> => {
-    const fields = channelPostCodec.decode(stored.post).fields;
-    const ackFields = { serverId: server.id, channelId: fields.channelId, position, postHash: postHash(fields), time: Date.now() };
-    const ack = channelPostAckCodec.encode({ fields: ackFields, signature: await server.sign("cello-v2-channel-post-ack", channelPostAckBytes(ackFields)) });
+    const { fields, bytes: postBytes } = channelPostCodec.decode(stored.post);
+    const ackFields = { serverId: server.id, channelId: fields.channelId, position, postHash: postHash(postBytes), time: Date.now() };
+    const ack = channelPostAckCodec.encode({ fields: ackFields, signature: await server.sign("cello-channel-post-ack", channelPostAckBytes(ackFields)) });
     // The post keeps its own signature. Only a unique constraint stands in the way, and a hostile server drops it.
     sql(`ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_post_hash_key; ALTER TABLE channel_posts DROP CONSTRAINT IF EXISTS channel_posts_channel_id_author_id_author_seq_key;
-         INSERT INTO channel_posts (channel_id, position, post_hash, author_id, author_seq, generation, post, ack, title, body) VALUES (${bytea(channel)}, ${position}, ${bytea(Buffer.from(postHash(fields)).toString("hex"))}, ${bytea(stored.a)}, ${stored.author_seq}, ${stored.generation}, '${JSON.stringify(stored.post)}', '${JSON.stringify(ack)}', ${bytea(stored.t)}, ${bytea(stored.b)});
+         INSERT INTO channel_posts (channel_id, position, post_hash, author_id, author_seq, generation, post, ack, title, body) VALUES (${bytea(channel)}, ${position}, ${bytea(Buffer.from(postHash(postBytes)).toString("hex"))}, ${bytea(stored.a)}, ${stored.author_seq}, ${stored.generation}, '${JSON.stringify(stored.post)}', '${JSON.stringify(ack)}', ${bytea(stored.t)}, ${bytea(stored.b)});
          UPDATE channels SET tip = ${position} WHERE channel_id = ${bytea(channel)}`);
   };
   await reissue(2);
@@ -510,7 +514,7 @@ test("eject: the next read is refused, a new key starts, and a member offline ac
   const member = await signMemberKey(temp, new Uint8Array(Buffer.from(channel, "hex")), { x25519Public: keys.x25519.getPublicKey(secret), mlKemPublic: (await mlKemKeypairFromSeed(mlKemGenerateSeed())).publicKey }, Date.now());
   const info = await raw.call("channel.get", { agent: toB64(temp.id), channel: channelBytes }) as { info: { fields: { x25519Public: string; mlKemPublic: string } } };
   const { sealTo } = await import("../src/protocol/channel.ts");
-  const request = await sealTo({ x25519Public: fromB64(info.info.fields.x25519Public, "x"), mlKemPublic: fromB64(info.info.fields.mlKemPublic, "m") }, new TextEncoder().encode(JSON.stringify({ ...member, note: "" })));
+  const request = await sealTo({ x25519Public: channelInfoCodec.decode(info.info).fields.x25519Public, mlKemPublic: channelInfoCodec.decode(info.info).fields.mlKemPublic }, new TextEncoder().encode(JSON.stringify({ ...member, note: "" })));
   await raw.call("channel.join", { agent: toB64(temp.id), channel: channelBytes, request });
   const tempHex = Buffer.from(temp.id).toString("hex");
   ok("ada", "channel-approve", channel, tempHex);
@@ -526,8 +530,8 @@ test("eject: the next read is refused, a new key starts, and a member offline ac
   // A member who left can come back, with the admin's say-so, and the roster drops them meanwhile.
   ok("cyd", "channel-leave", channel);
   await until("Cyd off the roster", () => {
-    const roster = JSON.parse(sql(`SELECT roster FROM channel_rosters WHERE channel_id = ${bytea(channel)} ORDER BY revision DESC LIMIT 1`)) as { members: { memberKey: { fields: { agentId: string } } }[] };
-    return !roster.members.some((m) => Buffer.from(m.memberKey.fields.agentId, "base64url").toString("hex") === ids.cyd);
+    const roster = JSON.parse(sql(`SELECT roster FROM channel_rosters WHERE channel_id = ${bytea(channel)} ORDER BY revision DESC LIMIT 1`)) as { members: { memberKey: WireSigned }[] };
+    return !roster.members.some((m) => Buffer.from(channelMemberKeyCodec.decode(m.memberKey).fields.agentId).toString("hex") === ids.cyd);
   });
   assert.equal(ok("cyd", "channel-join", channel)["state"], "waiting");
   ok("ada", "channel-refuse", channel, ids.cyd);
@@ -617,7 +621,7 @@ test("MCP: every channel operation is a tool, its description says channel text 
   const session = new Client({ name: "channels-live", version: "0" });
   const bells: { content: string; meta: Record<string, string> }[] = [];
   session.setNotificationHandler(z.object({ method: z.literal("notifications/claude/channel"), params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }) }), async ({ params }) => { bells.push(params); });
-  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_V2_HOME: homes.bea } as Record<string, string> }));
+  await session.connect(new StdioClientTransport({ command: process.execPath, args: [new URL("../src/mcp.ts", import.meta.url).pathname], env: { ...process.env, CELLO_HOME: homes.bea } as Record<string, string> }));
   try {
     const { tools } = await session.listTools();
     const named = new Map(tools.map((tool) => [tool.name, tool.description ?? ""]));

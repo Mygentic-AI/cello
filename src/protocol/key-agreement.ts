@@ -14,7 +14,7 @@ export const SESSION_KEY_BYTES = 32;
 export const SESSION_PQ_TRANSCRIPT_BYTES = ML_KEM_CIPHERTEXT_BYTES + ML_KEM_PUBLIC_KEY_BYTES;
 
 const ENC = new TextEncoder();
-const INFO_CONTENT_KEY = ENC.encode("cello-v2/session/content-key");
+const INFO_CONTENT_KEY = ENC.encode("cello-session-content-key");
 
 export interface SessionEphemeral {
   secretKey: Uint8Array;

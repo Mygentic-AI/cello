@@ -3,7 +3,7 @@
 import { x25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { openSessionContent, sealSessionContent } from "./aead.ts";
-import { HASH_BYTES, ZERO_HASH, encodeFields, equalBytes } from "./encode.ts";
+import { HASH_BYTES, ZERO_HASH, equalBytes } from "./encode.ts";
 import { type DualSignature, type PublicIdentity, type Signer, identityId, verifySignature } from "./identity.ts";
 import { deriveSessionSecrets } from "./key-agreement.ts";
 import { mlKemDecapsulate, mlKemEncapsulate } from "./ml-kem.ts";
@@ -18,29 +18,29 @@ import {
   type ChannelRecordFields,
   type ChannelRosterFields,
   type ChannelStateFields,
-  channelInfoBytes,
-  channelKeyEntryBytes,
-  channelMemberKeyBytes,
-  channelPostAckBytes,
-  channelPostBytes,
+  channelInfoStructure,
+  channelKeyEntryStructure,
+  channelMemberKeyStructure,
+  channelPostAckStructure,
+  channelPostStructure,
   channelRecordBytes,
-  channelRosterBytes,
-  channelStateBytes,
+  channelRecordStructure,
+  channelRosterStructure,
+  channelStateStructure,
+  rosterMemberBytes,
+  rosterMembersBytes,
 } from "./structures.ts";
-import { type WireSigned, codec, fromB64, identityCodec, signatureCodec, signedCodec, toB64 } from "./wire.ts";
+import { type WireSigned, fromB64, readStructure, identityCodec, signatureCodec, signedCodec, toB64 } from "./wire.ts";
 
 const ENC = new TextEncoder();
 
-export const channelRecordCodec = codec<ChannelRecordFields>({ channelId: "bytes", adminId: "bytes", visibility: "int" });
-export const channelInfoCodec = signedCodec(codec<ChannelInfoFields>({
-  channelId: "bytes", revision: "int", posting: "int", retentionMs: "int", generation: "int", x25519Public: "bytes", mlKemPublic: "bytes", posters: "bytes", name: "bytes",
-}));
-export const channelPostCodec = signedCodec(codec<ChannelPostFields>({ channelId: "bytes", generation: "int", authorId: "bytes", authorSeq: "int", publishedAt: "int", titleHash: "bytes", bodyHash: "bytes" }));
-export const channelPostAckCodec = signedCodec(codec<ChannelPostAckFields>({ serverId: "bytes", channelId: "bytes", position: "int", postHash: "bytes", time: "int" }));
-export const channelStateCodec = signedCodec(codec<ChannelStateFields>({ serverId: "bytes", channelId: "bytes", firstHeld: "int", tip: "int", time: "int" }));
-export const channelMemberKeyCodec = signedCodec(codec<ChannelMemberKeyFields>({ channelId: "bytes", agentId: "bytes", x25519Public: "bytes", mlKemPublic: "bytes", requestedAt: "int" }));
-export const channelRosterCodec = signedCodec(codec<ChannelRosterFields>({ channelId: "bytes", revision: "int", generation: "int", prevHash: "bytes", membersHash: "bytes" }));
-export const channelKeyEntryCodec = signedCodec(codec<ChannelKeyEntryFields>({ channelId: "bytes", generation: "int", memberId: "bytes", rosterHash: "bytes", sealedHash: "bytes" }));
+export const channelInfoCodec = signedCodec(channelInfoStructure);
+export const channelPostCodec = signedCodec(channelPostStructure);
+export const channelPostAckCodec = signedCodec(channelPostAckStructure);
+export const channelStateCodec = signedCodec(channelStateStructure);
+export const channelMemberKeyCodec = signedCodec(channelMemberKeyStructure);
+export const channelRosterCodec = signedCodec(channelRosterStructure);
+export const channelKeyEntryCodec = signedCodec(channelKeyEntryStructure);
 
 function field(value: unknown, name: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
@@ -60,12 +60,12 @@ export function hashBlob(blob: Uint8Array): Uint8Array {
   return sha256(blob);
 }
 
-export function postHash(fields: ChannelPostFields): Uint8Array {
-  return sha256(channelPostBytes(fields));
+export function postHash(bytes: Uint8Array): Uint8Array {
+  return sha256(bytes);
 }
 
 export interface ChannelRecordFile {
-  fields: Record<string, string | number>;
+  bytes: string;
   channel: Record<string, string | number>;
   admin: Record<string, string | number>;
   channelSignature: Record<string, string | number>;
@@ -82,18 +82,23 @@ export async function signRecord(channel: Signer, admin: Signer, visibility: num
   const fields: ChannelRecordFields = { channelId: channel.id, adminId: admin.id, visibility };
   const bytes = channelRecordBytes(fields);
   return {
-    fields: channelRecordCodec.encode(fields),
+    bytes: toB64(bytes),
     channel: identityCodec.encode(channel.publicIdentity),
     admin: identityCodec.encode(admin.publicIdentity),
-    channelSignature: signatureCodec.encode(await channel.sign("cello-v2-channel-record", bytes)),
-    adminSignature: signatureCodec.encode(await admin.sign("cello-v2-channel-record", bytes)),
+    channelSignature: signatureCodec.encode(await channel.sign("cello-channel-record", bytes)),
+    adminSignature: signatureCodec.encode(await admin.sign("cello-channel-record", bytes)),
   };
+}
+
+function readRecordBytes(raw: unknown): { fields: ChannelRecordFields; bytes: Uint8Array } {
+  const bytes = fromB64(raw, "record");
+  return { fields: readStructure(channelRecordStructure, bytes, "record"), bytes };
 }
 
 // Self-certifying: a channel's id is the hash of the key that signed this, so whoever served it can't have changed it.
 export async function readRecord(raw: unknown, expectedChannelId?: Uint8Array): Promise<ChannelRecord | null> {
   const parsed = tryRead(() => ({
-    fields: channelRecordCodec.decode(field(raw, "fields")),
+    ...readRecordBytes(field(raw, "bytes")),
     channel: identityCodec.decode(field(raw, "channel")),
     admin: identityCodec.decode(field(raw, "admin")),
     channelSignature: signatureCodec.decode(field(raw, "channelSignature")),
@@ -101,18 +106,18 @@ export async function readRecord(raw: unknown, expectedChannelId?: Uint8Array): 
   }));
   if (!parsed) return null;
   if (parsed.fields.visibility !== ChannelVisibility.public && parsed.fields.visibility !== ChannelVisibility.private) return null;
-  const bytes = tryRead(() => channelRecordBytes(parsed.fields));
+  const { bytes } = parsed;
   const ids = tryRead(() => ({ channel: identityId(parsed.channel), admin: identityId(parsed.admin) }));
-  if (!bytes || !ids) return null;
+  if (!ids) return null;
   if (!equalBytes(ids.channel, parsed.fields.channelId) || !equalBytes(ids.admin, parsed.fields.adminId)) return null;
   if (expectedChannelId && !equalBytes(parsed.fields.channelId, expectedChannelId)) return null;
-  if (!(await verifySignature(parsed.channel, "cello-v2-channel-record", bytes, parsed.channelSignature))) return null;
-  if (!(await verifySignature(parsed.admin, "cello-v2-channel-record", bytes, parsed.adminSignature))) return null;
+  if (!(await verifySignature(parsed.channel, "cello-channel-record", bytes, parsed.channelSignature))) return null;
+  if (!(await verifySignature(parsed.admin, "cello-channel-record", bytes, parsed.adminSignature))) return null;
   return { fields: parsed.fields, channel: parsed.channel, admin: parsed.admin };
 }
 
 export async function signInfo(channel: Signer, fields: ChannelInfoFields): Promise<WireSigned> {
-  return channelInfoCodec.encode({ fields, signature: await channel.sign("cello-v2-channel-info", channelInfoBytes(fields)) });
+  return channelInfoCodec.encode({ fields, signature: await channel.sign("cello-channel-info", channelInfoStructure.encode(fields)) });
 }
 
 export async function readInfo(raw: unknown, record: ChannelRecord): Promise<ChannelInfoFields | null> {
@@ -120,8 +125,7 @@ export async function readInfo(raw: unknown, record: ChannelRecord): Promise<Cha
   if (!signed || !equalBytes(signed.fields.channelId, record.fields.channelId)) return null;
   if (!(Object.values(ChannelPosting) as number[]).includes(signed.fields.posting)) return null;
   if (signed.fields.retentionMs < 1 || signed.fields.generation < 1) return null;
-  const bytes = tryRead(() => channelInfoBytes(signed.fields));
-  if (!bytes || !(await verifySignature(record.channel, "cello-v2-channel-info", bytes, signed.signature))) return null;
+  if (!(await verifySignature(record.channel, "cello-channel-info", signed.bytes, signed.signature))) return null;
   return signed.fields;
 }
 
@@ -151,6 +155,7 @@ export interface PostOnWire {
 export interface CheckedPost {
   fields: ChannelPostFields;
   signature: DualSignature;
+  bytes: Uint8Array;
   title: Uint8Array;
   body: Uint8Array;
 }
@@ -164,32 +169,29 @@ export async function checkPost(raw: unknown, author: PublicIdentity, channelId:
     return { signed, title: fromB64(field(raw, "title"), "title"), body: fromB64(field(raw, "body"), "body") };
   });
   if (!parsed) return "bad_post";
-  const { fields, signature } = parsed.signed;
+  const { fields, signature, bytes } = parsed.signed;
   if (!equalBytes(fields.channelId, channelId) || fields.authorSeq < 1 || fields.generation < 1) return "bad_post";
   if (!equalBytes(hashBlob(parsed.title), fields.titleHash) || !equalBytes(hashBlob(parsed.body), fields.bodyHash)) return "bad_post";
   const authorId = tryRead(() => identityId(author));
   if (!authorId || !equalBytes(authorId, fields.authorId)) return "bad_signature";
-  const bytes = tryRead(() => channelPostBytes(fields));
-  if (!bytes || !(await verifySignature(author, "cello-v2-channel-post", bytes, signature))) return "bad_signature";
-  return { fields, signature, title: parsed.title, body: parsed.body };
+  if (!(await verifySignature(author, "cello-channel-post", bytes, signature))) return "bad_signature";
+  return { fields, signature, bytes, title: parsed.title, body: parsed.body };
 }
 
 export async function readPostAck(raw: unknown, server: PublicIdentity, channelId: Uint8Array): Promise<ChannelPostAckFields | null> {
   const signed = tryRead(() => channelPostAckCodec.decode(raw));
   if (!signed || !equalBytes(signed.fields.channelId, channelId)) return null;
   const serverId = tryRead(() => identityId(server));
-  const bytes = tryRead(() => channelPostAckBytes(signed.fields));
-  if (!serverId || !bytes || !equalBytes(serverId, signed.fields.serverId)) return null;
-  return await verifySignature(server, "cello-v2-channel-post-ack", bytes, signed.signature) ? signed.fields : null;
+  if (!serverId || !equalBytes(serverId, signed.fields.serverId)) return null;
+  return await verifySignature(server, "cello-channel-post-ack", signed.bytes, signed.signature) ? signed.fields : null;
 }
 
 export async function readState(raw: unknown, server: PublicIdentity, channelId: Uint8Array): Promise<ChannelStateFields | null> {
   const signed = tryRead(() => channelStateCodec.decode(raw));
   if (!signed || !equalBytes(signed.fields.channelId, channelId)) return null;
   const serverId = tryRead(() => identityId(server));
-  const bytes = tryRead(() => channelStateBytes(signed.fields));
-  if (!serverId || !bytes || !equalBytes(serverId, signed.fields.serverId) || signed.fields.firstHeld < 1) return null;
-  return await verifySignature(server, "cello-v2-channel-state", bytes, signed.signature) ? signed.fields : null;
+  if (!serverId || !equalBytes(serverId, signed.fields.serverId) || signed.fields.firstHeld < 1) return null;
+  return await verifySignature(server, "cello-channel-state", signed.bytes, signed.signature) ? signed.fields : null;
 }
 
 // One member as the roster lists them: their identity, and the member key they signed for themselves.
@@ -214,22 +216,20 @@ export interface CheckedRoster {
   members: RosterMember[];
 }
 
-// Over the fields rather than their JSON, because a database is free to reorder a JSON object's keys.
+// Over what each member signed, as they signed it, so nothing depends on how JSON was stored.
 function membersHash(members: readonly RosterMemberFile[]): Uint8Array {
-  const parts: Uint8Array[] = [];
-  for (const member of members) {
+  return sha256(rosterMembersBytes(members.map((member) => {
     const identity = identityCodec.decode(member.identity);
     const signed = channelMemberKeyCodec.decode(member.memberKey);
-    parts.push(identity.ed, identity.pq, channelMemberKeyBytes(signed.fields), signed.signature.ed, signed.signature.pq);
-  }
-  return sha256(encodeFields(parts));
+    return sha256(rosterMemberBytes({ ed: identity.ed, pq: identity.pq, memberKey: signed.bytes, signatureEd: signed.signature.ed, signaturePq: signed.signature.pq }));
+  })));
 }
 
 export async function signMemberKey(member: Signer, channelId: Uint8Array, keys: SealKeys, requestedAt: number): Promise<RosterMemberFile> {
   const fields: ChannelMemberKeyFields = { channelId, agentId: member.id, x25519Public: keys.x25519Public, mlKemPublic: keys.mlKemPublic, requestedAt };
   return {
     identity: identityCodec.encode(member.publicIdentity),
-    memberKey: channelMemberKeyCodec.encode({ fields, signature: await member.sign("cello-v2-channel-member-key", channelMemberKeyBytes(fields)) }),
+    memberKey: channelMemberKeyCodec.encode({ fields, signature: await member.sign("cello-channel-member-key", channelMemberKeyStructure.encode(fields)) }),
   };
 }
 
@@ -239,17 +239,16 @@ export async function readMemberKey(raw: unknown, channelId: Uint8Array): Promis
   const signed = tryRead(() => channelMemberKeyCodec.decode(field(raw, "memberKey")));
   if (!identity || !signed) return null;
   const agentId = tryRead(() => identityId(identity));
-  const bytes = tryRead(() => channelMemberKeyBytes(signed.fields));
-  if (!agentId || !bytes) return null;
+  if (!agentId) return null;
   if (!equalBytes(agentId, signed.fields.agentId) || !equalBytes(signed.fields.channelId, channelId)) return null;
-  if (!(await verifySignature(identity, "cello-v2-channel-member-key", bytes, signed.signature))) return null;
+  if (!(await verifySignature(identity, "cello-channel-member-key", signed.bytes, signed.signature))) return null;
   return { agentId, keys: { x25519Public: signed.fields.x25519Public, mlKemPublic: signed.fields.mlKemPublic }, requestedAt: signed.fields.requestedAt };
 }
 
 // Chained to the roster before it, or to nothing for the first.
 export async function signRoster(channel: Signer, previous: { revision: number; hash: Uint8Array } | null, generation: number, members: RosterMemberFile[]): Promise<RosterFile> {
   const fields: ChannelRosterFields = { channelId: channel.id, revision: (previous?.revision ?? 0) + 1, generation, prevHash: previous?.hash ?? ZERO_HASH, membersHash: membersHash(members) };
-  return { roster: channelRosterCodec.encode({ fields, signature: await channel.sign("cello-v2-channel-roster", channelRosterBytes(fields)) }), members };
+  return { roster: channelRosterCodec.encode({ fields, signature: await channel.sign("cello-channel-roster", channelRosterStructure.encode(fields)) }), members };
 }
 
 // Checks the channel key's signature, and that each listed member signed their own key. Null for anything else.
@@ -259,8 +258,7 @@ export async function readRoster(raw: unknown, channel: PublicIdentity): Promise
   if (!signed || !Array.isArray(list)) return null;
   const channelId = tryRead(() => identityId(channel));
   if (!channelId || !equalBytes(signed.fields.channelId, channelId)) return null;
-  const bytes = tryRead(() => channelRosterBytes(signed.fields));
-  if (!bytes || !(await verifySignature(channel, "cello-v2-channel-roster", bytes, signed.signature))) return null;
+  if (!(await verifySignature(channel, "cello-channel-roster", signed.bytes, signed.signature))) return null;
   const hashed = tryRead(() => membersHash(list as RosterMemberFile[]));
   if (!hashed || !equalBytes(hashed, signed.fields.membersHash)) return null;
   const members: RosterMember[] = [];
@@ -269,7 +267,7 @@ export async function readRoster(raw: unknown, channel: PublicIdentity): Promise
     if (!checked) return null;
     members.push({ agentId: checked.agentId, keys: checked.keys });
   }
-  return { fields: signed.fields, hash: sha256(bytes), members };
+  return { fields: signed.fields, hash: sha256(signed.bytes), members };
 }
 
 export function rosterFollows(previous: { fields: ChannelRosterFields; hash: Uint8Array } | null, next: { fields: ChannelRosterFields }): boolean {
@@ -283,7 +281,7 @@ export function inRoster(roster: { members: readonly RosterMember[] }, agentId: 
 
 export interface KeyEntryFile { entry: WireSigned; sealed: string }
 
-const SEAL_DOMAIN = ENC.encode("cello-v2/channel-seal");
+const SEAL_DOMAIN = ENC.encode("cello-channel-seal");
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);
@@ -335,7 +333,7 @@ export async function openSealed(keys: OpenKeys, sealed: string): Promise<Uint8A
 export async function sealKeyEntry(channel: Signer, roster: CheckedRoster, member: RosterMember, generation: number, groupKey: Uint8Array): Promise<KeyEntryFile> {
   const sealed = await sealTo(member.keys, ENC.encode(JSON.stringify({ generation, key: toB64(groupKey) })));
   const fields: ChannelKeyEntryFields = { channelId: channel.id, generation, memberId: member.agentId, rosterHash: roster.hash, sealedHash: sha256(ENC.encode(sealed)) };
-  return { entry: channelKeyEntryCodec.encode({ fields, signature: await channel.sign("cello-v2-channel-key-entry", channelKeyEntryBytes(fields)) }), sealed };
+  return { entry: channelKeyEntryCodec.encode({ fields, signature: await channel.sign("cello-channel-key-entry", channelKeyEntryStructure.encode(fields)) }), sealed };
 }
 
 // What the server needs to see of an entry to file it, with no key to open it. Null if the channel key didn't sign it.
@@ -346,8 +344,7 @@ export async function readKeyEntry(raw: unknown, channel: PublicIdentity): Promi
   const channelId = tryRead(() => identityId(channel));
   if (!channelId || !equalBytes(signed.fields.channelId, channelId)) return null;
   if (!equalBytes(signed.fields.sealedHash, sha256(ENC.encode(sealed)))) return null;
-  const bytes = tryRead(() => channelKeyEntryBytes(signed.fields));
-  if (!bytes || !(await verifySignature(channel, "cello-v2-channel-key-entry", bytes, signed.signature))) return null;
+  if (!(await verifySignature(channel, "cello-channel-key-entry", signed.bytes, signed.signature))) return null;
   return { fields: signed.fields, sealed };
 }
 
