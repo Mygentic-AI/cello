@@ -1,5 +1,6 @@
 // The screening thread. It holds the model and never touches a socket or the database. It does one step when told to,
 // so the main thread decides what runs next, and a short message never waits longer than one step.
+import { readBodyBytes } from "../protocol/structures.ts";
 import { parentPort, workerData } from "node:worker_threads";
 import { type ClassifierLoad, type InjectionClassifier, loadInjectionClassifier } from "./injection-classifier-onnx.ts";
 import { loadWasmInjectionClassifier } from "./injection-classifier-wasm.ts";
@@ -45,8 +46,7 @@ type Request =
 
 function readText(body: Uint8Array): string | null {
   try {
-    const parsed = JSON.parse(new TextDecoder().decode(body)) as { text?: unknown };
-    return typeof parsed.text === "string" ? parsed.text : null;
+    return readBodyBytes(body)?.text ?? null;
   } catch {
     return null;
   }

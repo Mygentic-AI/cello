@@ -39,7 +39,7 @@ export class OutboundRateLimiter {
           `${Math.round(this.#config.windowMs / 1000)}s). This message was not sent. ` +
           `WHAT YOU CAN DO NOW: wait about ${Math.ceil(retryAfterMs / 1000)}s and retry — the window ` +
           `slides as older messages age out, so this clears itself.\n` +
-          "To allow more, a person runs: cello-v2 config-set rate_max_per_window <higher number>",
+          "To allow more, a person runs: cello config-set rate_max_per_window <higher number>",
         retryAfterMs,
       };
     }

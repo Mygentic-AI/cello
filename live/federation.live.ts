@@ -1,5 +1,6 @@
 // Two servers that have never heard of each other. An agent on one holds a real conversation with an agent on the other,
 // and neither server learns more than it should. Run it with scripts/federation-test.sh, which cleans up whatever happens.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -17,7 +18,7 @@ import { checkLogsClean } from "./log-check.ts";
 
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 const pidsFile = process.env["CELLO_FED_PIDS"];
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const issuerPort = Number(new URL(process.env["CELLO_TEST_ISSUER_URL"] as string).port);
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", `federation-${stamp}`);
 mkdirSync(evidence, { recursive: true });
@@ -104,7 +105,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 function side(name: string, home: Server) {
   let dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
   const run = (args: string[]): Run => {
-    const done = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: dir, CELLO_CALLER: `shell-${name}` } });
+    const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` } });
     let json: Record<string, unknown> = {};
     try {
       json = JSON.parse(done.stdout || done.stderr) as Record<string, unknown>;
@@ -115,7 +116,7 @@ function side(name: string, home: Server) {
   };
   const must = (args: string[]): Record<string, unknown> => {
     const done = run(args);
-    assert.equal(done.status, 0, `${name}: cello-v2 ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
+    assert.equal(done.status, 0, `${name}: cello ${args.join(" ")} failed: ${done.stdout}${done.stderr}`);
     return done.json;
   };
   const self = {
@@ -151,7 +152,8 @@ function side(name: string, home: Server) {
       const listed = spawnSync("lsof", ["-nP", "-a", "-p", String(self.status().pid), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"], { encoding: "utf8" }).stdout;
       return [...listed.matchAll(/->[^:\n]+:(\d+)/g)].map((m) => Number(m[1]));
     },
-    ports: () => [...new Set(self.connections())].sort(),
+    // The stand-in issuer it collected its signal from isn't a server.
+    ports: () => [...new Set(self.connections())].filter((p) => p !== issuerPort).sort(),
     connectionsTo: (port: number) => self.connections().filter((p) => p === port).length,
   };
   everyone.push(self);
@@ -199,8 +201,8 @@ class Stranger {
     return {
       identity: identityCodec.encode(identity),
       clientNonce: toB64(clientNonce),
-      nameSignature: signatureCodec.encode(await this.signer.sign("cello-v2-visit", registerBytes({ serverId: proveFor, identity }))),
-      signature: signatureCodec.encode(await this.signer.sign("cello-v2-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
+      nameSignature: signatureCodec.encode(await this.signer.sign("cello-visit", registerBytes({ serverId: proveFor, identity }))),
+      signature: signatureCodec.encode(await this.signer.sign("cello-agent-auth", agentAuthBytes({ serverId: proveFor, agentId: this.signer.id, serverNonce: server.nonce, clientNonce }))),
     };
   }
   async visit(): Promise<void> {
@@ -210,7 +212,7 @@ class Stranger {
     const server = await this.server;
     const own = await generateSessionEphemeral();
     const fields = { serverId: serverId ?? server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 60_000 };
-    return signedOffer.encode({ fields, signature: await this.signer.sign("cello-v2-session-offer", offerBytes(fields)) });
+    return signedOffer.encode({ fields, signature: await this.signer.sign("cello-session-offer", offerBytes(fields)) });
   }
   send(offer: ReturnType<typeof signedOffer.encode>): Promise<unknown> {
     return this.link.call("session.offer", { agent: toB64(this.signer.id), offer });

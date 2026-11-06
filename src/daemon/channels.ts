@@ -1,5 +1,6 @@
 // Channels on this machine: a producer and many consumers, with a position each. A number shows a gap and the reader asks
 // for it, and order isn't otherwise proved. Conversations share nothing with this but the agent's keys and the server link.
+import type { ChannelNoticeKind } from "../guidance.ts";
 import { randomBytes } from "node:crypto";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { openSessionContent, sealSessionContent } from "../protocol/aead.ts";
@@ -17,6 +18,7 @@ import {
   namedToPost,
   openKeyEntry,
   openSealed,
+  channelMemberKeyCodec,
   postHash,
   readInfo,
   readMemberKey,
@@ -452,7 +454,7 @@ export class Channels {
     const titleBlob = this.#seal(key, title);
     const bodyBlob = this.#seal(key, body);
     const fields: ChannelPostFields = { channelId: channel, generation, authorId: signer.id, authorSeq: seq, publishedAt: Date.now(), titleHash: hashBlob(titleBlob), bodyHash: hashBlob(bodyBlob) };
-    const signature = await signer.sign("cello-v2-channel-post", channelPostBytes(fields));
+    const signature = await signer.sign("cello-channel-post", channelPostBytes(fields));
     return JSON.stringify({ post: channelPostCodec.encode({ fields, signature }), title: toB64(titleBlob), body: toB64(bodyBlob) });
   }
 
@@ -472,7 +474,7 @@ export class Channels {
   async post(agentHex: string, channelHex: string, text: string, title: string | undefined, params: Record<string, unknown> = {}): Promise<unknown> {
     const channel = parseChannel(channelHex);
     // Outside the channel's queue, so a slow screen doesn't hold up what's arriving.
-    const retry = `cello-v2 channel-post ${channelHex} - --allow-flagged --agent ${agentHex}`;
+    const retry = `cello channel-post ${channelHex} - --allow-flagged --agent ${agentHex}`;
     const screenedBody = await this.#host.screenOutbound(agentHex, text, params, retry);
     const screenedTitle = title === undefined ? undefined : await this.#host.screenOutbound(agentHex, title, params, retry);
     const report = { ...screenedTitle?.report, ...screenedBody.report };
@@ -519,7 +521,7 @@ export class Channels {
       throw new LocalError(err.code, err.message);
     }
     const ack = await readPostAck(answer.ack, this.#host.serverIdentity(), channel);
-    const posted = channelPostCodec.decode((JSON.parse(wire) as { post: unknown }).post).fields;
+    const posted = channelPostCodec.decode((JSON.parse(wire) as { post: unknown }).post).bytes;
     if (!ack || !equalBytes(ack.postHash, postHash(posted))) throw new LocalError("bad_ack", "the server's answer to this post doesn't verify, so it can't be counted as posted. It'll be tried again.");
     this.#db.landLog(signer.id, channel, seq, ack.position, JSON.stringify(answer.ack));
     return { posted: true, position: ack.position, your_number: seq };
@@ -592,9 +594,9 @@ export class Channels {
     }
   }
 
-  #fault(agentHex: string, channel: Uint8Array, text: string): void {
+  #fault(agentHex: string, channel: Uint8Array, text: string, kind?: ChannelNoticeKind): void {
     this.#db.addNotice(this.#host.signer(agentHex).id, channel, text);
-    this.#host.ring(agentHex, { type: "channel_notice", agent: agentHex, channel_id: toHex(channel) });
+    this.#host.ring(agentHex, { type: "channel_notice", agent: agentHex, channel_id: toHex(channel), ...(kind ? { notice_kind: kind } : {}) });
   }
 
   // Runs on every check: what's changed, then a read only where there's something new.
@@ -623,9 +625,9 @@ export class Channels {
   }
 
   #stateChanged(agentHex: string, channel: Uint8Array, was: FollowRow["state"], now: FollowRow["state"]): void {
-    if (was === "pending" && now === "active") this.#fault(agentHex, channel, "You've been approved for this channel.");
-    else if (was === "pending" && now === "refused") this.#fault(agentHex, channel, "The admin refused your request to join this channel.");
-    else if (now === "ejected") this.#fault(agentHex, channel, "You've been ejected from this channel. What you already hold stays here, and nothing new will reach you.");
+    if (was === "pending" && now === "active") this.#fault(agentHex, channel, "You've been approved for this channel.", "admitted");
+    else if (was === "pending" && now === "refused") this.#fault(agentHex, channel, "The admin refused your request to join this channel.", "refused");
+    else if (now === "ejected") this.#fault(agentHex, channel, "You've been ejected from this channel. What you already hold stays here, and nothing new will reach you.", "removed");
   }
 
   // Ruled: when a reader gives up on a post, its publisher is told. The admin always hears, and so does the post's own author.
@@ -759,9 +761,9 @@ export class Channels {
     }
     const checked = await checkPost(item, author, channel);
     if (typeof checked === "string") return refuse(`it isn't signed by its author, or its text isn't what was signed (${checked})`);
-    const { fields } = checked;
+    const { fields, bytes: postBytes } = checked;
     const ack = await readPostAck(item.ack, this.#host.serverIdentity(), channel);
-    if (!ack || ack.position !== item.position || !equalBytes(ack.postHash, postHash(fields))) return refuse("the server's number on it doesn't verify");
+    if (!ack || ack.position !== item.position || !equalBytes(ack.postHash, postHash(postBytes))) return refuse("the server's number on it doesn't verify");
     if (!namedToPost(info, record.fields.adminId, fields.authorId)) return refuse("this channel's signed settings don't let its author post");
     const isPrivate = record.fields.visibility === ChannelVisibility.private;
     if (isPrivate && !this.#db.wasOnRoster(agent, channel, fields.generation, fields.authorId)) return refuse("its author isn't on the channel's signed roster for that key generation");
@@ -1072,5 +1074,5 @@ export class Channels {
 }
 
 function identityIdOf(member: RosterMemberFile): Uint8Array {
-  return fromB64(member.memberKey.fields["agentId"], "agentId");
+  return channelMemberKeyCodec.decode(member.memberKey).fields.agentId;
 }

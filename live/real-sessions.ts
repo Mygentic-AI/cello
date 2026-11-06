@@ -7,6 +7,7 @@
 // It fails only on what the protocol must guarantee. How the agents behaved is for a person to read.
 //
 // Watch it with: tmux attach -r -t cello-live
+import { type Body, readBodyBytes } from "../src/protocol/structures.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -38,14 +39,14 @@ const KILL_AT_POSITION = 5;
 // A run that never starts shouldn't sit for the whole limit.
 const START_LIMIT_MS = 2 * 60 * 1000;
 // A doorbell that asks for a read, as opposed to one that only says a session started or closed.
-const READ_DOORBELL = /<channel source="[^"]*cello-v2"[^>]* type="(message|peer_closed|notice|standby_overdue|daemon_back)"/;
-const ANY_DOORBELL = /<channel source="[^"]*cello-v2"/;
+const READ_DOORBELL = /<channel source="[^"]*cello"[^>]* type="(message|peer_closed|notice|standby_overdue|daemon_back)"/;
+const ANY_DOORBELL = /<channel source="[^"]*cello"/;
 
 // A short path, because a Unix socket path can't be long.
 // Resolved, because macOS's /tmp is a link and Claude Code files its transcripts under the real path.
 const base = realpathSync(mkdtempSync("/tmp/cv2-"));
 const home = join(base, "home");
-const env = { ...process.env, CELLO_V2_HOME: home };
+const env = { ...process.env, CELLO_HOME: home };
 const startedAt = Date.now();
 const stamp = new Date(startedAt).toISOString().replaceAll(":", "-").slice(0, 19);
 const evidence = join(homedir(), "cello-v2-live-runs", stamp);
@@ -76,11 +77,11 @@ async function until<T>(what: string, limitMs: number, check: () => T | undefine
 function prepareFolder(name: string): string {
   const folder = join(base, name);
   mkdirSync(folder);
-  writeFileSync(join(folder, "mcp.json"), JSON.stringify({ mcpServers: { "cello-v2": { command: process.execPath, args: [MCP], env: { CELLO_V2_HOME: home } } } }));
+  writeFileSync(join(folder, "mcp.json"), JSON.stringify({ mcpServers: { "cello": { command: process.execPath, args: [MCP], env: { CELLO_HOME: home } } } }));
   // Only project settings and only this one server, so no personal instructions, hooks or plugins load and spend tokens.
   // Unscripted sessions read a file of their own and think for themselves, so they get Read and normal effort.
-  const extra = args.unscripted ? "--allowedTools mcp__cello-v2 Read" : "--effort low --allowedTools mcp__cello-v2";
-  writeFileSync(join(folder, "start.sh"), `#!/bin/sh\ncd '${folder}'\nexec claude --model ${args.model} --setting-sources project --strict-mcp-config --mcp-config mcp.json --dangerously-load-development-channels server:cello-v2 ${extra} --disable-slash-commands\n`, { mode: 0o700 });
+  const extra = args.unscripted ? "--allowedTools mcp__cello Read" : "--effort low --allowedTools mcp__cello";
+  writeFileSync(join(folder, "start.sh"), `#!/bin/sh\ncd '${folder}'\nexec claude --model ${args.model} --setting-sources project --strict-mcp-config --mcp-config mcp.json --dangerously-load-development-channels server:cello ${extra} --disable-slash-commands\n`, { mode: 0o700 });
   return folder;
 }
 
@@ -261,7 +262,7 @@ function conversation(alphaId: string): { position: number | null; author: strin
     assert.ok(alpha);
     return store.sessionsOf(alpha.agent_id).flatMap((s) => store.verifiedEntries(alpha.agent_id, s.session_id, s.verified_position)).map((row) => {
       const fields = signedEntry.decode(JSON.parse(row.entry)).fields;
-      const body = JSON.parse(new TextDecoder().decode(row.body)) as { text: string; signal: string | null; est_minutes: number | null };
+      const body = readBodyBytes(row.body) as Body;
       return { position: row.position, author: toHex(fields.authorId) === alphaId ? "Alpha" : "Beta", kind: fields.kind === 2 ? "close" : "message", text: body.text, signal: body.signal, est_minutes: body.est_minutes };
     });
   } finally {

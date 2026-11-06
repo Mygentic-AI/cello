@@ -11,7 +11,8 @@ import {
   mlDsaGenerateSeed,
   mlDsaProviderFromSeed,
 } from "./ml-dsa.ts";
-import { encodeFields, exact } from "./encode.ts";
+import { exact } from "./encode.ts";
+import { identityBytes } from "./structures.ts";
 
 export const ED25519_SEED_BYTES = 32;
 export const ED25519_PUBLIC_KEY_BYTES = 32;
@@ -19,33 +20,35 @@ export const ED25519_SIGNATURE_BYTES = 64;
 
 // Each signed artifact has its own context, so a signature can't be moved from one kind to another.
 export const CONTEXTS = [
-  "cello-v2-register",
-  "cello-v2-agent-auth",
-  "cello-v2-visit",
-  "cello-v2-server-auth",
-  "cello-v2-session-offer",
-  "cello-v2-session-accept",
-  "cello-v2-session-refuse",
-  "cello-v2-session-greeting",
-  "cello-v2-session-confirm",
-  "cello-v2-session-assignment",
-  "cello-v2-entry",
-  "cello-v2-ack",
-  "cello-v2-delivery-ack",
-  "cello-v2-seal-request",
-  "cello-v2-seal-certificate",
-  "cello-v2-seal-log-head",
-  "cello-v2-seal-key-binding",
-  "cello-v2-agent-status",
-  "cello-v2-agent-status-witness",
-  "cello-v2-channel-record",
-  "cello-v2-channel-info",
-  "cello-v2-channel-post",
-  "cello-v2-channel-post-ack",
-  "cello-v2-channel-state",
-  "cello-v2-channel-member-key",
-  "cello-v2-channel-roster",
-  "cello-v2-channel-key-entry",
+  "cello-register",
+  "cello-agent-auth",
+  "cello-visit",
+  "cello-server-auth",
+  "cello-session-offer",
+  "cello-session-accept",
+  "cello-session-refuse",
+  "cello-session-greeting",
+  "cello-session-confirm",
+  "cello-session-assignment",
+  "cello-entry",
+  "cello-ack",
+  "cello-delivery-ack",
+  "cello-seal-request",
+  "cello-seal-certificate",
+  "cello-seal-log-head",
+  "cello-seal-key-binding",
+  "cello-agent-status",
+  "cello-agent-status-witness",
+  "cello-channel-record",
+  "cello-channel-info",
+  "cello-channel-post",
+  "cello-channel-post-ack",
+  "cello-channel-state",
+  "cello-channel-member-key",
+  "cello-channel-roster",
+  "cello-channel-key-entry",
+  "cello-signal",
+  "cello-issuer-list",
 ] as const;
 
 export type SigningContext = (typeof CONTEXTS)[number];
@@ -71,7 +74,7 @@ export interface Signer {
   sign(context: SigningContext, bytes: Uint8Array): Promise<DualSignature>;
 }
 
-function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+export function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   if (!(CONTEXTS as readonly string[]).includes(context)) throw new Error(`unknown signing context: ${String(context)}`);
   const ctx = new TextEncoder().encode(context);
   const framed = new Uint8Array(ctx.length + 1 + bytes.length);
@@ -84,7 +87,7 @@ function frame(context: SigningContext, bytes: Uint8Array): Uint8Array<ArrayBuff
 export function identityId(pub: PublicIdentity): Uint8Array {
   exact("Ed25519 public key", pub.ed, ED25519_PUBLIC_KEY_BYTES);
   exact("ML-DSA public key", pub.pq, ML_DSA_PUBLIC_KEY_BYTES);
-  return sha256(encodeFields([new TextEncoder().encode("cello-v2/identity"), pub.ed, pub.pq]));
+  return sha256(identityBytes(pub));
 }
 
 export function generateIdentitySeeds(): IdentitySeeds {

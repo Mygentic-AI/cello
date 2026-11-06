@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { type WitnessedEntry, verifyTranscript } from "../src/protocol/chain.ts";
+import { ChainVerifier, type WitnessedEntry, verifyTranscript } from "../src/protocol/chain.ts";
 import { ZERO_HASH, toHex } from "../src/protocol/encode.ts";
 import { type Signer, generateIdentitySeeds, signerFromSeeds } from "../src/protocol/identity.ts";
 import { EMPTY_ROOT, RunningMerkle, leafHash, nodeHash } from "../src/protocol/merkle.ts";
@@ -45,6 +45,7 @@ async function buildConversation(): Promise<Fixture> {
   for (const [i, author] of [alice, bob, alice, alice, bob].entries()) {
     const head = heads.get(toHex(author.id));
     const fields: EntryFields = {
+      serverId: server.id,
       sessionId,
       authorId: author.id,
       authorSeq: (head?.seq ?? 0) + 1,
@@ -64,9 +65,11 @@ async function buildConversation(): Promise<Fixture> {
     const ack = { serverId: server.id, sessionId, position: i + 1, entryHash: hash, root, time: 1_000 + i };
     items.push({
       fields,
-      signature: await author.sign("cello-v2-entry", entryBytes(fields)),
+      signature: await author.sign("cello-entry", entryBytes(fields)),
+      bytes: entryBytes(fields),
       ack,
-      ackSignature: await server.sign("cello-v2-ack", ackBytes(ack)),
+      ackSignature: await server.sign("cello-ack", ackBytes(ack)),
+      ackBytes: ackBytes(ack),
     });
   }
   return { sessionId, alice, bob, server, items };
@@ -82,20 +85,21 @@ test("an untouched conversation checks out", async () => {
 
 // Re-signs what a tamperer could re-sign, so each case reaches the check it is aimed at.
 async function resignAsServer(item: WitnessedEntry): Promise<WitnessedEntry> {
-  return { ...item, ackSignature: await fixture.server.sign("cello-v2-ack", ackBytes(item.ack)) };
+  return { ...item, ackSignature: await fixture.server.sign("cello-ack", ackBytes(item.ack)) };
 }
 
 async function faultWhen(change: (items: WitnessedEntry[]) => Promise<void> | void): Promise<string | undefined> {
   const items = fixture.items.map((item) => ({ ...item }));
   await change(items);
-  return (await verifyTranscript(parties, items)).fault;
+  // What was changed in the fields is what the bytes now say, because the check runs over the bytes.
+  return (await verifyTranscript(parties, items.map((item) => ({ ...item, bytes: entryBytes(item.fields), ackBytes: ackBytes(item.ack) })))).fault;
 }
 
 test("each tampering is caught, and named", async () => {
   const at = (items: WitnessedEntry[], i: number): WitnessedEntry => items[i] as WitnessedEntry;
 
-  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, fields: { ...i.fields, contentHash: new Uint8Array(5) } }; }), "malformed_entry");
-  assert.equal(await faultWhen((x) => { const i = at(x, 2); x[2] = { ...i, ack: { ...i.ack, position: -1 } }; }), "malformed_entry");
+  assert.throws(() => entryBytes({ ...at(fixture.items, 2).fields, contentHash: new Uint8Array(5) }), RangeError);
+  assert.throws(() => ackBytes({ ...at(fixture.items, 2).ack, position: -1 }), RangeError);
   assert.equal(await faultWhen((x) => { x.splice(1, 1); }), "bad_position");
   assert.equal(await faultWhen((x) => { const a = at(x, 1); x[1] = at(x, 2); x[2] = a; }), "bad_position");
 
@@ -111,7 +115,7 @@ test("each tampering is caught, and named", async () => {
   // The server forges a message from Bob, signing with its own key.
   assert.equal(await faultWhen(async (x) => {
     const item = at(x, 1);
-    x[1] = { ...item, signature: await fixture.server.sign("cello-v2-entry", entryBytes(item.fields)) };
+    x[1] = { ...item, signature: await fixture.server.sign("cello-entry", entryBytes(item.fields)) };
   }), "bad_entry_signature");
 
   // An outsider's entry.
@@ -134,10 +138,46 @@ test("an author can't skip or fork their own chain, or claim to have read what d
     const item = at(x, i);
     const fields = { ...item.fields, ...change };
     const author = toHex(fields.authorId) === toHex(fixture.alice.id) ? fixture.alice : fixture.bob;
-    x[i] = { ...item, fields, signature: await author.sign("cello-v2-entry", entryBytes(fields)), ack: { ...item.ack, entryHash: entryHash(fields) } };
+    x[i] = { ...item, fields, signature: await author.sign("cello-entry", entryBytes(fields)), ack: { ...item.ack, entryHash: entryHash(fields) } };
   };
   assert.equal(await faultWhen((x) => rebuilt(2, { authorSeq: 3 }, x)), "bad_author_seq");
   assert.equal(await faultWhen((x) => rebuilt(2, { prevOwnHash: hashOf("a fork") }, x)), "bad_author_chain");
   assert.equal(await faultWhen((x) => rebuilt(2, { readPosition: 3 }, x)), "read_beyond_tip");
   assert.equal(await faultWhen((x) => rebuilt(2, { readRoot: hashOf("not what was read") }, x)), "bad_read_root");
+});
+
+test("entries can't be re-witnessed on a second server, because each names the server meant to witness it", async () => {
+  // A hostile second server holds the entries and acks them under its own key. Its chain is otherwise perfect.
+  const hostile = await signerFromSeeds(generateIdentitySeeds());
+  const tree = new RunningMerkle();
+  const items = await Promise.all(fixture.items.map(async (item) => {
+    const ack = { ...item.ack, serverId: hostile.id, root: tree.append(item.ack.entryHash), time: 2_000 };
+    return { ...item, ack, ackBytes: ackBytes(ack), ackSignature: await hostile.sign("cello-ack", ackBytes(ack)) };
+  }));
+  const report = await verifyTranscript({ ...parties, server: hostile.publicIdentity }, items);
+  assert.equal(report.fault, "entry_wrong_server");
+});
+
+// A hostile server re-acks a real signed entry: its own key, its own time. Only the signed window and the order stop it.
+async function reack(items: WitnessedEntry[], i: number, time: number): Promise<void> {
+  const item = items[i] as WitnessedEntry;
+  items[i] = await resignAsServer({ ...item, ack: { ...item.ack, time } });
+}
+
+test("a server can't witness a message after its author's window closed, or backdate to get under it", async () => {
+  assert.equal(await faultWhen(async (x) => { await reack(x, 2, 2_000_000_000_001); }), "entry_expired");
+  assert.equal(await faultWhen(async (x) => { await reack(x, 2, 1_001 - 1); }), "ack_time_backwards");
+  assert.equal(await faultWhen(async (x) => { await reack(x, 4, 2_000_000_000_000); }), undefined, "exactly at the window is still inside it");
+});
+
+test("nobody can write after closing", async () => {
+  const closing = fixture.items[4] as WitnessedEntry;
+  const author = toHex(closing.fields.authorId) === toHex(fixture.alice.id) ? fixture.alice : fixture.bob;
+  const verifier = new ChainVerifier(parties);
+  for (const item of fixture.items) assert.equal(await verifier.check(item), null);
+  const fields = { ...closing.fields, kind: EntryKind.message, authorSeq: closing.fields.authorSeq + 1, prevOwnHash: closing.ack.entryHash, readPosition: 5, readRoot: verifier.root };
+  const hash = entryHash(fields);
+  const ack = { ...closing.ack, position: 6, entryHash: hash, root: hash };
+  const after = { fields, signature: await author.sign("cello-entry", entryBytes(fields)), bytes: entryBytes(fields), ack, ackBytes: ackBytes(ack), ackSignature: await fixture.server.sign("cello-ack", ackBytes(ack)) };
+  assert.equal(await verifier.check(after), "entry_after_close");
 });

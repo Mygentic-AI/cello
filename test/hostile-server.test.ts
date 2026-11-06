@@ -39,7 +39,7 @@ test("garbage pushes from the server leave the daemon running", async () => {
         const answer = (result: unknown): void => socket.send(JSON.stringify({ v: PROTOCOL_VERSION, id: frame.id, ok: true, result }));
         if (frame.method === "hello") {
           const clientNonce = fromB64(frame.params["clientNonce"], "clientNonce");
-          const signature = await signer.sign("cello-v2-server-auth", serverAuthBytes({ serverId: signer.id, clientNonce, serverNonce }));
+          const signature = await signer.sign("cello-server-auth", serverAuthBytes({ serverId: signer.id, clientNonce, serverNonce }));
           answer({ server: identityCodec.encode(signer.publicIdentity), serverNonce: toB64(serverNonce), signature: signatureCodec.encode(signature) });
         } else if (frame.method === "auth") {
           authedAgent = Buffer.from(fromB64(frame.params["agentId"], "agentId")).toString("hex");
@@ -55,7 +55,7 @@ test("garbage pushes from the server leave the daemon running", async () => {
 
   const home = mkdtempSync(join(tmpdir(), "cello-v2-hostile-"));
   const entry = fileURLToPath(new URL("../src/daemon/main.ts", import.meta.url));
-  const daemon = spawn(process.execPath, [entry, `ws://127.0.0.1:${port}/`], { env: { ...process.env, CELLO_V2_HOME: home }, stdio: "ignore" });
+  const daemon = spawn(process.execPath, [entry, `ws://127.0.0.1:${port}/`], { env: { ...process.env, CELLO_HOME: home }, stdio: "ignore" });
   const socketPath = join(home, "daemon.sock");
   const client = await until("the daemon's socket", async () => {
     try {

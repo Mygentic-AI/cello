@@ -24,9 +24,9 @@ const prefix = join(work, "prefix");
 const home = join(work, "home");
 const cwd = join(work, "cwd");
 const npmCache = join(work, "npm-cache");
-const packageDir = join(prefix, "lib", "node_modules", "cello-v2");
-const binary = join(prefix, "bin", "cello-v2");
-const mcpBinary = join(prefix, "bin", "cello-v2-mcp");
+const packageDir = join(prefix, "lib", "node_modules", "@cello-protocol", "cli");
+const binary = join(prefix, "bin", "cello");
+const mcpBinary = join(prefix, "bin", "cello-mcp");
 const compose = { ...process.env, COMPOSE_PROJECT_NAME: process.env["CELLO_INSTALL_PROJECT"] ?? "cello-v2-install", CELLO_PORT: port, POSTGRES_PASSWORD: randomHex(), CELLO_APP_PASSWORD: randomHex() };
 
 let tarball = "";
@@ -60,7 +60,7 @@ interface Run { status: number | null; stdout: string; stderr: string; json: Rec
 
 // Found by name on the installed PATH, as it would be for anyone.
 function cello(args: string[], input?: string): Run {
-  const run = spawnSync("cello-v2", args, { encoding: "utf8", input, cwd, env: installedEnv() });
+  const run = spawnSync("cello", args, { encoding: "utf8", input, cwd, env: installedEnv() });
   if (run.error) throw run.error;
   let json: Record<string, unknown> = {};
   try {
@@ -73,8 +73,8 @@ function cello(args: string[], input?: string): Run {
 
 function ok(args: string[], input?: string): Record<string, unknown> {
   const run = cello(args, input);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
-  assert.equal(run.stderr, "", `cello-v2 ${args.join(" ")} printed something a user would see on stderr`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.stderr, "", `cello ${args.join(" ")} printed something a user would see on stderr`);
   return run.json;
 }
 
@@ -123,7 +123,7 @@ before(async () => {
 }, { timeout: 600_000 });
 
 after(() => {
-  if (existsSync(join(home, ".cello-v2", "daemon.sock"))) cello(["logout"]);
+  if (existsSync(join(home, ".cello", "daemon.sock"))) cello(["logout"]);
   spawnSync("docker", ["compose", "down", "-v", "--remove-orphans"], { cwd: serverDir, env: compose });
   if (passed === TESTS) rmSync(work, { recursive: true, force: true });
   else process.stdout.write(`Kept for looking at: ${work}\n`);
@@ -141,16 +141,16 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
     "hermes/skills/cello-bridge-setup/SKILL.md",
     "hermes/skills/cello-policy/SKILL.md",
     "package.json",
-    "plugins/cello-v2/.claude-plugin/plugin.json",
-    "plugins/cello-v2/.mcp.json",
-    "plugins/cello-v2/skills/cello/SKILL.md",
+    "plugins/cello/.claude-plugin/plugin.json",
+    "plugins/cello/.mcp.json",
+    "plugins/cello/skills/cello/SKILL.md",
   ].sort();
   assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file per source file, plus these");
 
   const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { private?: boolean; engines?: { node?: string }; bin?: Record<string, string> };
   assert.equal(manifest.private, true, "nothing can publish this by accident");
   assert.equal(manifest.engines?.node, ">=24.7");
-  assert.deepEqual(manifest.bin, { "cello-v2": "./dist/cli.js", "cello-v2-mcp": "./dist/mcp.js" });
+  assert.deepEqual(manifest.bin, { "cello": "./dist/cli.js", "cello-mcp": "./dist/mcp.js" });
 
   for (const path of listing.filter((name) => name.endsWith(".js"))) {
     const code = readFileSync(join(packageDir, path), "utf8");
@@ -159,7 +159,7 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
   // Nothing that was only for building came along.
   for (const name of ["typescript", "eslint", "@types"]) assert.equal(existsSync(join(packageDir, "node_modules", name)), false, `${name} was installed`);
   assert.equal(realpathSync(binary), join(packageDir, "dist", "cli.js"));
-  assert.equal(spawnSync("sh", ["-c", "command -v cello-v2"], { encoding: "utf8", env: installedEnv() }).stdout.trim(), binary);
+  assert.equal(spawnSync("sh", ["-c", "command -v cello"], { encoding: "utf8", env: installedEnv() }).stdout.trim(), binary);
   assert.equal(relative(repo, work).startsWith(".."), true, "the install is outside this repo");
   passed++;
 });
@@ -168,12 +168,12 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   assert.equal(cello(["status"]).json["error"], "daemon_not_running");
   assert.match(cello(["login", "--server", url]).stdout, /connected/);
   assertDaemonIsInstalled();
-  const gail = ok(["create-agent", "Gail"]);
+  const gail = ok(["setup", "--yes", "--issuer", process.env["CELLO_TEST_ISSUER_URL"] as string, "--code", "live-install", "--name", "Gail", "--json"]);
   const hugo = ok(["create-agent", "Hugo"]);
   ok(["settings-set", "away.answering", "false", "--agent", "Hugo"]);
   await allOnline();
   // The real default home, and the database opens: this is the native SQLCipher loading from a plain npm install.
-  assert.ok(existsSync(join(home, ".cello-v2", "cello.db")));
+  assert.ok(existsSync(join(home, ".cello", "cello.db")));
 
   const started = ok(["initiate-session", hugo["agent_id"] as string, "--agent", "Gail"]);
   const session = started["session_id"] as string;
@@ -213,7 +213,7 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   passed++;
 });
 
-test("the installed cello-v2-mcp speaks real stdio, starts before login, lists every tool and rings", async () => {
+test("the installed cello-mcp speaks real stdio, starts before login, lists every tool and rings", async () => {
   ok(["stop-using-agent", "--agent", "Hugo"]);
   assert.match(cello(["logout"]).stdout, /stopped/);
 
@@ -237,7 +237,7 @@ test("the installed cello-v2-mcp speaks real stdio, starts before login, lists e
     // A plugin user often opens Claude Code first, so no daemon has to say what to do. Then it attaches by itself.
     const early = await call("cello_status");
     assert.equal(early["error"], "daemon_not_running");
-    assert.match(early["message"] as string, /cello-v2 login/);
+    assert.match(early["message"] as string, /cello login/);
     assert.match(cello(["login", "--server", url]).stdout, /connected/);
     await until("the server to attach to the daemon", async () => !(await call("cello_status"))["error"]);
     await allOnline();
@@ -264,9 +264,9 @@ test("the plugin in the installed package installs into a clean Claude Code and 
   const claude = hostTool("claude");
   must(claude, ["plugin", "validate", packageDir], { cwd, env });
   must(claude, ["plugin", "marketplace", "add", packageDir], { cwd, env });
-  must(claude, ["plugin", "install", "cello-v2@cello-v2"], { cwd, env });
+  must(claude, ["plugin", "install", "cello@cello-protocol"], { cwd, env });
   const servers = must(claude, ["mcp", "list"], { cwd, env });
-  assert.match(servers, /cello-v2.*cello-v2-mcp.*Connected/, servers);
+  assert.match(servers, /cello.*cello-mcp.*Connected/, servers);
   passed++;
 });
 
@@ -280,7 +280,7 @@ test("installing into someone's git repo leaves their hooks alone, and a missing
   const hooks = (): string => must("git", ["config", "core.hooksPath"], { cwd: project, env: npmEnv() }).trim();
   assert.equal(hooks(), "their-hooks");
   // Even if something does run prepare in the installed copy, where its script didn't ship.
-  must(hostTool("npm"), ["run", "prepare"], { cwd: join(project, "node_modules", "cello-v2"), env: npmEnv() });
+  must(hostTool("npm"), ["run", "prepare"], { cwd: join(project, "node_modules", "@cello-protocol", "cli"), env: npmEnv() });
   assert.equal(hooks(), "their-hooks");
 
   assert.match(cello(["logout"]).stdout, /stopped/);

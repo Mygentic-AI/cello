@@ -1,5 +1,6 @@
 // Contacts, tiers, limits, guards and policies through the real path: separate daemons, a real server, one command per call.
 // Who may loosen what is the point of most of this, so each loosening is tried from a pipe, as an agent would, then at a real terminal.
+import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import Database from "@signalapp/sqlcipher";
@@ -11,16 +12,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { socketPath } from "../src/daemon/paths.ts";
 import { IpcClient } from "../src/ipc/client.ts";
+import { OVER_GUIDANCE, POLICY_GUIDANCE, refusedGuidance } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const FLOOD_MESSAGE_BYTES = 200_000;
 const KNOCKS = 1000;
 
 type Json = Record<string, unknown>;
 interface Message { position: number; from: string; from_id: string; text?: string; blocked?: boolean; screening?: { verdict: string; reason?: string } }
-interface Read { messages: Message[]; notices: { text: string }[]; policies?: { policy?: { type: string; level: string; text: string } }[] }
+interface Read { messages: Message[]; notices: { text: string }[]; policies?: { policy?: { type: string; level: string; text: string } }[]; guidance?: { text: string }[] }
 interface SessionView { session_id: string; tier: string; with: string; bytes_received: number; byte_limit: number; same_daemon?: boolean; screening: { level: string; from: string } }
 
 class Machine {
@@ -29,7 +30,7 @@ class Machine {
     this.home = home ?? mkdtempSync(join(tmpdir(), "cello-v2-gov-"));
   }
   run(args: string[], input?: string): { status: number | null; stderr: string; json: Json } {
-    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home } });
+    const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};
     try {
       json = JSON.parse(run.stdout || run.stderr) as Json;
@@ -40,18 +41,18 @@ class Machine {
   }
   ok(args: string[], input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return run.json;
   }
   refused(args: string[], code: string, input?: string): Json {
     const run = this.run(args, input);
-    assert.equal(run.status, 1, `cello-v2 ${args.join(" ")} should have been refused`);
-    assert.equal(run.json["error"], code, `cello-v2 ${args.join(" ")} said ${run.stderr}`);
+    assert.equal(run.status, 1, `cello ${args.join(" ")} should have been refused`);
+    assert.equal(run.json["error"], code, `cello ${args.join(" ")} said ${run.stderr}`);
     return run.json;
   }
   // A real terminal: the code is read off the screen and typed back.
   person(args: string[]): string {
-    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_V2_HOME: this.home } });
+    const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: this.home } });
     assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
     return run.stdout;
   }
@@ -148,7 +149,7 @@ test("contacts and tiers: calling raises nobody, replying does, an agent can't r
   a.refused(["contact-set-tier", bId, "--tier", "vip", "--agent", "Ann"], "person_required", "yes\n");
   assert.equal(contactTier(a, "Ann", bId), "known");
   const tool = new Client({ name: "gov-test", version: "0" });
-  await tool.connect(new StdioClientTransport({ command: process.execPath, args: [mcpPath], env: { ...process.env, CELLO_V2_HOME: a.home } as Record<string, string> }));
+  await tool.connect(new StdioClientTransport({ command: process.execPath, args: [mcpPath], env: { ...process.env, CELLO_HOME: a.home } as Record<string, string> }));
   try {
     const names = (await tool.listTools()).tools.map((t) => t.name);
     for (const name of ["cello_contact_set_tier", "cello_settings_set", "cello_config_set", "cello_policy_propose", "cello_settings"]) assert.ok(names.includes(name), `${name} is a tool`);
@@ -243,6 +244,8 @@ test("guards: each agent has its own, and personal data, rate and language are r
   const refused = await until("the message from Jan", () => read(b, "Hob").messages.find((m) => m.position === 1 && m.blocked));
   assert.equal(refused.text, undefined);
   assert.match(refused.screening?.reason ?? "", /outside the languages/);
+  const record = b.ok(["transcript", other, "--agent", "Hob"]);
+  assert.equal(record["quarantined_guidance"], refusedGuidance(1), "the record says what a refused message is, and nothing it needs");
   const log = b.ok(["screening-log", "--agent", "Hob"]) as unknown as { screened: { verdict: string; reason: string }[] };
   assert.ok(log.screened.some((s) => /outside the languages/.test(s.reason ?? "")));
 });
@@ -264,6 +267,7 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
   b.ok(["send", session, "first", "--over", "--agent", "Lou"]);
   const before = await until("the first message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(before.policies, undefined);
+  assert.deepEqual(before.guidance?.map((g) => g.text), [OVER_GUIDANCE]);
 
   assert.match(a.person(["policy-approve", proposed["proposal_id"] as string, "--agent", "Kay"]), /"approved":true/);
   a.ok(["send", session, "reply", "--over", "--agent", "Kay"]);
@@ -271,6 +275,7 @@ test("policies: an agent proposes, only a person approves, and the policy rides 
   b.ok(["send", session, "second", "--over", "--agent", "Lou"]);
   const after = await until("the second message", () => { const r = read(a, "Kay"); return r.messages.length > 0 && r; });
   assert.equal(after.policies?.[0]?.policy?.text, conduct);
+  assert.deepEqual(after.guidance?.map((g) => g.text), [POLICY_GUIDANCE, OVER_GUIDANCE], "the policy's meaning stacks with the signal's");
 
   // A narrower level wins whole, and NONE stops the walk.
   const none = a.ok(["policy-propose", "--none", "--scope", "contact", "--target", bId, "--type", "conduct", "--agent", "Kay"]);

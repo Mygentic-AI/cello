@@ -1,5 +1,5 @@
 {
-  "name": "cello-v2",
+  "name": "@cello-protocol/cli",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -29,6 +29,7 @@
     "@noble/curves": "latest",
     "@noble/hashes": "latest",
     "@signalapp/sqlcipher": "latest",
+    "cbor-x": "1.6.4",
     "re2-wasm": "latest",
     "ws": "latest",
     "zod": "latest"
@@ -41,8 +42,8 @@
     "typescript-eslint": "latest"
   },
   "bin": {
-    "cello-v2": "./dist/cli.js",
-    "cello-v2-mcp": "./dist/mcp.js"
+    "cello": "./dist/cli.js",
+    "cello-mcp": "./dist/mcp.js"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

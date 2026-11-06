@@ -5,6 +5,8 @@ set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-channels}" CELLO_PORT="${CELLO_PORT:-18600}" CELLO_SERVER_DIR="$server_dir"
+# Servers require a verified email signal, and each daemon here collects a real one.
+. "$here/scripts/test-issuer-env.sh"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then

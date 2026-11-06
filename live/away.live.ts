@@ -1,5 +1,6 @@
 // Away messages through the real path: separate daemons, a real server, and the real database read as its owner.
 // Nobody holds an agent here unless the test says so, because that's the condition all of this turns on.
+import { REAL_CLI, cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
@@ -8,7 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18900/v1";
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = REAL_CLI;
 const ONE_MESSAGE = "This inbox only accepts one message per visit. Closing.";
 
 type Json = Record<string, unknown>;
@@ -19,18 +20,18 @@ interface View { session_id: string; state: string; own_closed: boolean; peer_cl
 class Machine {
   readonly home = mkdtempSync(join(tmpdir(), "cello-v2-away-"));
   run(args: string[]): { stderr: string } {
-    return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    return spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
   ok(args: string[], input?: string): Json {
-    const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_V2_HOME: this.home, CELLO_CALLER: "cli" } });
-    assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+    const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home, CELLO_CALLER: "cli" } });
+    assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
     return JSON.parse(run.stdout) as Json;
   }
   login(): void {
-    spawnSync(process.execPath, [cliPath, "login", "--server", url], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    spawnSync(process.execPath, [cliPath, "login", "--server", url], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
   logout(): void {
-    spawnSync(process.execPath, [cliPath, "logout"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: this.home } });
+    spawnSync(process.execPath, [cliPath, "logout"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }
 }
 
@@ -208,7 +209,7 @@ test("a suspended agent sends no greeting", async () => {
   const bId = idOf(b, "Tam");
   const a = machine();
   idOf(a, "Uma");
-  const terminal = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "suspend", "--agent", "Tam"], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_V2_HOME: b.home } });
+  const terminal = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "suspend", "--agent", "Tam"], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: b.home } });
   assert.match(terminal.stdout, /"status":\s*"suspended"/);
   const answer = a.run(["initiate-session", bId, "--agent", "Uma"]);
   await new Promise((resolve) => setTimeout(resolve, 2_000));

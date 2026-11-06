@@ -76,7 +76,7 @@ async function worker(caller: string): Promise<void> {
   function cello(args: string[], input?: string, onStart?: (child: ChildProcess) => void): Promise<Run> {
     return new Promise((resolve, reject) => {
       const start = now();
-      const child = spawn(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_V2_HOME: home, CELLO_CALLER: caller }, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(process.execPath, [cliPath, ...args], { env: { ...process.env, CELLO_HOME: home, CELLO_CALLER: caller }, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
@@ -102,7 +102,7 @@ async function worker(caller: string): Promise<void> {
 
   async function must(args: string[], input?: string): Promise<Run> {
     const run = await cello(args, input);
-    if (run.status !== 0) throw new Error(`cello-v2 ${args[0]} failed: ${run.stderr}`);
+    if (run.status !== 0) throw new Error(`cello ${args[0]} failed: ${run.stderr}`);
     return run;
   }
 
@@ -256,10 +256,10 @@ async function worker(caller: string): Promise<void> {
     const verify: number[] = [];
     for (let i = 0; i < 20; i++) {
       let start = now();
-      const signature = await signer.sign("cello-v2-entry", sample);
+      const signature = await signer.sign("cello-entry", sample);
       sign.push(now() - start);
       start = now();
-      if (!(await verifySignature(signer.publicIdentity, "cello-v2-entry", sample, signature))) throw new Error("a signature didn't verify");
+      if (!(await verifySignature(signer.publicIdentity, "cello-entry", sample, signature))) throw new Error("a signature didn't verify");
       verify.push(now() - start);
     }
     const seal: Record<string, number> = {};

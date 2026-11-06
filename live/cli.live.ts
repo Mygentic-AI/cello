@@ -1,5 +1,10 @@
 // A whole conversation by command line alone, with no MCP anywhere: real processes, one call each.
 // This is what any agent that can run a shell command gets. Run it with scripts/live-test.sh.
+import { REAL_CLI, cliFor } from "./cli-path.ts";
+import { editSigned } from "../test/edit-signed.ts";
+import type { WireSigned } from "../src/protocol/wire.ts";
+import { signedEntry } from "../src/protocol/wire.ts";
+import { bodyBytes, readBodyBytes } from "../src/protocol/structures.ts";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -15,10 +20,11 @@ import { saltedContentHash } from "../src/protocol/salt.ts";
 import { type SealRecordOnWire, encodeHashes } from "../src/protocol/seal.ts";
 import { sealCertificateBytes } from "../src/protocol/structures.ts";
 import { fromB64, signedSealCertificate, toB64 } from "../src/protocol/wire.ts";
+import { SEAL_NOTE, compareTranscripts } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+const cliPath = REAL_CLI;
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 
 function compose(...args: string[]): string {
@@ -31,7 +37,7 @@ function sql(query: string): string {
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
 function cello(args: string[], input?: string, caller?: string, inHome = home): Run {
-  const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_V2_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
+  const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input, env: { ...process.env, CELLO_HOME: inHome, ...(caller ? { CELLO_CALLER: caller } : {}) } });
   let json: Record<string, unknown> = {};
   try {
     json = JSON.parse(run.stdout || run.stderr) as Record<string, unknown>;
@@ -43,13 +49,13 @@ function cello(args: string[], input?: string, caller?: string, inHome = home): 
 
 function ok(args: string[], input?: string): Record<string, unknown> {
   const run = cello(args, input);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
 function okIn(inHome: string, args: string[]): Record<string, unknown> {
   const run = cello(args, undefined, undefined, inHome);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stderr}`);
   return run.json;
 }
 
@@ -97,7 +103,7 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
     assert.ok(overview.stdout.includes(`  ${op.command}`), `${op.command} is missing from the help`);
     const own = cello([op.command, "--help"]);
     assert.equal(own.status, 0);
-    assert.match(own.stdout, new RegExp(`^Usage: cello-v2 ${op.command}`));
+    assert.match(own.stdout, new RegExp(`^Usage: cello ${op.command}`));
   }
   assert.ok(overview.stdout.split("\n").every((line) => line.length <= 120), "the list stays short");
 
@@ -230,6 +236,7 @@ interface SealOutput {
   tip_when_sealed: number;
   partial: boolean;
   session_closed: boolean;
+  note?: string;
   statement: Record<string, string>;
 }
 
@@ -320,9 +327,8 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
     edit(copy);
     return saved(copy);
   };
-  const fieldsOf = (r: SealRecordOnWire) => r.certificate.fields as Record<string, string | number>;
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey)["fault"], "bad_seal_signature", "a changed certificate");
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["receivedThrough"] = 4; }), sealKey)["fault"], "bad_seal_signature", "a forged M");
+    assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.tip = 3; }); }), sealKey)["fault"], "bad_seal_signature", "a changed certificate");
+  assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.receivedThrough = 4; }); }), sealKey)["fault"], "bad_seal_signature", "a forged M");
   assert.equal(verify(tampered((r) => { r.deliveryAck = null; }), sealKey)["fault"], "delivery_ack_mismatch", "M with no ack behind it");
   assert.equal(verify(wholeFile, "00".repeat(32))["fault"], "wrong_seal_key", "a wrong key");
   assert.equal(verify(saved("not json"), sealKey)["fault"], "unreadable_file");
@@ -336,7 +342,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   const forged = structuredClone(exported) as unknown as SealRecordOnWire;
   const certificate = signedSealCertificate.decode(forged.certificate).fields;
   certificate.receivedThrough = 4;
-  forged.certificate = signedSealCertificate.encode({ fields: certificate, signature: await thief.sign("cello-v2-seal-certificate", sealCertificateBytes(certificate)) });
+  forged.certificate = signedSealCertificate.encode({ fields: certificate, signature: await thief.sign("cello-seal-certificate", sealCertificateBytes(certificate)) });
   assert.equal(verify(saved(forged), sealKey)["fault"], "delivery_ack_mismatch", "a stolen seal key can't raise M");
 
   // ---- A daemon kill. The server is down, the seal is saved, the daemon dies, and it finishes by itself. ----
@@ -372,6 +378,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   okIn(kitHome, ["receive", "--agent", "Kit"]);
   const kitClosed = okIn(kitHome, ["close-session", session, "--agent", "Kit"]) as { seal: SealOutput };
   assert.deepEqual([kitClosed.seal.sealed, kitClosed.seal.session_closed, kitClosed.seal.witnessed_through], [true, false, 5]);
+  assert.equal(kitClosed.seal.note, SEAL_NOTE, "the answer says what a seal attests");
   await until("Jan's copy of the close", () => (ok(["inbox", "--agent", "Jan"]) as { waiting: { ready: number }[] }).waiting[0]?.ready === 1);
   ok(["receive", "--agent", "Jan"]);
   const janClosed = ok(["close-session", session, "--agent", "Jan"]) as { state: string; seal: SealOutput };
@@ -392,6 +399,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   sql(`UPDATE entries SET root = '\\x${Buffer.from(rewritten.root()).toString("hex")}' WHERE session_id = '${hexSession}' AND position = 3`);
   const mismatch = cello(["seal", session, "--through", "3", "--agent", "Jan"]);
   assert.deepEqual([mismatch.status, mismatch.json["error"]], [1, "seal_root_mismatch"], mismatch.stdout + mismatch.stderr);
+  assert.ok((mismatch.json["message"] as string).endsWith(compareTranscripts(session)), "it says what to compare");
 
   // A log that no longer rebuilds its own root yields no seal, names the server as the cause, and isn't retried forever.
   const broken = cello(["seal", session, "--through", "2", "--agent", "Jan"]);
@@ -406,7 +414,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
   const offline = verify(wholeFile, sealKey, stranger) as unknown as SealOutput;
   assert.deepEqual([offline.witnessed_through, offline.received_through], [4, 3]);
-  assert.equal(verify(tampered((r) => { fieldsOf(r)["tip"] = 3; }), sealKey, stranger)["fault"], "bad_seal_signature");
+  assert.equal(verify(tampered((r) => { editSigned(r.certificate, signedSealCertificate, (s) => { s.tip = 3; }); }), sealKey, stranger)["fault"], "bad_seal_signature");
   compose("start", "server");
 });
 
@@ -420,7 +428,7 @@ test("a standby past its time tells each side once, across restarts, and changes
     const caller = `shell-${agent}`;
     const must = (args: string[]): Record<string, unknown> => {
       const done = cello(args, undefined, caller, inHome);
-      assert.equal(done.status, 0, `${agent}: cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+      assert.equal(done.status, 0, `${agent}: cello ${args.join(" ")} failed: ${done.stderr}`);
       return done.json;
     };
     const act = (...args: string[]): Record<string, unknown> => must([...args, "--agent", agent]);
@@ -441,7 +449,7 @@ test("a standby past its time tells each side once, across restarts, and changes
       },
       // A command that blocks, so this test can carry on while it does.
       wait: () => new Promise<Run>((resolve) => {
-        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
+        execFile(process.execPath, [cliPath, "wait", "--agent", agent, "--timeout-seconds", "30"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: inHome, CELLO_CALLER: caller } }, (err, stdout, stderr) => {
           resolve({ status: err ? (err.code as number) : 0, stdout, stderr, json: JSON.parse(stdout) as Record<string, unknown> });
         });
       }),
@@ -634,7 +642,7 @@ interface TranscriptOutput {
 
 interface TranscriptFile {
   seal: SealRecordOnWire;
-  entries: { entry: { fields: Record<string, string> }; ack: unknown }[];
+  entries: { entry: WireSigned; ack: unknown }[];
   salt: string;
   revealed: { position: number; body: string }[];
 }
@@ -697,7 +705,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   // No seal yet: it names the failure, and says what to run.
   const unsealed = refusal(nedHome, "--all", "--out", nextOut(), "--agent", "Ned");
   assert.equal(unsealed["error"], "no_seal_covers");
-  assert.match(unsealed["message"] as string, new RegExp(`cello-v2 seal ${session} --agent Ned`));
+  assert.match(unsealed["message"] as string, new RegExp(`cello seal ${session} --agent Ned`));
 
   const seal = ned("seal", session) as unknown as SealOutput;
   assert.deepEqual([seal.witnessed_through, seal.received_through], [4, 3]);
@@ -722,7 +730,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
 
   // A relative out starts from where the command runs.
   const relativeFolder = mkdtempSync(join(scratch, "relative-"));
-  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: nedHome } });
+  const relative = spawnSync(process.execPath, [cliPath, "export-transcript", session, "--reveal", "1", "--out", "here.json", "--agent", "Ned"], { cwd: relativeFolder, encoding: "utf8", env: { ...process.env, CELLO_HOME: nedHome } });
   assert.equal(relative.status, 0, relative.stderr);
   assert.equal(realpathSync((JSON.parse(relative.stdout) as { file: string }).file), realpathSync(join(relativeFolder, "here.json")));
 
@@ -746,7 +754,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   const partFile = nextOut();
   ned("export-transcript", session, "--reveal", "1,4", "--out", partFile);
   const partBytes = readFileSync(partFile, "utf8");
-  assert.doesNotMatch(partBytes, /accept/);
+  assert.doesNotMatch(partBytes, /I accept/);
   assert.equal(Buffer.from((JSON.parse(partBytes) as TranscriptFile).revealed.map((r) => r.body).join(""), "base64url").includes("understood"), false);
   const part = check(partFile);
   assert.ok(part.ok, part.message);
@@ -759,10 +767,10 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   const partOnDisk = JSON.parse(partBytes) as TranscriptFile;
   assert.equal(partOnDisk.salt, wholeOnDisk.salt, "one salt for the whole session");
   const salt = fromB64(partOnDisk.salt, "salt");
-  const target = (partOnDisk.entries[1]?.entry.fields as Record<string, string>)["contentHash"];
-  const guess = (n: string): string => toB64(saltedContentHash(salt, new TextEncoder().encode(JSON.stringify({ n, text: "understood, and I accept", signal: "over", est_minutes: null }))));
-  assert.notEqual(guess(toB64(new Uint8Array(16))), target);
-  const realValue = (JSON.parse(Buffer.from(wholeOnDisk.revealed[1]?.body as string, "base64url").toString()) as { n: string }).n;
+  const target = toB64(signedEntry.decode(partOnDisk.entries[1]?.entry).fields.contentHash);
+  const guess = (n: Uint8Array): string => toB64(saltedContentHash(salt, bodyBytes({ n, text: "understood, and I accept", signal: "over", est_minutes: null })));
+  assert.notEqual(guess(new Uint8Array(16)), target);
+  const realValue = readBodyBytes(fromB64(wholeOnDisk.revealed[1]?.body, "body"))!.n;
   assert.equal(guess(realValue), target, "with the random value the same guess matches, so this check can fail");
 
   // Ora comes back. She exports with her messages unread, and with another caller holding her: neither stands in the way.
@@ -822,12 +830,12 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   expectFault("wrong_session", (f) => { f.seal = elsewhere.seal; f.entries = f.entries.slice(0, 1); f.revealed = []; });
   // A body attributed to the wrong author: a label beside it, then the entry's own author.
   expectFault("malformed_transcript", (f) => { (f.revealed[1] as unknown as Record<string, string>)["author"] = oraAgent["agent_id"] as string; });
-  expectFault("ack_wrong_entry", (f) => { (f.entries[0]?.entry.fields as Record<string, string>)["authorId"] = toB64(Buffer.from(oraAgent["agent_id"] as string, "hex")); });
+  expectFault("ack_wrong_entry", (f) => { editSigned(f.entries[0]!.entry, signedEntry, (s) => { s.authorId = Buffer.from(oraAgent["agent_id"] as string, "hex"); }); });
   // A truncated chain, and a seal that covers less than the file holds, so it's for a different root.
   expectFault("truncated_chain", (f) => { f.entries.pop(); });
   expectFault("entries_beyond_seal", (f) => { f.seal = shortSeal; });
   // The seal's own checks still run. The same checks on the seal record as verify-seal.
-  expectFault("bad_seal_signature", (f) => { (f.seal.certificate.fields as Record<string, number>)["receivedThrough"] = 4; });
+  expectFault("bad_seal_signature", (f) => { editSigned(f.seal.certificate, signedSealCertificate, (s) => { s.receivedThrough = 4; }); });
   expectFault("bad_salt", (f) => { f.salt = `${f.salt}AA`; });
   expectFault("body_does_not_match", (f) => { f.salt = toB64(new Uint8Array(32).fill(1)); });
   assert.equal(check(wholeFile, "00".repeat(32)).fault, "wrong_seal_key");
@@ -853,7 +861,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   assert.match(closed.statement["hidden"] as string, /Nothing is hidden/);
 
   // The salt question, on real bodies: every one has its random value, closes included, and no two share one.
-  const values = (JSON.parse(readFileSync(closedFile, "utf8")) as TranscriptFile).revealed.map((r) => (JSON.parse(Buffer.from(r.body, "base64url").toString()) as { n: string }).n);
+  const values = (JSON.parse(readFileSync(closedFile, "utf8")) as TranscriptFile).revealed.map((r) => toB64(readBodyBytes(fromB64(r.body, "body"))!.n));
   assert.equal(values.length, 6);
   assert.ok(values.every((n) => Buffer.from(n, "base64url").length === 16));
   assert.equal(new Set(values).size, 6);
@@ -917,7 +925,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
   // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
   const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
-    execFile(process.execPath, [cliPath, ...args], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: liarHome } }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {
       let json: Record<string, unknown> = {};
       try {
         json = JSON.parse(stdout || stderr) as Record<string, unknown>;
@@ -929,7 +937,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
   });
   const must = async (args: string[]): Promise<Record<string, unknown>> => {
     const done = await run(args);
-    assert.equal(done.status, 0, `cello-v2 ${args.join(" ")} failed: ${done.stderr}`);
+    assert.equal(done.status, 0, `cello ${args.join(" ")} failed: ${done.stderr}`);
     return done.json;
   };
   try {
@@ -955,7 +963,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
     rewrite.current = (answer) => { answer.record.log.path = encodeHashes([new Uint8Array(32)]); };
     await refusedWith("log_proof_failed");
     // A certificate that doesn't match what this agent asked to have sealed.
-    rewrite.current = (answer) => { (answer.record.certificate.fields as Record<string, unknown>)["root"] = Buffer.alloc(32, 9).toString("base64url"); };
+    rewrite.current = (answer) => { editSigned(answer.record.certificate, signedSealCertificate, (s) => { s.root = new Uint8Array(32).fill(9); }); };
     await refusedWith("bad_seal_signature");
 
     // An honest one goes through, and pins the log's state.
