@@ -313,6 +313,21 @@ export class Engine {
       },
       roots: productionRootKeys,
       shippedList: SHIPPED_ISSUER_LIST,
+      publishToServer: (agentHex, file) => this.#publicSignalCall(agentHex, undefined, "signal.publish", (agent) => ({ agent: toB64(agent.signer.id), signal: toB64(file) })).then(() => undefined),
+      unpublishFromServer: (agentHex, signalId) => this.#publicSignalCall(agentHex, undefined, "signal.unpublish", (agent) => ({ agent: toB64(agent.signer.id), signalId: toB64(signalId) })).then(() => undefined),
+      readPublic: async (agentHex, address) => {
+        let parsed: ReturnType<typeof parseAddress>;
+        try {
+          parsed = parseAddress(address);
+        } catch (err: unknown) {
+          throw new LocalError(err instanceof PlainTextServer ? err.code : "bad_argument", err instanceof Error ? err.message : String(err));
+        }
+        const targetId = parseHex(parsed.id, 32, "address");
+        const target = toHex(targetId);
+        const answer = await this.#publicSignalCall(agentHex, parsed.server, "signal.public", (agent) => ({ agent: toB64(agent.signer.id), target: toB64(targetId) })) as { signals: unknown };
+        if (!Array.isArray(answer.signals) || answer.signals.some((entry) => typeof entry !== "string")) throw new LocalError("bad_server_answer", "That server's answer wasn't a list of signals, so nothing was read.");
+        return { target, files: (answer.signals as string[]).map((entry) => new Uint8Array(Buffer.from(entry, "base64url"))) };
+      },
     });
     this.governance = new Governance(store, {
       notify: (agentId, text) => {
@@ -2488,6 +2503,18 @@ export class Engine {
     }
     if (state === "active") return { session_id: sessionHex, state };
     return { session_id: sessionHex, state: "waiting", message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
+  }
+
+  // One call about public signals, as the agent, to its own server or to the one an address names. A stopped agent does nothing.
+  async #publicSignalCall(agentHex: string, serverUrl: string | undefined, method: string, params: (agent: AgentContext) => Record<string, unknown>): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    this.#refuseIfStopped(agent, serverUrl ?? this.#url);
+    const route = await this.#reach(agent, serverUrl);
+    try {
+      return await this.#call(() => route.link.call(method, params(agent)));
+    } finally {
+      this.#doneOpening(route);
+    }
   }
 
   async #call(work: () => Promise<unknown>): Promise<unknown> {

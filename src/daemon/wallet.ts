@@ -3,7 +3,7 @@ import { decodeCbor } from "../protocol/cbor.ts";
 import { toHex } from "../protocol/encode.ts";
 import type { PublicIdentity } from "../protocol/identity.ts";
 import { type IssuerList, RootKeysNotConfigured, type RootKey, recognisedIssuer, verifyIssuerList } from "../protocol/issuer-list.ts";
-import { checkSignal, issuerKeys } from "../protocol/signal.ts";
+import { checkSignal, issuerKeys, readSignedSignal } from "../protocol/signal.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { NO_EXPIRY_NOTE, unknownIssuerNote } from "../guidance.ts";
 import { LocalError } from "./errors.ts";
@@ -39,6 +39,11 @@ export interface WalletHooks {
   notify(agentId: Uint8Array, text: string): void;
   roots(): readonly RootKey[];
   shippedList: string | null;
+  // Public signals live on a server, so these reach it as the agent. Each fails by name if the server refuses or can't be reached.
+  publishToServer(agentHex: string, file: Uint8Array): Promise<void>;
+  unpublishFromServer(agentHex: string, signalId: Uint8Array): Promise<void>;
+  // The signed files a server holds as public for one agent, and the agent's id as it parsed from the address.
+  readPublic(agentHex: string, address: string): Promise<{ target: string; files: Uint8Array[] }>;
 }
 
 export interface SignalRefusal { fault: string; message: string }
@@ -284,6 +289,54 @@ export class Wallet {
     const row = this.#find(agentHex, prefix);
     this.#signals.setDefaultPresent(fromHex(agentHex), row.signal_hash, false);
     return { signal_hash: row.signal_hash, default_present: false };
+  }
+
+  // Only what could be shown: accepted by its subject, still current, and not past its date. The server checks it again and refuses a forgery.
+  async publish(agentHex: string, prefix: string): Promise<unknown> {
+    const row = this.#find(agentHex, prefix);
+    if (row.consent_state !== CONSENT_ACCEPTED) throw new LocalError("consent_pending", `This signal is '${row.consent_state}', not accepted, so it can't be made public. Accept it first.`);
+    if (row.status !== "active") throw new LocalError("signal_not_current", "A newer signal has replaced this one, so it can't be made public.");
+    if (row.expires_at !== null && row.expires_at <= nowSec()) throw new LocalError("signal_expired", "This signal has expired, so it can't be made public. cello signals collect fetches a current one.");
+    await this.#hooks.publishToServer(agentHex, new Uint8Array(row.file));
+    this.#signals.setPublic(fromHex(agentHex), row.signal_hash, true);
+    logEvent("signal.public.published", { agent: agentHex, signal: row.signal_hash });
+    return { signal_hash: row.signal_hash, public: true };
+  }
+
+  // The server forgets it first. If it can't be reached the signal stays marked public here, because it is still public there.
+  async unpublish(agentHex: string, prefix: string): Promise<unknown> {
+    const row = this.#find(agentHex, prefix);
+    await this.#hooks.unpublishFromServer(agentHex, readSignedSignal(new Uint8Array(row.file)).envelope.signal_id);
+    this.#signals.setPublic(fromHex(agentHex), row.signal_hash, false);
+    logEvent("signal.public.withdrawn", { agent: agentHex, signal: row.signal_hash });
+    return { signal_hash: row.signal_hash, public: false };
+  }
+
+  // What another agent has chosen to show. Every file is checked here, whatever the server says: its signatures, that it names this agent,
+  // and its dates. Whether the issuer counts is then read off the signed list and the owner's own, and a claim from one that doesn't is screened and quoted.
+  async lookup(agentHex: string, address: string): Promise<unknown> {
+    const { target, files } = await this.#hooks.readPublic(agentHex, address);
+    const list = await this.#list();
+    const now = nowSec();
+    const signals: Record<string, unknown>[] = [];
+    const refused: SignalRefusal[] = [];
+    for (const file of files) {
+      const checked = await checkSignal(file, { subject: target, now });
+      if (!checked.ok) {
+        logEvent("signal.lookup.refused", { agent: agentHex, fault: checked.fault });
+        refused.push({ fault: checked.fault, message: checked.message });
+        continue;
+      }
+      const e = checked.signal.envelope;
+      const held: WalletRow = {
+        agent_id: fromHex(target), signal_hash: toHex(checked.signal.hash), file, subject_kind: e.subject_kind, issuer_kind: e.issuer_kind, issuer_pubkey: e.issuer_pubkey,
+        issuer_address: e.issuer_address, type: e.type, schema_version: e.schema_version, payload: e.payload, issued_at: e.issued_at, expires_at: e.expires_at,
+        supersedes_hash: e.supersedes_hash === null ? null : toHex(e.supersedes_hash), same_operator: e.same_operator ? 1 : 0, status: "active", received_at: now * 1000,
+        default_present: 1, consent_state: CONSENT_ACCEPTED, public: 1,
+      };
+      signals.push(await this.#describe(agentHex, held, list, now));
+    }
+    return { agent: target, signals, refused };
   }
 
   // The caller has already had a person confirm this.

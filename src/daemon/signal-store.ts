@@ -121,6 +121,10 @@ export class SignalStore {
     this.#db.run("UPDATE signal_wallet SET default_present = ? WHERE agent_id = ? AND signal_hash = ?", [value ? 1 : 0, agentId, hash]);
   }
 
+  setPublic(agentId: Uint8Array, hash: string, value: boolean): void {
+    this.#db.run("UPDATE signal_wallet SET public = ? WHERE agent_id = ? AND signal_hash = ?", [value ? 1 : 0, agentId, hash]);
+  }
+
   // Active, unexpired and accepted, about the owner, from this issuer: what can vouch for a new agent on this daemon.
   accountLevel(agentId: Uint8Array, issuerAddress: string, nowSec: number): WalletRow | undefined {
     return this.#db.get(

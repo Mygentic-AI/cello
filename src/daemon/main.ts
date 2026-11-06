@@ -255,6 +255,12 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.wallet.disable(named(params), text(params, "hash"));
     case "signals_collect":
       return engine.wallet.collect(named(params));
+    case "signals_publish":
+      return engine.wallet.publish(acting(params), text(params, "hash"));
+    case "signals_unpublish":
+      return engine.wallet.unpublish(acting(params), text(params, "hash"));
+    case "signals_lookup":
+      return engine.wallet.lookup(acting(params), text(params, "address"));
     case "issuer_trust": {
       const agent = named(params);
       if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);
