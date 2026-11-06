@@ -353,7 +353,8 @@ async function hostedStack(): Promise<HostedStack> {
   const { NoopKeyCreator } = await imp("dist/key-creator.js");
   const { applyMigrations } = await imp("dist/migrate.js");
   const { HostingError } = await imp("dist/refusals.js");
-  const { LocalEnvelopeKeyProvider, StdoutLogger } = need("@cello-protocol/interfaces/stubs") as { LocalEnvelopeKeyProvider: new (hex: string) => unknown; StdoutLogger: new () => unknown };
+  // The package exports its stubs for import only, so this reads them from the hosting package's own copy by path.
+  const { LocalEnvelopeKeyProvider, StdoutLogger } = await imp("node_modules/@cello-protocol/interfaces/dist/stubs/index.js") as { LocalEnvelopeKeyProvider: new (hex: string) => unknown; StdoutLogger: new () => unknown };
   mkdirSync(join(WORK, "users"), { recursive: true });
   mkdirSync(join(WORK, "run"), { recursive: true });
   const tls = join(WORK, "tls");
