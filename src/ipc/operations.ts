@@ -818,7 +818,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "The rules that judge a call by the signals shown with it.",
     scoped: true,
     acts: false,
-    description: "The signal rules this agent has. A rule judges a call by the signals shown with it: inbound rules judge who calls you, by what they sent, and outbound rules judge who you call, by what came back. With no rule, nothing is required. A rule counts only signals from an issuer that counts on this machine, and not endorsements from your own operator toward a minimum count. The most specific rule wins: contact, then tier, then default.",
+    description: "The signal rules this agent has. A rule judges a call by the signals shown with it: inbound rules judge who calls you, by what they sent, and outbound rules judge who you call, by what came back. With no rule, nothing is required. A rule counts only signals from an issuer that counts on this machine, and never one from your own operator toward any demand (a type, a kind of issuer or a minimum count). The most specific rule wins: contact, then tier, then default.",
     params: [],
   },
   {
@@ -834,7 +834,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
       { name: "target", kind: "string", description: "For tier: unknown, known, whitelisted or vip. For contact: its agent_id. Not used for default." },
       { name: "require_types", kind: "string", description: "Signal types that must all be shown, comma-separated, such as email,github." },
       { name: "require_issuer_kind", kind: "string", allowed: ["issuer", "agent"], description: "At least one shown signal must come from this kind: issuer, or agent (an endorsement)." },
-      { name: "min_count", kind: "number", description: "At least this many signals. Endorsements from your own operator don't count toward it." },
+      { name: "min_count", kind: "number", description: "At least this many signals. Signals from your own operator never count toward a rule." },
     ],
   },
   {

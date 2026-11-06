@@ -142,3 +142,59 @@ test("anyone can ask for more, and only a person can ask for less, in both direc
   assert.deepEqual(governance.rules.list(ann.id), [], "none of the bad ones were kept");
   store.close();
 });
+
+test("a signal from the agent's own operator satisfies nothing: not a type, not a kind of issuer, not a minimum", () => {
+  const own = (type: string, over: Partial<{ issuer_kind: string }> = {}) => shown(type, { issuer_kind: "agent", same_operator: true, ...over });
+  const byType = evaluate(rule({ require_types: ["endorsement"] }), [own("endorsement")]);
+  assert.equal(byType.pass, false);
+  assert.deepEqual(byType.missing_types, ["endorsement"]);
+  assert.equal(byType.not_counted_same_operator, 1, "and the refusal can say why it looked fine");
+  const byKind = evaluate(rule({ require_issuer_kind: "agent" }), [own("endorsement")]);
+  assert.equal(byKind.pass, false);
+  assert.equal(byKind.missing_issuer_kind, true);
+  assert.equal(evaluate(rule({ min_count: 1 }), [own("endorsement")]).pass, false);
+  // The same endorsement from someone else's operator does satisfy each.
+  const theirs = shown("endorsement", { issuer_kind: "agent" });
+  assert.equal(evaluate(rule({ require_types: ["endorsement"] }), [theirs]).pass, true);
+  assert.equal(evaluate(rule({ require_issuer_kind: "agent" }), [theirs]).pass, true);
+  assert.equal(evaluate(rule({ min_count: 1 }), [theirs]).pass, true);
+  // A mix: the self-issued one doesn't help a type that only it carries, and the other one still counts for what it carries.
+  const mixed = evaluate(rule({ require_types: ["email", "endorsement"] }), [shown("email"), own("endorsement")]);
+  assert.deepEqual(mixed.missing_types, ["endorsement"]);
+});
+
+test("a loosening prompt and the notice to the agent name the old and the new rule in words, never a row", async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-rules-")), "cello.db"));
+  store.insertAgent(ann.id, "Ann", fill(1, 32), fill(2, 32));
+  const notices: string[] = [];
+  const governance = new Governance(store, { notify: (_agent, text) => { notices.push(text); }, isLocalAgent: () => false });
+  governance.writeDefaults(ann.id);
+  const agent = hex(ann.id);
+  const person = { person_confirmed: true, caller: "cli" };
+  governance.signalRuleSet(ann.id, agent, { direction: "inbound", scope: "tier", target: "unknown", require_types: "email,github", require_issuer_kind: "issuer", min_count: 2 });
+
+  // The prompt an agent relays to its operator.
+  let prompt = "";
+  try {
+    governance.signalRuleSet(ann.id, agent, { direction: "inbound", scope: "tier", target: "unknown", require_types: "email", min_count: 1 });
+  } catch (err: unknown) {
+    prompt = (err as LocalError).message;
+  }
+  assert.match(prompt, /from a rule asking for the types email, github, a signal from an issuer of kind issuer, at least 2 signals to a rule asking for the types email, at least 1 signal,/);
+  // The notice and the clear's prompt read the same way, and nothing raw leaks into any of them.
+  governance.signalRuleSet(ann.id, agent, { direction: "inbound", scope: "tier", target: "unknown", require_types: "email", min_count: 1, ...person });
+  let clearPrompt = "";
+  try {
+    governance.signalRuleClear(ann.id, agent, { direction: "inbound", scope: "tier", target: "unknown" });
+  } catch (err: unknown) {
+    clearPrompt = (err as LocalError).message;
+  }
+  governance.signalRuleClear(ann.id, agent, { direction: "inbound", scope: "tier", target: "unknown", ...person });
+  const notice = notices.find((n) => n.includes("signal_rule.inbound.tier.unknown")) ?? "";
+  assert.match(notice, /changed from "a rule asking for the types email, github, a signal from an issuer of kind issuer, at least 2 signals" to "a rule asking for the types email, at least 1 signal"/);
+  assert.match(clearPrompt, /Removing the inbound tier unknown signal rule/);
+  for (const text of [prompt, clearPrompt, ...notices]) {
+    assert.doesNotMatch(text, /agent_id|updated_at|\{"type":"Buffer"|\[object|<Buffer|"data":\[/, `raw data in: ${text.slice(0, 200)}`);
+  }
+  store.close();
+});

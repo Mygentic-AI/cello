@@ -234,7 +234,7 @@ export class Governance {
   signalRules(agentId: Uint8Array): unknown {
     return {
       rules: this.rules.list(agentId).map((row) => ({ direction: row.direction, scope: row.scope, target: row.target || undefined, require_types: row.require_types, require_issuer_kind: row.require_issuer_kind, min_count: row.min_count, updated_at: new Date(row.updated_at).toISOString() })),
-      note: "With no rule, no signals are required. A rule counts only signals from an issuer that counts here, and not endorsements from your own operator toward a minimum. The most specific rule wins: contact, then tier, then default.",
+      note: "With no rule, no signals are required. A rule counts only signals from an issuer that counts here, and never one from your own operator toward any demand (a type, a kind of issuer or a minimum). The most specific rule wins: contact, then tier, then default.",
     };
   }
 
@@ -273,8 +273,19 @@ export class Governance {
     return `cello signal-rule-set ${where} ${parts.join(" ")} --agent ${agentHex}`;
   }
 
+  // The rule in words a person can read in a prompt or a notice, from its three demands and nothing else. A stored row is trimmed to a bare rule first.
   #describeRule(rule: SignalRule | null): string {
-    return rule === null || isNoRule(rule) ? "no rule" : JSON.stringify(rule);
+    if (rule === null || isNoRule(rule)) return "no rule";
+    const demands = [
+      rule.require_types.length ? `the types ${rule.require_types.join(", ")}` : "",
+      rule.require_issuer_kind ? `a signal from an issuer of kind ${rule.require_issuer_kind}` : "",
+      rule.min_count ? `at least ${rule.min_count} signal${rule.min_count === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
+    return `a rule asking for ${demands.join(", ")}`;
+  }
+
+  #bare(row: SignalRule | undefined): SignalRule | null {
+    return row ? { require_types: [...row.require_types], require_issuer_kind: row.require_issuer_kind, min_count: row.min_count } : null;
   }
 
   // Asking for more is free, anyone may. Asking for less, or swapping one demand for another, lets a caller through who is stopped now, so it needs a person.
@@ -282,7 +293,7 @@ export class Governance {
     const { direction, scope, target } = this.#ruleKey(params);
     const next = this.#ruleFrom(params);
     const contactTier = scope === "contact" ? tierName(this.contacts.tierOf(agentId, fromHex(target))) : "unknown";
-    const before = this.rules.get(agentId, direction, scope, target) ?? null;
+    const before = this.#bare(this.rules.get(agentId, direction, scope, target));
     const weakens = this.rules.weakens(agentId, direction, scope, target, next, contactTier as never);
     const label = `${direction} ${scope}${target ? ` ${target}` : ""}`;
     const undo = this.#ruleCommand(direction, scope, target, before, agentHex);
@@ -294,7 +305,7 @@ export class Governance {
 
   signalRuleClear(agentId: Uint8Array, agentHex: string, params: Params): unknown {
     const { direction, scope, target } = this.#ruleKey(params);
-    const before = this.rules.get(agentId, direction, scope, target) ?? null;
+    const before = this.#bare(this.rules.get(agentId, direction, scope, target));
     if (before === null) return { direction, scope, target: target || undefined, cleared: false };
     const contactTier = scope === "contact" ? tierName(this.contacts.tierOf(agentId, fromHex(target))) : "unknown";
     const weakens = this.rules.weakens(agentId, direction, scope, target, null, contactTier as never);
