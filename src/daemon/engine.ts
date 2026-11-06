@@ -83,6 +83,7 @@ import { OutboundRateLimiter } from "./rate-limit.ts";
 import { type LanguageGuard, type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
 import { type Settings, loadSettings } from "./settings.ts";
 import { TIER, tierName } from "./tiers.ts";
+import { type Evaluation, type RuleDirection, evaluate, isNoRule } from "./signal-rules.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { compareTranscripts, type ChannelNoticeKind, LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
@@ -1033,6 +1034,12 @@ export class Engine {
       await this.#refuseOffer(agent, offer, refusal);
       return undefined;
     }
+    // Then the signals they showed. The refusal is the same sentence whatever the rule, so it tells the caller nothing about the rule or its tier.
+    const judged = await this.#judge(agent, "inbound", fields.callerId, theirs);
+    if (!judged.pass) {
+      await this.#refuseOffer(agent, offer, { code: "signals_required" });
+      return undefined;
+    }
     const own = await generateSessionEphemeral();
     const { ciphertext, sharedSecret } = await mlKemEncapsulate(fields.mlKemPublic);
     const { contentKey } = deriveSessionSecrets({
@@ -1072,6 +1079,35 @@ export class Engine {
     destroySessionEphemeral(own);
     sharedSecret.fill(0);
     return accept;
+  }
+
+  // The agent called answered, and what it showed fell short of this agent's outbound rule. Nothing is confirmed, and the caller is told in its own words.
+  #declineAfterAccept(agent: AgentContext, local: SessionRow, evaluation: Evaluation): void {
+    const sessionHex = toHex(local.session_id);
+    const lacking = [
+      evaluation.missing_types ? `types it didn't show: ${evaluation.missing_types.join(", ")}` : "",
+      evaluation.missing_issuer_kind ? "no signal from the kind of issuer required" : "",
+      evaluation.counted !== undefined && evaluation.missing_types === undefined && !evaluation.missing_issuer_kind ? `it showed ${evaluation.counted} that count` : "",
+      evaluation.not_counted_unrecognised ? `${evaluation.not_counted_unrecognised} from issuers this machine doesn't recognise didn't count` : "",
+      evaluation.not_counted_same_operator ? `${evaluation.not_counted_same_operator} from its own operator didn't count` : "",
+    ].filter(Boolean).join("; ");
+    const sentence = `${toHex(local.counterparty_id)} answered, but didn't show the signals your outbound rule asks for (${lacking}). The call was not confirmed. See the rule with: cello signal-rules`;
+    this.#store.updateSession(agent.signer.id, local.session_id, { state: "closed", fault: "signals_refused", x25519_secret: null, mlkem_seed: null });
+    this.#refusals.set(agent.hex + sessionHex, sentence);
+    logEvent("session.outbound_rule_declined", { agent: agent.hex, session: sessionHex });
+    this.#notify(agent, local.session_id, sentence);
+    this.#activation.get(agent.hex + sessionHex)?.();
+  }
+
+  // Judges a call by the signals the other side showed, against the rule that applies: this contact's, else its tier's, else the default. No rule passes.
+  // Only signals from an issuer that counts here are counted, so an issuer nobody recognises can't satisfy a rule. A set that wouldn't open counts as none.
+  async #judge(agent: AgentContext, direction: RuleDirection, counterpartyId: Uint8Array, shown: Uint8Array[] | "unreadable"): Promise<{ pass: true } | { pass: false; evaluation: Evaluation }> {
+    const tier = tierName(this.governance.contacts.tierOf(agent.signer.id, counterpartyId));
+    const { rule, level } = this.governance.rules.resolve(agent.signer.id, direction, tier, toHex(counterpartyId));
+    if (isNoRule(rule)) return { pass: true };
+    const evaluation = evaluate(rule, await this.wallet.standings(toHex(counterpartyId), shown === "unreadable" ? [] : shown));
+    logEvent("signal.rule.judged", { agent: agent.hex, direction, level, pass: evaluation.pass, ...(shown === "unreadable" ? { unreadable: true } : {}) });
+    return evaluation.pass ? { pass: true } : { pass: false, evaluation };
   }
 
   // The callee's own default set, sealed under the session key like its name. An accept can't be refused for a big set, so what doesn't fit is left off and the agent is told.
@@ -1124,7 +1160,15 @@ export class Engine {
     const ownSalt = generateSaltContribution();
     this.#takeOfferedName(agent, local, contentKey, accept.fields.sealedName);
     // What the callee showed, kept as the signed files it came as. A box that won't open is noted as that.
-    this.#presented.put(agent.signer.id, local.session_id, "callee", openUnderSession(contentKey, accept.fields.sealedSignals));
+    const theirs = openUnderSession(contentKey, accept.fields.sealedSignals);
+    this.#presented.put(agent.signer.id, local.session_id, "callee", theirs);
+    // Who was called, judged by what came back. If it doesn't meet the rule, the call isn't confirmed: the other side's pending row expires, and no conversation starts.
+    const judged = await this.#judge(agent, "outbound", local.counterparty_id, theirs);
+    if (!judged.pass) {
+      sharedSecret.fill(0);
+      this.#declineAfterAccept(agent, local, judged.evaluation);
+      return;
+    }
     const confirmFields = { acceptHash: structureHash(accept.bytes), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
     const signature = await agent.signer.sign("cello-session-confirm", confirmBytes(confirmFields));
     this.#store.updateSession(agent.signer.id, local.session_id, {

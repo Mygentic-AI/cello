@@ -210,6 +210,9 @@ function governed(method: string, params: Record<string, unknown>): unknown {
     case "config_set": return g.guardSet(id, named, params);
     case "screening": return g.setScreening(id, named, params);
     case "screening_log": return g.screeningLog(id, params["limit"] as number | undefined);
+    case "signal_rules": return g.signalRules(id);
+    case "signal_rule_set": return g.signalRuleSet(id, named, params);
+    case "signal_rule_clear": return g.signalRuleClear(id, named, params);
     case "policy_list": return g.policyList(id);
     case "policy_pending": return g.policyPending(id);
     case "policy_propose": return g.policyPropose(id, named, params);
@@ -381,6 +384,9 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     case "config_set":
     case "screening":
     case "screening_log":
+    case "signal_rules":
+    case "signal_rule_set":
+    case "signal_rule_clear":
     case "policy_list":
     case "policy_pending":
     case "policy_propose":

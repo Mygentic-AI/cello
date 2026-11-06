@@ -390,6 +390,22 @@ export class Wallet {
     return { signals, refused };
   }
 
+  // Just what a rule needs about shown signals: each file checked for the sender, and whether its issuer counts here. No notes and no screening,
+  // because a rule reads only the type, the kind of issuer, the co-ownership flag and the standing, never the words a signal carries.
+  async standings(subjectHex: string, files: readonly Uint8Array[]): Promise<{ type: string; issuer_kind: string; counts_as_verified: boolean; same_operator: boolean }[]> {
+    const list = await this.#list();
+    const now = nowSec();
+    const out: { type: string; issuer_kind: string; counts_as_verified: boolean; same_operator: boolean }[] = [];
+    for (const file of files) {
+      const checked = await checkSignal(file, { subject: subjectHex, now });
+      if (!checked.ok) continue;
+      const e = checked.signal.envelope;
+      const standing = issuerStanding({ issuer_address: e.issuer_address, issuer_pubkey: e.issuer_pubkey }, issuerKeys(e), list, this.#signals.trusted(), now);
+      out.push({ type: e.type, issuer_kind: e.issuer_kind, counts_as_verified: standing !== "unknown", same_operator: e.same_operator });
+    }
+    return out;
+  }
+
   // The signal files an agent shows with a call. Unspecified is the default set: accepted, current, unexpired, and switched on for showing.
   // "none" is nothing, and a list of hashes is exactly those, each of which must be fit to show. Never trimmed quietly: past the limit it says so.
   presentable(agentHex: string, spec?: string): { files: Uint8Array[]; hashes: string[] } {

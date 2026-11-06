@@ -8,6 +8,8 @@ import { Guards } from "./guards.ts";
 import { logEvent } from "./log.ts";
 import { PolicyCadence, admissionPolicyField, attachConductPolicy } from "./policy-cadence.ts";
 import { PolicyProposals } from "./policy-proposals.ts";
+import { ISSUER_KINDS, RULE_DIRECTIONS, RULE_SCOPES, type RuleDirection, type RuleScope, type SignalRule, SignalRules, isNoRule } from "./signal-rules.ts";
+import { MAX_PRESENTED_SIGNALS } from "../protocol/structures.ts";
 import { PolicyStore, type PolicyScope, type PolicyType, PolicyValidationError } from "./policy-store.ts";
 import { CALLING_RAISES_KEY, type Direction, Reach } from "./reach.ts";
 import { SettingError, changeSetting, listSettings } from "./settings.ts";
@@ -36,6 +38,8 @@ export const REFUSAL_SENTENCES = {
   not_accepting: "This agent is not accepting connections. Retrying will not change this.",
   busy: "This agent can't take another conversation from you right now.",
   session_limit: "You have reached the number of conversations this agent allows you. Close one, and try again.",
+  // The same words whatever the rule, so a caller can't read the rule or the tier from the refusal. Its public signals are where to look.
+  signals_required: "This agent asks for signals your call didn't show. Look up its public signals, then call again with the ones it needs.",
 } as const;
 export type RefusalCode = keyof typeof REFUSAL_SENTENCES;
 
@@ -58,6 +62,7 @@ export class Governance {
   readonly reach: Reach;
   readonly guards: Guards;
   readonly policies: PolicyStore;
+  readonly rules: SignalRules;
   readonly #proposals: PolicyProposals;
   readonly #cadence = new PolicyCadence();
   readonly #store: Store;
@@ -70,6 +75,7 @@ export class Governance {
     this.reach = new Reach(store);
     this.guards = new Guards(store);
     this.policies = new PolicyStore(store, this.reach);
+    this.rules = new SignalRules(store);
     this.#proposals = new PolicyProposals(store, this.reach, this.policies);
   }
 
@@ -110,7 +116,8 @@ export class Governance {
   noteRefusal(agentId: Uint8Array, agentHex: string, callerHex: string, code: RefusalCode): void {
     const told = this.reach.addRefusal(agentId, fromHex(callerHex), code, code !== "not_accepting", this.reach.number(agentId, "limits.cap_alarm_minutes") * 60_000);
     logEvent("session.refused", { agent: agentHex, caller: callerHex, reason: code });
-    if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+    if (told && code === "signals_required") this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and didn't show the signals your inbound rule asks for. See the rule with: cello signal-rules --agent ${agentHex}. To let it through anyway, a person can add it as a contact: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+    else if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
   }
 
   knocks(agentId: Uint8Array, agentHex: string): unknown[] {
@@ -220,6 +227,82 @@ export class Governance {
     if (direction === "loosen") this.reach.forgetRefusal(agentId, contact.id);
     if (direction !== "neutral") this.#weakened(agentId, `contact.${contact.hex}.tier`, tierName(from), tierName(to), direction, params, `cello contact-set-tier ${contact.hex} --tier ${tierName(from)} --agent ${agentHex}`);
     return this.#contactView(agentId, this.contacts.get(agentId, contact.id) as ContactRow);
+  }
+
+  // ---- Signal rules: who may call this agent, and who it may call, by the signals shown with the call. ----
+
+  signalRules(agentId: Uint8Array): unknown {
+    return {
+      rules: this.rules.list(agentId).map((row) => ({ direction: row.direction, scope: row.scope, target: row.target || undefined, require_types: row.require_types, require_issuer_kind: row.require_issuer_kind, min_count: row.min_count, updated_at: new Date(row.updated_at).toISOString() })),
+      note: "With no rule, no signals are required. A rule counts only signals from an issuer that counts here, and not endorsements from your own operator toward a minimum. The most specific rule wins: contact, then tier, then default.",
+    };
+  }
+
+  #ruleKey(params: Params): { direction: RuleDirection; scope: RuleScope; target: string } {
+    const direction = params["direction"];
+    const scope = params["scope"];
+    if (!RULE_DIRECTIONS.includes(direction as RuleDirection)) throw new LocalError("bad_argument", "direction must be inbound (who calls you) or outbound (who you call).");
+    if (!RULE_SCOPES.includes(scope as RuleScope)) throw new LocalError("bad_argument", "scope must be default, tier or contact.");
+    try {
+      return { direction: direction as RuleDirection, scope: scope as RuleScope, target: SignalRules.checkTarget(scope as RuleScope, optionalText(params, "target")) };
+    } catch (err: unknown) {
+      throw new LocalError("bad_argument", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  #ruleFrom(params: Params): SignalRule {
+    const rawTypes = optionalText(params, "require_types");
+    const types = rawTypes === undefined || rawTypes.trim() === "" ? [] : rawTypes.split(",").map((t) => t.trim());
+    for (const type of types) if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(type)) throw new LocalError("bad_argument", `${JSON.stringify(type)} isn't a signal type: letters, digits and _ . : - up to 64.`);
+    const kind = params["require_issuer_kind"];
+    if (kind !== undefined && !(ISSUER_KINDS as readonly unknown[]).includes(kind)) throw new LocalError("bad_argument", "require_issuer_kind must be issuer or agent.");
+    const min = params["min_count"];
+    if (min !== undefined && (typeof min !== "number" || !Number.isInteger(min) || min < 0)) throw new LocalError("bad_argument", "min_count must be a whole number, 0 or more.");
+    const rule: SignalRule = { require_types: [...new Set(types)], require_issuer_kind: (kind as SignalRule["require_issuer_kind"] | undefined) ?? null, min_count: (min as number | undefined) ?? 0 };
+    if (isNoRule(rule)) throw new LocalError("bad_argument", "A rule needs something in it: require_types, require_issuer_kind or min_count. To remove a rule, use signal-rule-clear.");
+    // A call carries at most this many signals, so a rule asking for more could never be met and would refuse everyone.
+    if (rule.min_count > MAX_PRESENTED_SIGNALS || rule.require_types.length > MAX_PRESENTED_SIGNALS) throw new LocalError("bad_argument", `A call carries at most ${MAX_PRESENTED_SIGNALS} signals, so a rule can't ask for more than that.`);
+    return rule;
+  }
+
+  // The command that puts this rule in force, or removes the rule when there is none. What a refusal tells an agent to relay, and what an undo runs.
+  #ruleCommand(direction: RuleDirection, scope: RuleScope, target: string, rule: SignalRule | null, agentHex: string): string {
+    const where = `--direction ${direction} --scope ${scope}${target ? ` --target ${target}` : ""}`;
+    if (rule === null) return `cello signal-rule-clear ${where} --agent ${agentHex}`;
+    const parts = [rule.require_types.length ? `--require-types ${rule.require_types.join(",")}` : "", rule.require_issuer_kind ? `--require-issuer-kind ${rule.require_issuer_kind}` : "", rule.min_count ? `--min-count ${rule.min_count}` : ""].filter(Boolean);
+    return `cello signal-rule-set ${where} ${parts.join(" ")} --agent ${agentHex}`;
+  }
+
+  #describeRule(rule: SignalRule | null): string {
+    return rule === null || isNoRule(rule) ? "no rule" : JSON.stringify(rule);
+  }
+
+  // Asking for more is free, anyone may. Asking for less, or swapping one demand for another, lets a caller through who is stopped now, so it needs a person.
+  signalRuleSet(agentId: Uint8Array, agentHex: string, params: Params): unknown {
+    const { direction, scope, target } = this.#ruleKey(params);
+    const next = this.#ruleFrom(params);
+    const contactTier = scope === "contact" ? tierName(this.contacts.tierOf(agentId, fromHex(target))) : "unknown";
+    const before = this.rules.get(agentId, direction, scope, target) ?? null;
+    const weakens = this.rules.weakens(agentId, direction, scope, target, next, contactTier as never);
+    const label = `${direction} ${scope}${target ? ` ${target}` : ""}`;
+    const undo = this.#ruleCommand(direction, scope, target, before, agentHex);
+    if (weakens) requirePerson(params, `This loosens the ${label} signal rule for ${agentHex}, from ${this.#describeRule(before)} to ${this.#describeRule(next)}, so a call is let through that is stopped now.`, this.#ruleCommand(direction, scope, target, next, agentHex));
+    this.rules.put(agentId, direction, scope, target, next);
+    this.#weakened(agentId, `signal_rule.${direction}.${scope}${target ? `.${target}` : ""}`, this.#describeRule(before), this.#describeRule(next), weakens ? "loosen" : "tighten", params, undo);
+    return { direction, scope, target: target || undefined, ...next, loosened: weakens };
+  }
+
+  signalRuleClear(agentId: Uint8Array, agentHex: string, params: Params): unknown {
+    const { direction, scope, target } = this.#ruleKey(params);
+    const before = this.rules.get(agentId, direction, scope, target) ?? null;
+    if (before === null) return { direction, scope, target: target || undefined, cleared: false };
+    const contactTier = scope === "contact" ? tierName(this.contacts.tierOf(agentId, fromHex(target))) : "unknown";
+    const weakens = this.rules.weakens(agentId, direction, scope, target, null, contactTier as never);
+    const redo = this.#ruleCommand(direction, scope, target, before, agentHex);
+    if (weakens) requirePerson(params, `Removing the ${direction} ${scope}${target ? ` ${target}` : ""} signal rule for ${agentHex} lets through calls it stops now.`, this.#ruleCommand(direction, scope, target, null, agentHex));
+    this.rules.clear(agentId, direction, scope, target);
+    this.#weakened(agentId, `signal_rule.${direction}.${scope}${target ? `.${target}` : ""}`, this.#describeRule(before), "no rule", weakens ? "loosen" : "tighten", params, redo);
+    return { direction, scope, target: target || undefined, cleared: true, loosened: weakens };
   }
 
   contactSetAway(agentId: Uint8Array, params: Params): unknown {
