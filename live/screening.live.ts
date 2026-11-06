@@ -155,15 +155,16 @@ test("a queue of long messages: nobody overtakes, the reply gate holds, stop get
   const b = machine();
   const c = machine();
   const { session, aId } = await pair(a, "Ada", b, "Ben");
+  // Carl's set up first: getting his signal takes seconds, long enough for the queue below to drain before the reply gate is tried.
+  const carlId = c.ok(["create-agent", "Carl"])["agent_id"] as string;
+  c.ok(["settings-set", "away.answering", "false", "--agent", "Carl"]);
+  await until("Carl online", () => (c.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
   const count = 8;
   for (let i = 1; i <= count; i++) a.ok(["send", session, "-", "--over", "--agent", "Ada"], big(`part${i}`, i === 5 ? HOSTILE : ""));
   a.ok(["send", session, "-", "--over", "--agent", "Ada"], "short, behind them all");
 
   // A second conversation, from another machine, on the same reader. Its short message passes the long lane.
   const benId = (b.ok(["agents"]) as { agents: { agent_id: string }[] }).agents[0]?.agent_id as string;
-  const carlId = c.ok(["create-agent", "Carl"])["agent_id"] as string;
-  c.ok(["settings-set", "away.answering", "false", "--agent", "Carl"]);
-  await until("Carl online", () => (c.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
   const other = c.ok(["initiate-session", benId, "--agent", "Carl"])["session_id"] as string;
   const sentAt = Date.now();
   c.ok(["send", other, "-", "--over", "--agent", "Carl"], "a short message from someone else");
