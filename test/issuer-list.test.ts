@@ -1,6 +1,5 @@
 // The root keys here are placeholders made for this test. Real ones are Andre's, and the production ones stay unset until he makes them.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createPrivateKey, randomBytes, webcrypto } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,16 +143,12 @@ test("the signing command takes any signer: two commands in turn make a list goo
   const failing = join(dir, "never");
   await assert.rejects(signIssuerListFile({ inPath: json, outPath: failing, signer: commandSigner("kms", "exit 7"), roots }), /status 7/);
   await assert.rejects(signIssuerListFile({ inPath: json, outPath: failing, signer: commandSigner("kms", "echo zz"), roots }), /lowercase hex/);
+  // A well-formed signature from the wrong key: the enclave's key signing in the KMS slot.
+  await assert.rejects(signIssuerListFile({ inPath: json, outPath: failing, signer: commandSigner("kms", `${process.execPath} ${script} ${join(dir, "enclave.pem")}`), roots }), /doesn't verify against the kms root key/);
   assert.ok(!existsSync(failing));
 });
 
-test("the real command refuses by name while the root keys aren't configured, and writes nothing", () => {
-  if (!Object.values(PRODUCTION_ROOT_KEYS).includes(null)) return;
-  const dir = mkdtempSync(join(tmpdir(), "issuer-list-"));
-  const cli = new URL("../src/cli.ts", import.meta.url).pathname;
-  const out = join(dir, "out");
-  const run = spawnSync(process.execPath, [cli, "issuer-list-sign", "--in", join(dir, "in"), "--out", out, "--root", "kms", "--signer-command", "true"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir } });
-  assert.equal(run.status, 1);
-  assert.match(run.stderr + run.stdout, /root_keys_not_configured/);
-  assert.ok(!existsSync(out));
+test("the shipped root keys are all present, distinct and the right shape", () => {
+  const keys = productionRootKeys();
+  assert.deepEqual(keys.map((key) => [key.name, key.algorithm, key.publicKey.length]), [["enclave", "p256", 65], ["kms", "p256", 65], ["paper", "ed25519", 32]]);
 });
