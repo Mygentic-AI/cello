@@ -60,7 +60,10 @@ async function until<T>(what: string, check: () => T | undefined | false, second
 // grep it starts, from matching their own command lines.
 const hidden = (text: string): string => text.replace(/^./, (c) => `[${c}]`);
 const MATCH = `for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q "$1" && ACTION; done`;
-const killing = (text: string): void => { inContainer(["sh", "-c", MATCH.replace("ACTION", "kill -9 ${p#/proc/}"), "sh", hidden(text)]); };
+const signalling = (text: string, signal: "KILL" | "STOP"): void => { inContainer(["sh", "-c", MATCH.replace("ACTION", `kill -${signal} \${p#/proc/}`), "sh", hidden(text)]); };
+const killing = (text: string): void => signalling(text, "KILL");
+// Every event the supervisor logged with this name, as the time it happened.
+const events = (event: string): number[] => docker(["logs", name]).stderr.split("\n").filter((l) => l.includes(`"event":"${event}"`)).map((l) => Date.parse((JSON.parse(l) as { at: string }).at));
 const running = (text: string): boolean => inContainer(["sh", "-c", `${MATCH.replace("ACTION", "exit 0")}; exit 1`, "sh", hidden(text)]).status === 0;
 
 let conciergeId: string;
@@ -88,14 +91,17 @@ before(async () => {
   docker(["volume", "rm", "-f", volume]);
   ok(homeP, ["login", "--server", url]);
   // The runbook's command, with this run's server. The container's own supervisor starts the daemon and the Concierge.
-  const started = docker(["run", "-d", "--name", name, "--init", "--restart", "unless-stopped", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, "-e", `CELLO_SERVER=${inside(url)}`, image]);
+  const started = docker(["run", "-d", "--name", name, "--init", "--restart", "unless-stopped", "--add-host", "host.docker.internal:host-gateway", "-v", `${volume}:/data`, "-e", `CELLO_SERVER=${inside(url)}`,
+    // Short windows, so the tests below that need one to pass don't each wait two minutes. The runbook's are 120.
+    "-e", "CONCIERGE_OFFLINE_RESTART_SECONDS=15", "-e", "CONCIERGE_STALE_SECONDS=10", "-e", "CONCIERGE_CHECK_SECONDS=5", image]);
   assert.equal(started.status, 0, started.stderr);
   await until("the daemon inside the container", () => inContainer(["cello", "status"]).status === 0);
   // The stand-in issuer listens on this machine's own address, so a relay inside the container makes it reachable at the same one.
   const port = new URL(issuer).port;
   docker(["exec", "-d", name, "node", "-e", `const n=require("net");n.createServer(c=>{const s=n.connect(${port},"host.docker.internal");c.pipe(s);s.pipe(c);c.on("error",()=>s.destroy());s.on("error",()=>c.destroy())}).listen(${port},"127.0.0.1")`]);
-  // The runbook's setup command. Production gives it a real code and no --issuer.
-  const setup = inContainer(["cello", "setup", "--yes", "--issuer", issuer, "--code", `live-${Date.now().toString(16)}`, "--name", "Concierge", "--server", inside(url), "--json"]);
+  // The runbook's setup command: the code comes in on standard input, so it is never in a command line. Production gives it
+  // a real code and no --issuer.
+  const setup = docker(["exec", "-i", name, "cello", "setup", "--yes", "--issuer", issuer, "--code", "-", "--name", "Concierge", "--server", inside(url), "--json"], `live-${Date.now().toString(16)}\n`);
   assert.equal(setup.status, 0, `setup: ${setup.stdout}${setup.stderr}`);
   conciergeId = await until("the Concierge agent", () => conciergeAddress());
   await until("the Concierge online", () => (JSON.parse(inContainer(["cello", "agents"]).stdout) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Concierge")?.online);
@@ -144,6 +150,47 @@ test("killing the Concierge program: the next call is answered, and the daemon w
   const session = call(caller);
   assert.deepEqual(await hears(caller, session, 1, 60), [lines.first]);
   assert.match(docker(["logs", name]).stderr, /supervisor\.concierge\.exited/);
+});
+
+// Up and doing nothing is the failure a process check can't see: it looks healthy, and nobody is answered.
+test("a frozen daemon, up but not answering, is replaced and the next call is answered", async () => {
+  const before = conciergeAddress();
+  const frozen = events("supervisor.daemon.frozen").length;
+  signalling("daemon/main", "STOP");
+  assert.ok(running("daemon/main"), "the daemon should still be there, only stopped");
+  const caller = await newCaller();
+  const session = call(caller);
+  assert.deepEqual(await hears(caller, session, 1, 120), [lines.first]);
+  assert.equal(events("supervisor.daemon.frozen").length, frozen + 1, "the supervisor should have said it found the daemon frozen");
+  assert.equal(conciergeAddress(), before, "the agent changed");
+});
+
+test("a stuck Concierge, up but writing no heartbeat, is replaced and the next call is answered", async () => {
+  const stale = events("supervisor.concierge.stale").length;
+  signalling("concierge/concierge.ts", "STOP");
+  const caller = await newCaller();
+  const session = call(caller);
+  assert.deepEqual(await hears(caller, session, 1, 90), [lines.first]);
+  assert.equal(events("supervisor.concierge.stale").length, stale + 1, "the supervisor should have said the Concierge went quiet");
+});
+
+test("a daemon that stays offline is restarted, each restart waits longer than the last, and it answers once the network is back", async () => {
+  const restarted = events("supervisor.daemon.restarted").length;
+  assert.equal(docker(["network", "disconnect", "bridge", name]).status, 0);
+  try {
+    // 15 seconds offline allowed. The first restart waits 30 before another is allowed, the second 60.
+    const times = await until("two restarts while offline", () => {
+      const all = events("supervisor.daemon.restarted").slice(restarted);
+      return all.length >= 2 && all;
+    }, 120);
+    const [first, second] = times as [number, number];
+    assert.ok(second - first >= 25_000, `the second restart came ${second - first} ms after the first, and should have waited at least 30 s`);
+  } finally {
+    assert.equal(docker(["network", "connect", "bridge", name]).status, 0);
+  }
+  const caller = await newCaller();
+  const session = call(caller);
+  assert.deepEqual(await hears(caller, session, 1, 120), [lines.first]);
 });
 
 test("a conversation in the middle survives both programs being killed at once, with no line repeated", async () => {

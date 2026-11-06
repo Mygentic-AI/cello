@@ -1,6 +1,9 @@
 # The CELLO Concierge on one small machine: the cello daemon and the Concierge program, in one container,
 # kept running by run.sh. Build from the repo root: docker build -f deploy/concierge/Dockerfile -t cello-concierge .
-FROM node:24-slim AS build
+# The base is pinned by digest, so a rebuild can't pick up a different node. The digest is of the multi-architecture
+# index, which resolves to the right image on an Apple chip and on a Google VM. Moving it is a decision: the tag is
+# node:24-slim, and `docker buildx imagetools inspect node:24-slim` prints the current digest.
+FROM node:24-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
 # pnpm 10, which this repo is built with. pnpm 12 ignores the build-script allowance in package.json and refuses to install.
 RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app
@@ -11,7 +14,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm run build && pnpm prune --prod
 
-FROM node:24-slim
+FROM node:24-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
 WORKDIR /app
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules

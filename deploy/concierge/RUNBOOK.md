@@ -1,10 +1,12 @@
 # Running the Concierge on its own machine
 
-The Concierge is the first agent a new person calls. This puts it on one small machine, keeps it running, and brings it back by itself after a crash or a reboot. It is one container holding the `cello` daemon, the Concierge program, and a supervisor that starts either again if it dies.
+The Concierge is the first agent a new person calls. This puts it on one small machine, keeps it working, and brings it back by itself after a crash or a reboot. It is one container holding the `cello` daemon, the Concierge program, and a supervisor that starts either again when it isn't working.
 
 The machine needs Docker, an outbound internet connection, and a disk that survives a reboot. It needs **no inbound port**: the daemon dials the server, and nothing dials in.
 
-Creating the machine is a decision for Andre. Nothing here creates one.
+## The CELLO machine
+
+It exists: `cello-concierge-1`, in `cello-infra`, `us-east1-d`. Terraform is `infra/terraform/concierge.tf` in `trustless-cello`, and `infra/GCP-STATE.md` records it. Its agent lives on the data disk at `/mnt/data/concierge`, which has a snapshot every day. From a `trustless-cello` checkout, `infra/concierge/deploy.sh [git ref] ` builds the image on the machine and starts the container with that disk mounted, which is the `docker run` below with `-v /mnt/data/concierge:/data` in place of the named volume. It does not create the agent.
 
 ## Before go-live
 
@@ -26,14 +28,16 @@ docker run -d --name concierge --init --restart unless-stopped \
   cello-concierge
 ```
 
-Then create the agent, once:
+Then create the agent, once. The code goes in on standard input, so it is never in a command line or in shell history:
 
 ```
-docker exec concierge cello setup --yes --code <the code> --name Concierge --server wss://server.celloprotocol.com/v1
+read -rs CODE
+printf '%s\n' "$CODE" | docker exec -i concierge cello setup --yes --code - --name Concierge --server wss://server.celloprotocol.com/v1
+unset CODE
 docker exec concierge cello agents
 ```
 
-The second command shows the agent's address. **That address is what goes into the client.** Within a minute the Concierge answers calls.
+The last command shows the agent's address. **That address is what goes into the client.** Within a minute the Concierge answers calls.
 
 ## Check it works
 
@@ -45,12 +49,17 @@ docker logs concierge
 
 ## What brings it back
 
-| It dies | What brings it back |
+| It dies, or stops working | What brings it back |
 |---|---|
-| The daemon | The supervisor, within a few seconds |
-| The Concierge program | The supervisor, within a few seconds |
+| The daemon dies | The supervisor, within a few seconds |
+| The daemon is up and frozen | The supervisor finds it doesn't answer within 20 seconds, kills it and starts another |
+| The daemon is up and the agent is offline | After 120 seconds offline, the supervisor restarts the daemon. Each restart that doesn't help doubles the wait before the next, up to 15 minutes. |
+| The Concierge program dies | The supervisor, within a few seconds. One that dies at once, again and again, waits longer each time, up to 30 seconds. |
+| The Concierge is up and stuck | It writes a heartbeat as it works. After 120 seconds of none, the supervisor kills it and starts another. |
 | Both, or everything in the container | Docker, because of `--restart unless-stopped` |
 | The machine reboots | Docker starts at boot and starts the container. Make sure `systemctl is-enabled docker` says `enabled`. |
+
+The 120 seconds are `CONCIERGE_OFFLINE_RESTART_SECONDS` and `CONCIERGE_STALE_SECONDS`. `CONCIERGE_CHECK_SECONDS` (30) is how often the agent's state is looked at. Pass any of them with `-e` on `docker run`.
 
 A conversation in progress carries on from where the daemon's record says it stood, and no line is repeated.
 
@@ -58,7 +67,7 @@ A conversation in progress carries on from where the daemon's record says it sto
 
 ## The one thing that can't be lost
 
-Everything the agent is lives in the `concierge-data` volume: its keys and its conversations. **If the volume is lost, the Concierge's address changes, and every client that has the old one calls nobody.** Snapshot the disk that holds it on a schedule, and do it before the first call is ever made to it.
+Everything the agent is lives in the data folder: its keys and its conversations. **If it is lost, the Concierge's address changes, and every client that has the old one calls nobody.** On the CELLO machine that is the snapshotted disk. Anywhere else, snapshot the disk that holds it on a schedule, and do it before the first call is ever made to it.
 
 ## Updating
 
@@ -66,17 +75,21 @@ Everything the agent is lives in the `concierge-data` volume: its keys and its c
 git pull
 docker build -f deploy/concierge/Dockerfile -t cello-concierge .
 docker stop concierge && docker rm concierge
-# then the same docker run as above. Don't run setup again: the agent is in the volume.
+# then the same docker run as above. Don't run setup again: the agent is in the data folder.
 ```
+
+On the CELLO machine, run `infra/concierge/deploy.sh` again instead.
 
 ## If it isn't answering
 
 Say what `docker logs concierge` shows, and stop there.
 
-- `supervisor.daemon.failed` repeating: the daemon can't start. The message says why. `server_changed` means the volume belongs to a different server.
-- `concierge.loop.failed` with `unknown_agent`: setup hasn't been run on this volume.
+- `supervisor.daemon.failed` repeating: the daemon can't start. The message says why. `server_changed` means the data belongs to a different server.
+- `supervisor.daemon.frozen`, or `supervisor.daemon.restarted` with `agent offline`: the supervisor found the daemon unwell and replaced it. Seen once, it is fine. Seen over and over, the server or the network is the problem, and the restarts are spacing themselves out.
+- `supervisor.concierge.stale`: the Concierge went quiet and was replaced.
+- `concierge.loop.failed` with `unknown_agent`: setup hasn't been run on this data.
 - `concierge.loop.failed` with `daemon_not_running`: the supervisor is bringing the daemon back, and it clears by itself.
 
 ## How this was proved
 
-`scripts/concierge-deploy-test.sh` builds the image, brings a fresh container up with these same commands against a real server, and has real agents call it. It then kills the daemon, the Concierge program, both in the middle of a conversation, and everything inside at once, and restarts the container. It checks that each call is still answered, the agent's address never changes, and no line repeats. It does not reboot a host: only the restart policy is checked.
+`scripts/concierge-deploy-test.sh` builds the image, brings a fresh container up with these same commands against a real server, and has real agents call it. It then kills the daemon and the Concierge program, freezes each of them, cuts the container's network for a minute and a half, kills both in the middle of a conversation, kills everything inside at once, and restarts the container. It checks that each call is still answered, the agent's address never changes, no line repeats, and the restarts after an outage space themselves out. It runs with short windows, 10 to 15 seconds in place of 120. It does not reboot a host: only the restart policy is checked.

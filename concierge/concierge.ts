@@ -3,7 +3,7 @@
 // Where a conversation stands is read back from the daemon's own record each time, so a restart of either program loses nothing.
 // A caller's text is never used: it decides nothing, is never logged and is never sent back. Only counts and signals are read.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 const LINE_NAMES = ["first", "next_step", "last", "silent", "limit"] as const;
@@ -40,7 +40,8 @@ export function decide(entries: readonly Entry[], peerClosed: boolean, silentToo
   return silentTooLong ? { do: "send", line: "silent" } : { do: "nothing" };
 }
 
-interface Options { agent: string; lines: Lines; silentSeconds: number; waitSeconds: number; maxCallsPerCaller: number; parallel: number }
+// heartbeat is a file this writes the time into as it works, for a supervisor that wants to know it isn't wedged.
+interface Options { agent: string; lines: Lines; silentSeconds: number; waitSeconds: number; maxCallsPerCaller: number; parallel: number; heartbeat?: string }
 
 function log(event: string, fields: Record<string, unknown> = {}): void {
   process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`);
@@ -127,6 +128,19 @@ export class Concierge {
     return ["--agent", this.#o.agent];
   }
 
+  // Written at the top of every pass, after every conversation and through every wait, so a long sweep during a flood
+  // and a long wait for a daemon both count as alive. Only a program that is stuck stops writing it.
+  #beat(): void {
+    if (this.#o.heartbeat) writeFileSync(this.#o.heartbeat, `${Date.now()}\n`);
+  }
+
+  async #nap(ms: number): Promise<void> {
+    for (let left = ms; left > 0 && !this.#stopping; left -= 1000) {
+      this.#beat();
+      await sleep(Math.min(left, 1000));
+    }
+  }
+
   async #entries(sessionId: string): Promise<Entry[]> {
     const entries: (Entry & { position: number })[] = [];
     for (;;) {
@@ -181,6 +195,7 @@ export class Concierge {
     try {
       await this.#handle(row, seen);
       seen.failures = 0;
+      this.#beat();
     } catch (err: unknown) {
       // session_not_current just means they wrote while this was happening, so it's tried again straight away.
       const code = err instanceof CommandFailed ? err.code : "unexpected";
@@ -229,6 +244,7 @@ export class Concierge {
     let down = 0;
     while (!this.#stopping) {
       const started = Date.now();
+      this.#beat();
       try {
         await this.#sweep();
         // Rings for a new caller who has said nothing, and returns at once for anything unread. The time limit covers a ring that came mid-sweep.
@@ -241,7 +257,7 @@ export class Concierge {
         const code = err instanceof CommandFailed ? err.code : "unexpected";
         // Said once per outage, or a long one fills the log. Bringing the daemon back is its supervisor's job.
         if (down === 1) log("concierge.loop.failed", { error: code, message: err instanceof Error ? err.message : String(err) });
-        await sleep(Math.min(LONGEST_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.min(down - 1, 5)));
+        await this.#nap(Math.min(LONGEST_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.min(down - 1, 5)));
         continue;
       }
       const spent = Date.now() - started;
@@ -265,6 +281,7 @@ async function main(): Promise<void> {
       "wait-seconds": { type: "string", default: "5" },
       "max-calls-per-caller": { type: "string", default: "5" },
       parallel: { type: "string", default: "8" },
+      heartbeat: { type: "string" },
     },
   });
   if (!values.agent) throw new Error("--agent is required: the name or agent_id of the agent that answers");
@@ -275,6 +292,7 @@ async function main(): Promise<void> {
     waitSeconds: number(values["wait-seconds"], "wait-seconds"),
     maxCallsPerCaller: number(values["max-calls-per-caller"], "max-calls-per-caller"),
     parallel: number(values.parallel, "parallel"),
+    heartbeat: values.heartbeat,
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => concierge.stop());
   log("concierge.started", { agent: values.agent, lines: values.lines });
