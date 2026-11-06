@@ -36,7 +36,8 @@ test("every way the command line fails tells a caller on a pipe why", async () =
 });
 
 test("a reason larger than a pipe holds still arrives whole", async () => {
-  const long = "x".repeat(200_000);
+  // Over a pipe's 64 KiB, and under Linux's 128 KiB limit on one argument, which refuses the spawn itself.
+  const long = "x".repeat(100_000);
   const usage = await failing(["send", "x", `--${long}`]);
   assert.equal(usage.status, 2);
   assert.ok(usage.stderr.includes(long), `only ${usage.stderr.length} bytes arrived`);
