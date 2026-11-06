@@ -78,13 +78,13 @@ test("a name that isn't this server's own is refused, even with the secret", asy
   }
 });
 
-test("nothing but a read is accepted, and only the six reads", async () => {
+test("nothing but a read is accepted, and only the five reads", async () => {
   const page = await start();
   try {
     for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
       assert.equal((await get(page.port, "/api/agents", signedIn, method)).status, 405, method);
     }
-    for (const name of ["contact_add", "settings_set", "config_set", "screening", "issuer_trust", "send", "remove_agent", "account", "status", "signals_enable", "signals_collect"]) {
+    for (const name of ["contact_add", "settings_set", "config_set", "screening", "issuer_trust", "send", "remove_agent", "account", "status", "signals_view", "signals_enable", "signals_collect"]) {
       const res = await get(page.port, `/api/${name}`, signedIn);
       assert.equal(res.status, 404, name);
       assert.equal(JSON.parse(res.body).error.code, "not_on_this_page");

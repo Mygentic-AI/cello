@@ -44,7 +44,7 @@ const SECTIONS = [
   { id: "contacts", title: "Contacts", method: "contacts", perAgent: true, pick: (r) => r.contacts },
   { id: "settings", title: "Settings", method: "settings", pick: (r) => r.settings },
   { id: "guards", title: "Guards", method: "config", perAgent: true, pick: (r) => r.guards },
-  { id: "track", title: "Track record", off: true },
+  { id: "track", title: "Track record", off: true, note: "Coming soon: how much you use CELLO and who you reach." },
 ];
 
 let token = "";
@@ -111,6 +111,11 @@ function frame(section) {
   const h = document.createElement("h2");
   h.textContent = section.title;
   el.append(h);
+  if (section.note) {
+    const p = document.createElement("p");
+    p.textContent = section.note;
+    el.append(p);
+  }
   return el;
 }
 

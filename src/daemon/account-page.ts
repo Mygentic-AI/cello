@@ -8,7 +8,7 @@ import { ACCOUNT_PAGE_ASSETS } from "./account-page-assets.ts";
 import { LocalError } from "./engine.ts";
 
 // What the page may ask for. Each is a read that acts as nobody. A test checks that every name is a real operation.
-export const ACCOUNT_PAGE_READS = ["agents", "signals_list", "signals_view", "contacts", "settings", "config"] as const;
+export const ACCOUNT_PAGE_READS = ["agents", "signals_list", "contacts", "settings", "config"] as const;
 
 export type AccountPageCall = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 

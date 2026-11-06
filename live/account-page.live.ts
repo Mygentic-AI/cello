@@ -188,9 +188,43 @@ test("a real browser opens the link and the page shows the agents, a signal and 
   assert.ok(dom.includes(ann), "Ann's id isn't on the page");
   assert.ok(dom.includes(signal), "Ann's signal isn't on the page");
   assert.ok(dom.includes(bea), "the contact isn't on the page");
-  assert.match(dom, /<h2>Track record<\/h2>/);
+  assert.match(dom, /<h2>Track record<\/h2><p>Coming soon: how much you use CELLO and who you reach\.<\/p>/);
   assert.match(dom, /<p id="problem"[^>]*hidden/, "the page is showing a problem");
   assert.ok(!dom.includes(link.token), "the secret is left in the page's address or text");
+});
+
+// Names are limited to letters, digits, underscores and dashes, so the text a stranger or an owner can put on the page
+// is an away message and a text setting. Both go in as markup that would run script if the page ever treated it as markup.
+test("hostile text on the page is shown as text and runs nothing", { skip: existsSync(CHROME) ? false : `no Chrome at ${CHROME}. Set CHROME to a browser to run this` }, async () => {
+  const m = await machineWithPage(await freePort());
+  const ann = m.ok(["create-agent", "Ann"])["agent_id"] as string;
+  const bea = m.ok(["create-agent", "Bea"])["agent_id"] as string;
+  m.ok(["contact-add", bea, "--agent", "Ann"]);
+  const away = `<img src=x onerror="document.title='pwned-away'"><script>document.title='pwned-script'</script>`;
+  const setting = `<svg onload="document.title='pwned-setting'"></svg><iframe srcdoc="<script>parent.document.title='pwned-frame'</script>"></iframe>`;
+  m.ok(["contact-set-away", bea, away, "--agent", "Ann"]);
+  m.ok(["settings-set", "concierge_address", setting]);
+  m.run(["logout"]);
+  m.run(["login", "--server", url]);
+  const link = await until("the page to come back", () => {
+    try {
+      return linkOf(m);
+    } catch {
+      return undefined;
+    }
+  });
+
+  const profile = mkdtempSync(join(tmpdir(), "cello-v2-page-chrome-"));
+  const run = spawnSync(CHROME, ["--headless=new", "--disable-gpu", `--user-data-dir=${profile}`, "--virtual-time-budget=8000", "--dump-dom", `http://127.0.0.1:${link.port}/#${link.token}`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, `Chrome failed: ${run.stderr.slice(-400)}`);
+  const dom = run.stdout;
+  // It reached the page, so the checks below aren't passing on an empty one.
+  assert.ok(dom.includes(ann), "Ann isn't on the page");
+  assert.ok(dom.includes("&lt;img src=x onerror="), "the away message isn't on the page as text");
+  assert.ok(dom.includes("&lt;svg onload="), "the setting isn't on the page as text");
+  // Nothing became an element, and no handler ran.
+  assert.ok(!/<(img|svg|script|iframe)[\s>]/.test(dom.replace(/<script src="\/page\.js"><\/script>/, "")), "text became an element");
+  assert.match(dom, /<title>CELLO<\/title>/, "script ran and changed the page");
 });
 
 test("nothing changes through the page, not even with the link", async () => {
