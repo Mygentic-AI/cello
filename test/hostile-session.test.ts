@@ -110,7 +110,7 @@ class Scene {
   async open(): Promise<void> {
     const eph = await generateSessionEphemeral();
     const targetId = fromB64(this.agent.length ? Buffer.from(this.agent, "hex").toString("base64url") : "", "t");
-    const offerFields = { serverId: this.server.id, sessionId: this.sessionId, callerId: this.mallory.id, calleeId: targetId, x25519Public: eph.publicKey, mlKemPublic: eph.mlKemPublic, expiresAt: Date.now() + 600_000 };
+    const offerFields = { serverId: this.server.id, sessionId: this.sessionId, callerId: this.mallory.id, calleeId: targetId, x25519Public: eph.publicKey, mlKemPublic: eph.mlKemPublic, expiresAt: Date.now() + 600_000, signalsCiphertext: new Uint8Array(0), sealedSignals: new Uint8Array(0) };
     const offer = signedOffer.encode({ fields: offerFields, signature: await this.mallory.sign("cello-session-offer", offerBytes(offerFields)) });
     const wire = { offer, accept: null as WireSigned | null, confirm: null as WireSigned | null, assignment: null as WireSigned | null, refusal: null, greeting: null, callerIdentity: identityCodec.encode(this.mallory.publicIdentity), calleeIdentity: this.targetIdentity, state: "offered", tip: 0, stopped: false };
     const acceptWire = await new Promise<WireSigned>((resolve) => { this.accepted = resolve; this.send({ push: "session", agent: this.agent, data: wire }); });

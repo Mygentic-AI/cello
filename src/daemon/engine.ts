@@ -73,6 +73,8 @@ import { validateMoniker } from "./who-label.ts";
 import { productionRootKeys } from "../protocol/issuer-roots.ts";
 import { SHIPPED_ISSUER_LIST } from "../shipped-issuer-list.ts";
 import { type Collected, HOW_TO_GET_A_CODE, Wallet } from "./wallet.ts";
+import { EncryptionKeys, PresentedStore, ensurePresentedSchema } from "./presented.ts";
+import { MAX_PRESENTED_SIGNALS, PresentedTooMany, checkEncryptionKey, openFromKey, openUnderSession, sealToKey, sealUnderSession } from "../protocol/presented-signals.ts";
 import type { ChannelHost } from "./channels.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
@@ -291,6 +293,9 @@ export class Engine {
   readonly #refusals = new Map<string, string>();
   readonly governance: Governance;
   readonly wallet: Wallet;
+  readonly #keys: EncryptionKeys;
+  readonly #presented: PresentedStore;
+  readonly #keyBusy = new Set<string>();
   readonly #away: Away;
   #lastCrashTold = 0;
   #modelMissingTold = false;
@@ -300,6 +305,9 @@ export class Engine {
     this.#events = events;
     this.#url = url;
     this.#settings = loadSettings(store);
+    ensurePresentedSchema(store);
+    this.#keys = new EncryptionKeys(store);
+    this.#presented = new PresentedStore(store);
     this.wallet = new Wallet(store, {
       keys: (agentHex) => {
         const row = store.agents().find((candidate) => toHex(candidate.agent_id) === agentHex);
@@ -392,6 +400,7 @@ export class Engine {
       this.#retryOutbox();
       this.#retireIdleVisits();
       // A replaced public signal that the server hasn't yet been told to drop. The wallet limits this to one try a minute.
+      for (const agent of this.#agents.values()) if (agent.online) this.#background("encryption key", this.#publishKey(agent));
       for (const agent of this.#agents.values()) this.wallet.settlePublic(agent.hex).catch((err: unknown) => logEvent("signal.public.settle_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
     }, POSITION_CHECK_MS);
   }
@@ -764,6 +773,21 @@ export class Engine {
     return run;
   }
 
+  // Hands this agent's server the key callers seal signals to, until the server has it. Tried again from the timer if this fails.
+  async #publishKey(agent: AgentContext): Promise<void> {
+    if (this.#keyBusy.has(agent.hex)) return;
+    this.#keyBusy.add(agent.hex);
+    try {
+      const pending = await this.#keys.unpublished(agent);
+      if (!pending) return;
+      await this.#call(() => this.#home.link.call("key.publish", { agent: toB64(agent.signer.id), key: pending.wire }));
+      this.#keys.markPublished(agent.signer.id, pending.revision);
+      logEvent("encryption_key.published", { agent: agent.hex, revision: pending.revision });
+    } finally {
+      this.#keyBusy.delete(agent.hex);
+    }
+  }
+
   #background(what: string, work: Promise<unknown>): void {
     work.catch((err: unknown) => {
       if (err instanceof ServerUnreachable) {
@@ -789,6 +813,7 @@ export class Engine {
           logEvent("agent.online", { agent: agent.hex });
           this.#noteStanding(agent, this.#home, answer.standing);
           this.#flushOutbox(this.#home);
+          this.#background("encryption key", this.#publishKey(agent));
           await this.#catchUpAgent(agent);
           return;
         } catch (err: unknown) {
@@ -990,14 +1015,16 @@ export class Engine {
       logEvent("session.offer_expired", { session: toHex(fields.sessionId) });
       return;
     }
-    const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, offer));
+    // The caller's signals are opened before anything is decided, so a decision can look at them. A set that won't open is noted as that, not as none.
+    const theirs = await openFromKey(this.#keys.seeds(agent.signer.id), fields.signalsCiphertext, fields.sealedSignals);
+    const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, offer, theirs));
     if (!accept) return;
     await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
     logEvent("session.accepted", { agent: agent.hex, session: toHex(fields.sessionId) });
   }
 
   // Tier first, before any key material exists. The new session is on disk when this returns, so the next call counts it.
-  async #admitOffer(agent: AgentContext, wire: SessionOnWire, offer: Signed<OfferFields>): Promise<WireSigned | undefined> {
+  async #admitOffer(agent: AgentContext, wire: SessionOnWire, offer: Signed<OfferFields>, theirs: Uint8Array[] | "unreadable"): Promise<WireSigned | undefined> {
     const { fields } = offer;
     // A stopped agent's tiers don't get a say, and a refused knock isn't counted against the caller.
     this.#refuseIfStopped(agent, this.#url);
@@ -1016,12 +1043,14 @@ export class Engine {
       pqTranscript: concat(ciphertext, fields.mlKemPublic),
     });
     const salt = generateSaltContribution();
+    const ours = this.#acceptSet(agent, contentKey);
     const acceptFields = {
       offerHash: structureHash(offer.bytes),
       x25519Public: own.publicKey,
       mlKemCiphertext: ciphertext,
       sealedSalt: sealSessionContent(contentKey, salt),
       sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))),
+      sealedSignals: ours.sealed,
     };
     const signature = await agent.signer.sign("cello-session-accept", acceptBytes(acceptFields));
     const accept = signedAccept.encode({ fields: acceptFields, signature });
@@ -1038,9 +1067,29 @@ export class Engine {
       session_key: contentKey,
       own_salt: salt,
     });
+    this.#presented.put(agent.signer.id, fields.sessionId, "caller", theirs);
+    this.#presented.put(agent.signer.id, fields.sessionId, "callee", ours.files);
     destroySessionEphemeral(own);
     sharedSecret.fill(0);
     return accept;
+  }
+
+  // The callee's own default set, sealed under the session key like its name. An accept can't be refused for a big set, so what doesn't fit is left off and the agent is told.
+  #acceptSet(agent: AgentContext, sessionKey: Uint8Array): { sealed: Uint8Array; files: Uint8Array[] } {
+    let { files } = this.wallet.presentable(agent.hex);
+    if (files.length > MAX_PRESENTED_SIGNALS) {
+      this.#notify(agent, null, `Your default set holds ${files.length} signals, and only ${MAX_PRESENTED_SIGNALS} can go with a call, so the newest ${MAX_PRESENTED_SIGNALS} were sent. Turn some off with: cello signals disable <hash>`);
+      files = files.slice(0, MAX_PRESENTED_SIGNALS);
+    }
+    for (;;) {
+      try {
+        return { sealed: sealUnderSession(sessionKey, files), files };
+      } catch (err: unknown) {
+        if (!(err instanceof PresentedTooMany) || files.length === 0) throw err;
+        this.#notify(agent, null, `Your default signals are too big to send together, so one was left off this call. Turn some off with: cello signals disable <hash>`);
+        files = files.slice(0, -1);
+      }
+    }
   }
 
   // A name it gave itself, opened only by the party it's for. One that doesn't fit the rule is no name at all.
@@ -1074,6 +1123,8 @@ export class Engine {
     if (!peerSalt) throw new Error("the counterparty's salt didn't decrypt, so the two sides hold different keys");
     const ownSalt = generateSaltContribution();
     this.#takeOfferedName(agent, local, contentKey, accept.fields.sealedName);
+    // What the callee showed, kept as the signed files it came as. A box that won't open is noted as that.
+    this.#presented.put(agent.signer.id, local.session_id, "callee", openUnderSession(contentKey, accept.fields.sealedSignals));
     const confirmFields = { acceptHash: structureHash(accept.bytes), sealedSalt: sealSessionContent(contentKey, ownSalt), sealedName: sealSessionContent(contentKey, new TextEncoder().encode(this.governance.offeredName(agent.signer.id, agent.name))) };
     const signature = await agent.signer.sign("cello-session-confirm", confirmBytes(confirmFields));
     this.#store.updateSession(agent.signer.id, local.session_id, {
@@ -2024,6 +2075,23 @@ export class Engine {
     return agent;
   }
 
+  // The signals each side showed with this call, checked again now. The other side's come with their standing and notes, and never a payload.
+  async presentedSignals(agentHex: string, sessionHex: string): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const local = this.#requireSession(agent, sessionHex);
+    const theirSide = local.role === "caller" ? "callee" : "caller";
+    const ownSide = local.role;
+    const theirs = await this.wallet.examine(agent.hex, toHex(local.counterparty_id), this.#presented.files(agent.signer.id, local.session_id, theirSide), "signal.presented.refused");
+    return {
+      session_id: toHex(local.session_id),
+      from: toHex(local.counterparty_id),
+      theirs: theirs.signals,
+      refused: theirs.refused,
+      theirs_unreadable: this.#presented.unreadable(agent.signer.id, local.session_id, theirSide),
+      yours_sent: this.#presented.files(agent.signer.id, local.session_id, ownSide).length,
+    };
+  }
+
   #requireSession(agent: AgentContext, sessionHex: string): SessionRow {
     // A short id isn't an id at all, but a piece of a real one is a paste that got cut.
     if (typeof sessionHex === "string" && /^[0-9a-fA-F]+$/.test(sessionHex) && sessionHex.length < 32 && this.#store.sessionsOf(agent.signer.id).some((row) => toHex(row.session_id).startsWith(sessionHex.toLowerCase()))) {
@@ -2447,19 +2515,45 @@ export class Engine {
     if (equalBytes(targetId, agent.signer.id)) throw new LocalError("bad_argument", "an agent can't start a session with itself");
     const route = await this.#reach(agent, address.server);
     try {
-      return await this.#initiateOn(agent, route, targetId);
+      return await this.#initiateOn(agent, route, targetId, typeof params["signals"] === "string" ? params["signals"] : undefined);
     } finally {
       this.#doneOpening(route);
     }
   }
 
   // The callee's server hosts, and each side connects to it directly. No server relays for another.
-  async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array): Promise<unknown> {
+  async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array, signalsSpec?: string): Promise<unknown> {
     const agentHex = agent.hex;
-    const lookup = await this.#call(() => route.link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown };
+    // The set is chosen first, so a bad choice stops here, before anything is looked up or sent.
+    const presented = this.wallet.presentable(agentHex, signalsSpec);
+    if (presented.files.length > MAX_PRESENTED_SIGNALS) throw new LocalError("too_many_signals", `At most ${MAX_PRESENTED_SIGNALS} signals go with a call, and this set has ${presented.files.length}. Turn some off with cello signals disable <hash>, or choose with --signals <hash>,<hash>, or send none with --signals none.`);
+    const lookup = await this.#call(() => route.link.call("lookup", { agent: toB64(agent.signer.id), target: toB64(targetId) })) as { identity: unknown; encryptionKey?: unknown };
     const identity = identityCodec.decode(lookup.identity, "identity");
     // The id you typed is the check: a server can't substitute other keys under it.
     if (!equalBytes(identityId(identity), targetId)) throw new LocalError("wrong_identity", "the server returned keys that don't match the id you asked for");
+    // Signals go sealed to the key the callee published. Without a good one nothing is sent, and the caller is told so rather than left to think they went.
+    let sealedSignals: { signalsCiphertext: Uint8Array; sealedSignals: Uint8Array } = { signalsCiphertext: new Uint8Array(0), sealedSignals: new Uint8Array(0) };
+    let signalsNote: string | undefined;
+    if (presented.files.length > 0) {
+      let key: Awaited<ReturnType<typeof checkEncryptionKey>> | null = null;
+      if (lookup.encryptionKey === undefined || lookup.encryptionKey === null) signalsNote = "That agent hasn't published an encryption key, so your signals weren't sent with this call.";
+      else {
+        try {
+          key = await checkEncryptionKey(lookup.encryptionKey, identity, targetId);
+        } catch (err: unknown) {
+          logEvent("encryption_key.bad", { agent: agentHex, message: err instanceof Error ? err.message : String(err) });
+          signalsNote = "The encryption key that agent's server gave didn't check out, so your signals weren't sent with this call.";
+        }
+      }
+      if (key) {
+        try {
+          sealedSignals = await sealToKey(key.mlKemPublic, presented.files);
+        } catch (err: unknown) {
+          if (err instanceof PresentedTooMany) throw new LocalError("signals_too_big", `${err.message}. Choose fewer with --signals <hash>,<hash>, or send none with --signals none.`);
+          throw err;
+        }
+      }
+    }
 
     const sessionId = new Uint8Array(randomBytes(16));
     const sessionHex = toHex(sessionId);
@@ -2472,6 +2566,7 @@ export class Engine {
       x25519Public: own.publicKey,
       mlKemPublic: own.mlKemPublic,
       expiresAt: Date.now() + this.#settings.offer_lifetime_minutes * 60_000,
+      ...sealedSignals,
     };
     const signature = await agent.signer.sign("cello-session-offer", offerBytes(fields));
     const offer = signedOffer.encode({ fields, signature });
@@ -2490,8 +2585,10 @@ export class Engine {
         mlkem_seed: own.mlKemSeed,
         server_url: route.home ? null : route.url,
       });
+      this.#presented.put(agent.signer.id, sessionId, "caller", sealedSignals.sealedSignals.length > 0 ? presented.files : []);
       await this.#call(() => route.link.call("session.offer", { agent: toB64(agent.signer.id), offer }));
     });
+    const signalsInfo = { signals_sent: sealedSignals.sealedSignals.length > 0 ? presented.files.length : 0, ...(signalsNote ? { signals_note: signalsNote } : {}) };
     this.governance.engaged(agent.signer.id, targetId, "initiated");
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([activated, new Promise((resolve) => { timer = setTimeout(resolve, INITIATE_WAIT_MS); })]);
@@ -2501,10 +2598,10 @@ export class Engine {
     const refused = this.#refusals.get(agent.hex + sessionHex);
     if (refused) {
       this.#refusals.delete(agent.hex + sessionHex);
-      return { session_id: sessionHex, state: "refused", message: refused };
+      return { session_id: sessionHex, state: "refused", message: refused, ...signalsInfo };
     }
-    if (state === "active") return { session_id: sessionHex, state };
-    return { session_id: sessionHex, state: "waiting", message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
+    if (state === "active") return { session_id: sessionHex, state, ...signalsInfo };
+    return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
   }
 
   // One call about public signals, as the agent, to its own server or to the one an address names. A stopped agent does nothing.

@@ -237,6 +237,23 @@ export interface ServerAuthFields {
 export const serverAuthStructure = structure<ServerAuthFields>("cello-server-auth-v1", { serverId: HASH_BYTES, clientNonce: NONCE_BYTES, serverNonce: NONCE_BYTES });
 export const serverAuthBytes = (fields: ServerAuthFields): Uint8Array => serverAuthStructure.encode(fields);
 
+// The most signals one side presents with a call, and the most its sealed box may hold. The structures that carry them are capped a little above.
+export const MAX_PRESENTED_SIGNALS = 8;
+export const MAX_PRESENTED_BYTES = 65_536;
+const PRESENTING_STRUCTURE_MAX_BYTES = 70_000;
+
+// A key an agent publishes so a caller can seal its signals to it before any session exists. Signed by the agent's identity, and not bound to a
+// server, so it moves with the agent. A higher revision replaces a lower one. ML-KEM only, sealed the way a refusal is.
+export interface EncryptionKeyFields {
+  agentId: Uint8Array;
+  mlKemPublic: Uint8Array;
+  revision: number;
+  issuedAt: number;
+}
+
+export const encryptionKeyStructure = structure<EncryptionKeyFields>("cello-agent-encryption-key-v1", { agentId: HASH_BYTES, mlKemPublic: ML_KEM_PUBLIC_KEY_BYTES, revision: "int", issuedAt: "int" });
+export const encryptionKeyBytes = (fields: EncryptionKeyFields): Uint8Array => encryptionKeyStructure.encode(fields);
+
 export interface OfferFields {
   serverId: Uint8Array;
   sessionId: Uint8Array;
@@ -245,9 +262,24 @@ export interface OfferFields {
   x25519Public: Uint8Array;
   mlKemPublic: Uint8Array;
   expiresAt: number;
+  // The caller's signals, sealed to the callee's published encryption key: the ML-KEM ciphertext, then the box it opens. Both empty means none were sent.
+  signalsCiphertext: Uint8Array;
+  sealedSignals: Uint8Array;
 }
 
-export const offerStructure = structure<OfferFields>("cello-session-offer-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, callerId: HASH_BYTES, calleeId: HASH_BYTES, x25519Public: X25519_PUBLIC_KEY_BYTES, mlKemPublic: ML_KEM_PUBLIC_KEY_BYTES, expiresAt: "int" });
+// Both or neither: a ciphertext with no box, or a box with no key to open it, is something else.
+function presentedCheck(box: Uint8Array, name: string): void {
+  if (box.length > MAX_PRESENTED_BYTES) throw new RangeError(`${name} can't be over ${MAX_PRESENTED_BYTES} bytes, and this is ${box.length}`);
+}
+
+export const offerStructure = structure<OfferFields>("cello-session-offer-v1", { serverId: HASH_BYTES, sessionId: SESSION_ID_BYTES, callerId: HASH_BYTES, calleeId: HASH_BYTES, x25519Public: X25519_PUBLIC_KEY_BYTES, mlKemPublic: ML_KEM_PUBLIC_KEY_BYTES, expiresAt: "int", signalsCiphertext: "bytes", sealedSignals: "bytes" }, {
+  maxBytes: PRESENTING_STRUCTURE_MAX_BYTES,
+  check: (o) => {
+    if (o.signalsCiphertext.length !== 0 && o.signalsCiphertext.length !== ML_KEM_CIPHERTEXT_BYTES) throw new RangeError(`signalsCiphertext must be empty or ${ML_KEM_CIPHERTEXT_BYTES} bytes, and this is ${o.signalsCiphertext.length}`);
+    if ((o.signalsCiphertext.length === 0) !== (o.sealedSignals.length === 0)) throw new RangeError("signalsCiphertext and sealedSignals must both be present or both be empty");
+    presentedCheck(o.sealedSignals, "sealedSignals");
+  },
+});
 export const offerBytes = (fields: OfferFields): Uint8Array => offerStructure.encode(fields);
 
 export interface AcceptFields {
@@ -257,9 +289,14 @@ export interface AcceptFields {
   sealedSalt: Uint8Array;
   // What this agent calls itself, for the other party's eyes alone. The server holds no names.
   sealedName: Uint8Array;
+  // The callee's signals, sealed under the session key like the name. Empty means it sent none.
+  sealedSignals: Uint8Array;
 }
 
-export const acceptStructure = structure<AcceptFields>("cello-session-accept-v1", { offerHash: HASH_BYTES, x25519Public: X25519_PUBLIC_KEY_BYTES, mlKemCiphertext: ML_KEM_CIPHERTEXT_BYTES, sealedSalt: "bytes", sealedName: "bytes" });
+export const acceptStructure = structure<AcceptFields>("cello-session-accept-v1", { offerHash: HASH_BYTES, x25519Public: X25519_PUBLIC_KEY_BYTES, mlKemCiphertext: ML_KEM_CIPHERTEXT_BYTES, sealedSalt: "bytes", sealedName: "bytes", sealedSignals: "bytes" }, {
+  maxBytes: PRESENTING_STRUCTURE_MAX_BYTES,
+  check: (a) => presentedCheck(a.sealedSignals, "sealedSignals"),
+});
 export const acceptBytes = (fields: AcceptFields): Uint8Array => acceptStructure.encode(fields);
 
 // A callee's definite no. The reason is sealed to the caller's key from the offer, so the server learns only that it was refused,

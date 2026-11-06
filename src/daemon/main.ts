@@ -259,6 +259,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.wallet.publish(acting(params), text(params, "hash"));
     case "signals_unpublish":
       return engine.wallet.unpublish(acting(params), optionalText(params, "hash"), optionalText(params, "signal_id"));
+    case "signals_presented":
+      return engine.presentedSignals(named(params), text(params, "session_id"));
     case "signals_lookup":
       return engine.wallet.lookup(acting(params), text(params, "address"));
     case "issuer_trust": {

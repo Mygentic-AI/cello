@@ -211,7 +211,7 @@ class Stranger {
   async offer(calleeId: string, serverId?: Uint8Array): Promise<ReturnType<typeof signedOffer.encode>> {
     const server = await this.server;
     const own = await generateSessionEphemeral();
-    const fields = { serverId: serverId ?? server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 60_000 };
+    const fields = { serverId: serverId ?? server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 60_000, signalsCiphertext: new Uint8Array(0), sealedSignals: new Uint8Array(0) };
     return signedOffer.encode({ fields, signature: await this.signer.sign("cello-session-offer", offerBytes(fields)) });
   }
   send(offer: ReturnType<typeof signedOffer.encode>): Promise<unknown> {

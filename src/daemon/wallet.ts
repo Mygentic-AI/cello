@@ -361,27 +361,52 @@ export class Wallet {
   // and its dates. Whether the issuer counts is then read off the signed list and the owner's own, and a claim from one that doesn't is screened and quoted.
   async lookup(agentHex: string, address: string): Promise<unknown> {
     const { target, files } = await this.#hooks.readPublic(agentHex, address);
+    return { agent: target, ...(await this.examine(agentHex, target, files, "signal.lookup.refused")) };
+  }
+
+  // Signals another agent showed, from a public listing or sealed with a call. Each file is checked here for itself: its signatures, that it names
+  // that agent, and its dates. A file that fails is left out and named. What passes is described for the reader asking, with no payload.
+  async examine(agentHex: string, subjectHex: string, files: readonly Uint8Array[], event: string): Promise<{ signals: Record<string, unknown>[]; refused: SignalRefusal[] }> {
     const list = await this.#list();
     const now = nowSec();
     const signals: Record<string, unknown>[] = [];
     const refused: SignalRefusal[] = [];
     for (const file of files) {
-      const checked = await checkSignal(file, { subject: target, now });
+      const checked = await checkSignal(file, { subject: subjectHex, now });
       if (!checked.ok) {
-        logEvent("signal.lookup.refused", { agent: agentHex, fault: checked.fault });
+        logEvent(event, { agent: agentHex, fault: checked.fault });
         refused.push({ fault: checked.fault, message: checked.message });
         continue;
       }
       const e = checked.signal.envelope;
       const held: WalletRow = {
-        agent_id: fromHex(target), signal_hash: toHex(checked.signal.hash), file, subject_kind: e.subject_kind, issuer_kind: e.issuer_kind, issuer_pubkey: e.issuer_pubkey,
+        agent_id: fromHex(subjectHex), signal_hash: toHex(checked.signal.hash), file, subject_kind: e.subject_kind, issuer_kind: e.issuer_kind, issuer_pubkey: e.issuer_pubkey,
         issuer_address: e.issuer_address, type: e.type, schema_version: e.schema_version, payload: e.payload, issued_at: e.issued_at, expires_at: e.expires_at,
         supersedes_hash: e.supersedes_hash === null ? null : toHex(e.supersedes_hash), same_operator: e.same_operator ? 1 : 0, status: "active", received_at: now * 1000,
         default_present: 1, consent_state: CONSENT_ACCEPTED, public: 1,
       };
       signals.push(await this.#describe(agentHex, held, list, now));
     }
-    return { agent: target, signals, refused };
+    return { signals, refused };
+  }
+
+  // The signal files an agent shows with a call. Unspecified is the default set: accepted, current, unexpired, and switched on for showing.
+  // "none" is nothing, and a list of hashes is exactly those, each of which must be fit to show. Never trimmed quietly: past the limit it says so.
+  presentable(agentHex: string, spec?: string): { files: Uint8Array[]; hashes: string[] } {
+    const agentId = fromHex(agentHex);
+    const now = nowSec();
+    const fit = (row: WalletRow): boolean => row.consent_state === CONSENT_ACCEPTED && row.status === "active" && (row.expires_at === null || row.expires_at > now);
+    let rows: WalletRow[];
+    if (spec === "none") rows = [];
+    else if (spec === undefined || spec === "" || spec === "default") rows = this.#signals.list(agentId).filter((row) => fit(row) && row.default_present === 1);
+    else {
+      rows = spec.split(",").map((part) => this.#find(agentHex, part.trim()));
+      for (const row of rows) {
+        if (!fit(row)) throw new LocalError("signal_not_fit", `The signal ${row.signal_hash.slice(0, 12)}… can't go with a call: it is ${row.consent_state !== CONSENT_ACCEPTED ? row.consent_state : row.status === "active" ? "expired" : row.status}.`);
+      }
+    }
+    const unique = [...new Map(rows.map((row) => [row.signal_hash, row])).values()];
+    return { files: unique.map((row) => new Uint8Array(row.file)), hashes: unique.map((row) => row.signal_hash) };
   }
 
   // The caller has already had a person confirm this.

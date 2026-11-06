@@ -1,7 +1,7 @@
 // How signed things travel: JSON frames over WebSockets, with bytes as base64url.
 // Nothing signed depends on this envelope: signed things travel as the exact CBOR bytes that were signed, in a base64url string.
 import type { DualSignature, PublicIdentity } from "./identity.ts";
-import { UnknownFormat, type Structure, acceptStructure, ackStructure, assignmentStructure, confirmStructure, deliveryAckStructure, entryStructure, greetingStructure, offerStructure, refuseStructure, sealCertificateStructure, sealLogHeadStructure, sealRequestStructure, statusStatementStructure, statusWitnessStructure } from "./structures.ts";
+import { UnknownFormat, type Structure, acceptStructure, ackStructure, assignmentStructure, confirmStructure, deliveryAckStructure, encryptionKeyStructure, entryStructure, greetingStructure, offerStructure, refuseStructure, sealCertificateStructure, sealLogHeadStructure, sealRequestStructure, statusStatementStructure, statusWitnessStructure } from "./structures.ts";
 
 // The version of these frames. It's no part of any signed record: those carry their own format in their tag.
 export const PROTOCOL_VERSION = 1;
@@ -193,6 +193,7 @@ export const signedSealCertificate = signedCodec(sealCertificateStructure);
 export const signedSealLogHead = signedCodec(sealLogHeadStructure);
 export const signedStatusStatement = signedCodec(statusStatementStructure);
 export const signedStatusWitness = signedCodec(statusWitnessStructure);
+export const signedEncryptionKey = signedCodec(encryptionKeyStructure);
 
 // The longest away greeting a server carries or a caller opens: the longest text a setting allows, in the widest encoding.
 export const MAX_GREETING_BYTES = 400_100;

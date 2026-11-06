@@ -59,3 +59,21 @@ export function publicSignalsText(result: { agent: string; signals: SignalLine[]
   const notes = signals.flatMap((s) => s.notes.map((note) => `\n${s.type}:\n${note}`));
   return `${[...out, ...notes].join("\n")}\n`;
 }
+
+// What a person sees of the signals the other side showed with a call. The notes carry the unverified-claim wording, so they are never dropped.
+export function presentedText(result: { session_id: string; from: string; theirs: SignalLine[]; refused: { fault: string; message: string }[]; theirs_unreadable: boolean; yours_sent: number }): string {
+  const { from, theirs, refused, theirs_unreadable: unreadable, yours_sent: yoursSent } = result;
+  const head = `Signals ${from.slice(0, 12)}… showed with this call`;
+  const out: string[] = [];
+  if (unreadable) out.push(`${head}: something was sent that couldn't be opened, which is not the same as nothing sent.`);
+  else if (theirs.length === 0 && refused.length === 0) out.push(`${head}: none.`);
+  else {
+    out.push(`${head}:`, `  ${"type".padEnd(22)}  issued      expires     issuer`, `  ${"─".repeat(80)}`);
+    for (const s of theirs) out.push(`  ${s.type.padEnd(22)}  ${date(s.issued_at)}  ${s.expires_at === null ? "never     " : date(s.expires_at)}  ${s.counts_as_verified ? s.issuer_address : `UNKNOWN ${s.issuer_address}`}`);
+    if (refused.length > 0) out.push(`  ${refused.length} sent file${refused.length === 1 ? "" : "s"} failed a check here and ${refused.length === 1 ? "was" : "were"} left out: ${refused.map((r) => r.fault).join(", ")}`);
+    if (theirs.some((s) => !s.counts_as_verified)) out.push("  UNKNOWN = an issuer this machine doesn't recognise: the claim is only that agent's own.");
+  }
+  out.push(`  You sent ${yoursSent} with this call.`);
+  const notes = theirs.flatMap((s) => s.notes.map((note) => `\n${s.type}:\n${note}`));
+  return `${[...out, ...notes].join("\n")}\n`;
+}

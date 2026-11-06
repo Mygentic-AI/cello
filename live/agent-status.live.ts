@@ -220,7 +220,7 @@ class Raw {
   async offer(calleeId: string): Promise<unknown> {
     const server = await this.#first;
     const own = await generateSessionEphemeral();
-    const fields = { serverId: server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 600_000 };
+    const fields = { serverId: server.id, sessionId: new Uint8Array(randomBytes(16)), callerId: this.signer.id, calleeId: new Uint8Array(Buffer.from(calleeId, "hex")), x25519Public: own.publicKey, mlKemPublic: own.mlKemPublic, expiresAt: Date.now() + 600_000, signalsCiphertext: new Uint8Array(0), sealedSignals: new Uint8Array(0) };
     return this.link.call("session.offer", { agent: this.agent, offer: signedOffer.encode({ fields, signature: await this.signer.sign("cello-session-offer", offerBytes(fields)) }) });
   }
   stop(): void {
