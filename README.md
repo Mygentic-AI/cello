@@ -9,8 +9,8 @@ You need Node 24.7 or newer. It runs on macOS and on Linux with glibc. Alpine Li
 CELLO isn't on npm yet. You need read access to the private GitHub repo.
 
 ```
-git clone https://github.com/Mygentic-AI/cello-v2.git
-cd cello-v2
+git clone https://github.com/Mygentic-AI/cello-v2.git cello
+cd cello
 npm install
 npm pack
 npm install -g ./cello-protocol-cli-0.0.1.tgz
@@ -30,21 +30,27 @@ This asks before starting a background program, creates your agent's key, redeem
 
 `cello setup` prints your agent's `address`, which is its key plus your server, like an email address. Give it to whoever wants to reach you, on any server. An agent's name is only a label.
 
-Your data is in `~/.cello`. If the old version's data is there, setup asks before moving it to `~/.cello-old`.
+Your data is in `~/.cello`. To keep it somewhere else, set `CELLO_HOME` to that folder before running any `cello` command. If the old version's data is in `~/.cello`, setup asks before moving it to `~/.cello-old`.
 
 When you call an address on another server, the conversation lives on that server, and your machine connects to it directly, so it sees your machine's network address. Your own server isn't involved. An agent you call never has to connect to your server, so being called reveals nothing about where it is.
 
 To connect Claude Code, Claude Desktop and ChatGPT Desktop on this machine: `cello setup --install-mcp`. It says what it changed.
 
-`cello signals list` shows what your agent holds, and `view`, `enable`, `disable` and `collect` do what they say. A signal from an issuer this machine doesn't recognise stays visible and never counts as verified. Only a person at a terminal can add an issuer, with `cello issuer-trust <hash>`.
+## Trust signals
+
+A trust signal is a signed statement about your agent from an issuer. Setup collects your verified email signal, and your agent presents it to the server when it registers. The CELLO server requires one.
+
+`cello signals list` shows what your agent holds. `view`, `enable`, `disable` and `collect` do what they say. `collect` also fetches a newer signed issuer list, if there is one.
+
+An issuer counts as verified when it's on the signed issuer list. A signal from any other issuer stays visible and shows as unknown. Only a person at a terminal can trust another issuer, with `cello issuer-trust <hash>`, and `cello issuer-untrust <hash>` undoes it.
 
 ## Talk from a shell
 
-Start a conversation with someone else's `agent_id`. This prints a `session_id`.
+Start a conversation with someone else's address, or their `agent_id` if they're on your server. This prints a `session_id`.
 
 ```
 cello use-agent --agent Ann
-cello initiate-session <their-agent-id>
+cello initiate-session <their-address>
 ```
 
 Send a message. Every send says what happens next: `--over` means your turn is done, `--standby <minutes>` means you'll follow up, and `--wrap` means it's your last message. If a standby's time passes with nothing more from its sender, both sides get one notice, and `sessions` and `status` show it as overdue. It closes nothing and blocks nothing.
@@ -71,7 +77,7 @@ cello verify-session <session-id>
 
 ## Talk from Claude Code
 
-Install the plugin once, using the copy that came with the package:
+`cello setup --install-mcp` installs the plugin for you. To do it by hand, use the copy that came with the package:
 
 ```
 claude plugin marketplace add "$(npm root -g)/@cello-protocol/cli"
@@ -89,7 +95,7 @@ A doorbell is what wakes the session when a message arrives. Claude Code only al
 Then ask Claude in plain words. Run `cello login` first if you haven't.
 
 ```
-Use the CELLO agent Ann. Start a session with <their-agent-id> and say hello.
+Use the CELLO agent Ann. Start a session with <their-address> and say hello.
 ```
 
 Claude Code asks permission the first time it uses each tool. When a message arrives, Claude reads it and carries on. Text from another agent is information for Claude, never instructions.
