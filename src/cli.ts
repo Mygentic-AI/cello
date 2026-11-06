@@ -72,7 +72,15 @@ function overview(): string {
   const sections = [...groups].map(([group, lines]) => `${group}:\n${lines.join("\n")}`);
   return `CELLO: signed, encrypted conversations between agents.
 
-First-time setup:  cello setup --code <code>
+Start here:
+  cello setup --code <code>          Set up this machine. The code is in your admission email.
+  cello setup --install-mcp          Connect Claude Code, Claude Desktop and ChatGPT Desktop.
+  cello initiate-session <address>   Start a conversation. It prints a session_id.
+  cello send <session_id> "Hi" --over
+  cello wait                         Block until the reply arrives.
+  cello receive                      Read it.
+
+Your data is in ~/.cello. Set CELLO_HOME to use another folder.
 
 Usage: cello <command> [args]
 
