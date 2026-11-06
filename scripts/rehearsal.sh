@@ -18,6 +18,8 @@ R_MCP_DIR="${R_MCP_DIR:-$code/cello-mcp-http/$wt}"
 export R_WAITLIST_MIGRATIONS="${R_WAITLIST_MIGRATIONS:-$code/waitlist-codes-worktrees/corp-cello-site/migrations}"
 export R_OPS_MIGRATIONS="${R_OPS_MIGRATIONS:-$code/cello-ops-dashboard/migrations}"
 export R_ISSUER_IMAGE="${R_ISSUER_IMAGE:-cello-issuer:rehearsal}" R_HOSTED_IMAGE="${R_HOSTED_IMAGE:-cello-hosted:rehearsal}" R_CONCIERGE_IMAGE="${R_CONCIERGE_IMAGE:-cello-concierge:rehearsal}"
+# The rehearsal's server uses the test-signed list it is given, and must not fetch the real issuer's.
+export CELLO_ISSUER_LIST_URL=off
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-rehearsal}"
 export R_EVIDENCE="${R_EVIDENCE:-$HOME/cello-v2-live-runs/rehearsal-$(date +%Y%m%d-%H%M%S)}"
 for d in "$R_SERVER_DIR" "$R_ISSUER_DIR" "$R_TC_DIR" "$R_MCP_DIR" "$R_WAITLIST_MIGRATIONS" "$R_OPS_MIGRATIONS"; do

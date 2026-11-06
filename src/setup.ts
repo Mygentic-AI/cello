@@ -22,7 +22,7 @@ Set up CELLO on this machine: start the background program, create an agent's ke
   --name       The agent's name, which is only a label. The default is agent.
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.
-  --concierge  The agent to call at the end.
+  --concierge  The agent to call at the end. Give none to skip the call this once, and keep the setting as it is.
   --yes        Start the background program without asking.
   --install-mcp  Find Claude Code, Claude Desktop and ChatGPT Desktop on this machine, connect each one, and say what changed. Without it, setup only prints the Claude Code commands.
   --json       Answer in JSON.
@@ -182,8 +182,10 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     const server = await waitForServer(client);
     for (const [flag, setting] of [["issuer", "issuer_url"], ["concierge", "concierge_address"]] as const) {
       const value = text(flag);
-      if (value) await client.call("settings_set", { name: setting, value, caller: host.caller });
+      // "none" is for this run only: it changes no setting, so a test or a script can set up without calling anyone.
+      if (value && !(flag === "concierge" && value === "none")) await client.call("settings_set", { name: setting, value, caller: host.caller });
     }
+    const skipConcierge = text("concierge") === "none";
 
     const agent = await client.call("enroll_agent", { name: text("name"), code }) as {
       name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean;
@@ -199,8 +201,10 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     const concierge = settings.settings.find((setting) => setting.name === "concierge_address")?.value;
     let reply: Reply | null = null;
     // A repeat changes nothing, so a Concierge that has already answered this agent isn't called again.
-    const called = agent.already_set_up && typeof concierge === "string" && await heardFrom(client, agent.agent_id, concierge);
-    if (called) {
+    const called = !skipConcierge && agent.already_set_up && typeof concierge === "string" && await heardFrom(client, agent.agent_id, concierge);
+    if (skipConcierge) {
+      say("Not calling the Concierge, as asked.");
+    } else if (called) {
       say("The Concierge has already answered this agent.");
     } else if (typeof concierge === "string" && concierge !== "") {
       say("Calling the CELLO Concierge, an agent run by CELLO...");

@@ -173,7 +173,7 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   assert.equal(cello(["status"]).json["error"], "daemon_not_running");
   assert.match(cello(["login", "--server", url]).stdout, /connected/);
   assertDaemonIsInstalled();
-  const gail = ok(["setup", "--yes", "--issuer", process.env["CELLO_TEST_ISSUER_URL"] as string, "--code", "live-install", "--name", "Gail", "--json"]);
+  const gail = ok(["setup", "--yes", "--issuer", process.env["CELLO_TEST_ISSUER_URL"] as string, "--concierge", "none", "--code", "live-install", "--name", "Gail", "--json"]);
   const hugo = ok(["create-agent", "Hugo"]);
   ok(["settings-set", "away.answering", "false", "--agent", "Hugo"]);
   await allOnline();

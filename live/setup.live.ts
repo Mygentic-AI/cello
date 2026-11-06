@@ -95,7 +95,8 @@ const newCode = (): string => {
   return code;
 };
 
-const setupArgs = (extra: string[]): string[] => ["setup", "--yes", "--server", url, "--issuer", issuer.url, ...extra];
+// A test never calls the real Concierge, which the client will carry as its default: it names its own stand-in, or none.
+const setupArgs = (extra: string[]): string[] => ["setup", "--yes", "--server", url, "--issuer", issuer.url, ...(extra.includes("--concierge") ? [] : ["--concierge", "none"]), ...extra];
 const running = (home: string): boolean => existsSync(join(home, "daemon.sock"));
 const serverKnows = (agentId: string): string => execFileSync("docker", ["compose", "exec", "-T", "postgres", "psql", "-U", "cello_owner", "-d", "cello", "-tAc", `SELECT count(*) FROM agents WHERE agent_id = '\\x${agentId}'`], { cwd: process.env["CELLO_SERVER_DIR"], encoding: "utf8" }).trim();
 
@@ -124,7 +125,7 @@ test("with no code it says how to get one, and starts nothing", async () => {
 test("it asks before starting a background program, and with nobody to ask it starts nothing", async () => {
   const home = newHome();
   const code = newCode();
-  const done = await run(home, ["setup", "--server", url, "--issuer", issuer.url, "--code", code]);
+  const done = await run(home, ["setup", "--server", url, "--issuer", issuer.url, "--concierge", "none", "--code", code]);
   assert.equal(done.status, 1);
   assert.match(done.stderr, /background program/);
   assert.match(done.stderr, /Nothing was started/);
@@ -221,7 +222,7 @@ test("the whole path: setup ends on a reply, a repeat changes nothing, and a sec
   const concierge = newHome();
   await ok(concierge, ["login", "--server", url]);
   // The Concierge registers like anyone, with its own code.
-  const called = await ok(concierge, ["setup", "--yes", "--server", url, "--issuer", issuer.url, "--code", newCode(), "--name", "Concierge", "--json"]);
+  const called = await ok(concierge, ["setup", "--yes", "--server", url, "--issuer", issuer.url, "--concierge", "none", "--code", newCode(), "--name", "Concierge", "--json"]);
   const conciergeId = called["agent_id"] as string;
   await ok(concierge, ["settings-set", "away.answering", "false", "--agent", "Concierge"]);
   await ok(concierge, ["use-agent", "--agent", "Concierge"]);
@@ -414,4 +415,18 @@ test("the defaults live in the database", async () => {
   assert.equal(settings.find((s) => s.name === "issuer_url")?.value, "https://trust.celloprotocol.com");
   await ok(home, ["logout"]);
   assert.match((await run(home, ["setup", "--help"])).stdout, /wss:\/\/server\.celloprotocol\.com\/v1/);
+});
+
+test("--concierge none sets up without calling anyone, and leaves the setting as it was", async () => {
+  const home = newHome();
+  const done = await run(home, setupArgs(["--code", newCode(), "--name", "Eve", "--concierge", "none", "--json"]));
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(done.json["concierge"], null, "nobody was called");
+  const plain = await run(newHome(), setupArgs(["--code", newCode(), "--name", "Eve", "--concierge", "none"]));
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /Not calling the Concierge, as asked\./);
+  assert.doesNotMatch(plain.stdout, /Calling the CELLO Concierge/);
+  const settings = await ok(home, ["settings"]) as { settings: { name: string; value: unknown }[] };
+  assert.equal(settings.settings.find((s) => s.name === "concierge_address")?.value, "", "none is not kept as the address");
+  assert.equal((await ok(home, ["sessions", "--all", "--agent", "Eve"]) as { sessions: unknown[] }).sessions.length, 0, "no call was made");
 });

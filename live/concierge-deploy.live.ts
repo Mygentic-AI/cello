@@ -113,7 +113,7 @@ before(async () => {
   docker(["exec", "-d", name, "node", "-e", `const n=require("net");n.createServer(c=>{const s=n.connect(${port},"host.docker.internal");c.pipe(s);s.pipe(c);c.on("error",()=>s.destroy());s.on("error",()=>c.destroy())}).listen(${port},"127.0.0.1")`]);
   // The runbook's setup command: the code comes in on standard input, so it is never in a command line. Production gives it
   // a real code and no --issuer.
-  const setup = docker(["exec", "-i", name, "cello", "setup", "--yes", "--issuer", issuer, "--code", "-", "--name", "Concierge", "--server", inside(url), "--json"], `live-${Date.now().toString(16)}\n`);
+  const setup = docker(["exec", "-i", name, "cello", "setup", "--yes", "--issuer", issuer, "--concierge", "none", "--code", "-", "--name", "Concierge", "--server", inside(url), "--json"], `live-${Date.now().toString(16)}\n`);
   assert.equal(setup.status, 0, `setup: ${setup.stdout}${setup.stderr}`);
   conciergeId = await until("the Concierge agent", () => conciergeAddress());
   await until("the Concierge online", () => (JSON.parse(inContainer(["cello", "agents"]).stdout) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Concierge")?.online);

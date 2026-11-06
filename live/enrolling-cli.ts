@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 function enroll(name: string): number {
   const current = join(home, "current-agent");
   const hadCurrent = existsSync(current);
-  const done = spawnSync(process.execPath, [real, "setup", "--yes", "--issuer", issuerUrl as string, "--code", `live-${randomBytes(8).toString("hex")}`, "--name", name, "--json"], { encoding: "utf8", env: { ...process.env, HOME: home, CELLO_CALLER: "" } });
+  const done = spawnSync(process.execPath, [real, "setup", "--yes", "--issuer", issuerUrl as string, "--concierge", "none", "--code", `live-${randomBytes(8).toString("hex")}`, "--name", name, "--json"], { encoding: "utf8", env: { ...process.env, HOME: home, CELLO_CALLER: "" } });
   if (!hadCurrent) rmSync(current, { force: true });
   if (done.status !== 0) process.stderr.write(done.stderr);
   return done.status ?? 1;

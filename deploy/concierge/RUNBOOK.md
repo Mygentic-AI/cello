@@ -32,10 +32,12 @@ Then create the agent, once. The code goes in on standard input, so it is never 
 
 ```
 read -rs CODE
-printf '%s\n' "$CODE" | docker exec -i concierge cello setup --yes --code - --name Concierge --server wss://server.celloprotocol.com/v1
+printf '%s\n' "$CODE" | docker exec -i concierge cello setup --yes --concierge none --code - --name Concierge --server wss://server.celloprotocol.com/v1
 unset CODE
 docker exec concierge cello agents
 ```
+
+`--concierge none` keeps the Concierge from calling a Concierge: once the client carries a default Concierge address, setup would otherwise end by calling it, and from this machine that is a call to itself.
 
 The last command shows the agent's address. **That address is what goes into the client.** Within a minute the Concierge answers calls.
 

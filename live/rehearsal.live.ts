@@ -423,7 +423,7 @@ async function concierge(): Promise<string> {
   await until("the Concierge's daemon", () => docker(["exec", CONCIERGE_NAME, "cello", "status"]).status === 0, 90);
   // The runbook's command, with a real code from the waitlist on standard input. Production gives no --issuer.
   const code = await issueCode(`concierge-${randomInt(1e9)}@example.test`, "admission");
-  const setup = docker(["exec", "-i", CONCIERGE_NAME, "cello", "setup", "--yes", "--issuer", ISSUER_URL, "--code", "-", "--name", "Concierge", "--server", SERVER_INSIDE, "--json"], `${code}\n`);
+  const setup = docker(["exec", "-i", CONCIERGE_NAME, "cello", "setup", "--yes", "--issuer", ISSUER_URL, "--concierge", "none", "--code", "-", "--name", "Concierge", "--server", SERVER_INSIDE, "--json"], `${code}\n`);
   must(setup.status === 0, `concierge setup exited ${setup.status}: ${(setup.stdout + setup.stderr).slice(-800)}`);
   const id = await until("the Concierge online", () => {
     const agents = JSON.parse(docker(["exec", CONCIERGE_NAME, "cello", "agents"]).stdout || "{}") as { agents?: { name: string; agent_id: string; online: boolean }[] };
