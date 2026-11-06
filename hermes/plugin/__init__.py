@@ -89,12 +89,21 @@ class CelloRefused(Exception):
         self.code = code
 
 
+_unscoped_warned = False
+
+
 def _get_cello_env(name: str, default: str = "") -> str:
     """Under multiplex_profiles os.environ holds only the default profile's values, so a plain read
     would give every profile the default profile's agent."""
     try:
         from gateway.platforms._shared import get_scoped_secret
     except ImportError:
+        # A Hermes without scoped secrets predates multiplex_profiles, so the plain read is right there.
+        # Say so once, so a box where that's wrong shows why every profile woke the same agent.
+        global _unscoped_warned
+        if not _unscoped_warned:
+            _unscoped_warned = True
+            logger.warning("cello: this Hermes has no scoped secrets, so %s and the other CELLO settings come from the process environment. Under multiplex_profiles every profile would get the default profile's agent.", name)
         val = os.environ.get(name, default)
     else:
         val = get_scoped_secret(name, default)
