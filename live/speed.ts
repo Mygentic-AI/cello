@@ -177,7 +177,7 @@ function act(agent: Agent, argv: string[], input?: string): Promise<Run> {
 }
 
 async function startSession(from: Agent, to: Agent): Promise<string> {
-  const started = await act(from, ["initiate-session", to.id]);
+  const started = await act(from, ["initiate-session", "--anyway", to.id]);
   if (started.status !== 0 || started.json["state"] !== "active") throw new Error(`session ${from.name} to ${to.name} didn't start: ${JSON.stringify(started.json)} ${started.stderr}`);
   return started.json["session_id"] as string;
 }

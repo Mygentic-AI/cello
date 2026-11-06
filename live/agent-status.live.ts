@@ -261,7 +261,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   const caraAgent = await create(cara);
   const danaAgent = await create(dana);
   await create(eve);
-  const session = cara.act("initiate-session", danaAgent.id)["session_id"] as string;
+  const session = cara.act("initiate-session", "--anyway", danaAgent.id)["session_id"] as string;
   await talk(cara, dana, session, "short, before anything happens");
   await talk(dana, cara, session, LONG_TEXT);
   await talk(cara, dana, session, LONG_TEXT);
@@ -275,7 +275,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(cara.refused("send", session, "after the flip", "--over"), "agent_suspended");
   assert.equal(cara.refused("receive"), "agent_suspended");
   report["ms_from_operator_command_to_refused_send_and_receive"] = Date.now() - flippedAt;
-  assert.equal(cara.refused("initiate-session", danaAgent.id), "agent_suspended");
+  assert.equal(cara.refused("initiate-session", "--anyway", danaAgent.id), "agent_suspended");
   assert.equal(cara.refused("close-session", session), "agent_suspended");
   assert.equal(cara.refused("wait"), "agent_suspended");
   assert.equal(cara.refused("channel-create", "after-the-flip", "--type", "public"), "agent_suspended");
@@ -295,7 +295,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.ok(!/suspend|retire|compromise|lost_machine/i.test(danaSaw), `the other side learned why: ${danaSaw}`);
   assert.equal((dana.act("sessions") as { sessions: { stopped: boolean }[] }).sessions[0]?.stopped, true);
   // A new call to a suspended agent says no more than that.
-  const eveCalls = eve.run(["initiate-session", caraAgent.id, "--agent", "Eve"]);
+  const eveCalls = eve.run(["initiate-session", "--anyway", caraAgent.id, "--agent", "Eve"]);
   assert.equal(eveCalls.json["error"], "agent_unavailable");
   assert.ok(!/suspend/i.test(eveCalls.stderr), eveCalls.stderr);
   say("the other side heard only that the conversation stopped");
@@ -362,7 +362,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   await refusedWith(raw.authLong(), "agent_retired", "a retired agent on the second connection");
   await assert.rejects(async () => { operator(A, "resume", raw.id); }, "nothing lifts retired");
   assert.equal(statusOn(A, raw.id), "retired");
-  assert.equal(eve.refused("initiate-session", raw.id), "agent_retired", "a retired agent is refused by name");
+  assert.equal(eve.refused("initiate-session", "--anyway", raw.id), "agent_retired", "a retired agent is refused by name");
   raw.stop();
   say("the server refused both connections itself, and nothing lifts retired");
 
@@ -399,7 +399,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   // ---- Only a person, at a terminal. ----
   const fay = side("Fay", A);
   const fayAgent = await create(fay);
-  const faySession = eve.act("initiate-session", fayAgent.id)["session_id"] as string;
+  const faySession = eve.act("initiate-session", "--anyway", fayAgent.id)["session_id"] as string;
   await talk(eve, fay, faySession, "are you there");
   assert.equal(fay.run(["retire", "--reason", "compromise", "--agent", "Fay"]).json["error"], "person_required", "a pipe isn't a person");
   assert.match(fay.atTerminal(["retire", "--agent", "Fay"], "right", "agent-shell"), /person_required/, "an agent's shell isn't a person");
@@ -410,7 +410,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.match(fay.atTerminal(["retire", "--reason", "compromise", "--agent", "Fay"]), /"status":"retired"/);
   assert.equal(fay.refused("send", faySession, "still here", "--over"), "agent_retired");
   assert.equal(fay.refused("receive"), "agent_retired");
-  assert.equal(eve.refused("initiate-session", fayAgent.id), "agent_retired");
+  assert.equal(eve.refused("initiate-session", "--anyway", fayAgent.id), "agent_retired");
   assert.equal(sql(A, `SELECT reason FROM agent_status WHERE agent_id = '\\x${fayAgent.id}'`), "compromise");
   await until("Eve to be told", () => (eve.act("sessions") as { sessions: { session_id: string; stopped: boolean }[] }).sessions.find((s) => s.session_id === faySession)?.stopped);
   assert.equal(eve.refused("send", faySession, "hello?", "--over"), "conversation_stopped");
@@ -454,8 +454,8 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   const bob = side("Bob", B);
   const annAgent = await create(ann);
   const bobAgent = await create(bob);
-  const across = ann.act("initiate-session", bobAgent.address)["session_id"] as string;
-  const atHome = ann.act("initiate-session", danaAgent.id)["session_id"] as string;
+  const across = ann.act("initiate-session", "--anyway", bobAgent.address)["session_id"] as string;
+  const atHome = ann.act("initiate-session", "--anyway", danaAgent.id)["session_id"] as string;
   await talk(ann, bob, across, "ann on her server, talking on bob's");
   await talk(bob, ann, across, LONG_TEXT);
   await talk(ann, bob, across, LONG_TEXT);
@@ -524,7 +524,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   // Retiring reaches both, and she can't come back to either.
   assert.match(ann.atTerminal(["retire", "--agent", "Ann", "--reason", "compromise"]), /"status":"retired"/);
   assert.deepEqual([statusOn(A, annAgent.id), statusOn(B, annAgent.id)], ["retired", "retired"]);
-  assert.equal(bob.refused("initiate-session", annAgent.address), "agent_retired");
+  assert.equal(bob.refused("initiate-session", "--anyway", annAgent.address), "agent_retired");
   ann.must(["logout"]);
   ann.login();
   await new Promise((resolve) => setTimeout(resolve, 1500));

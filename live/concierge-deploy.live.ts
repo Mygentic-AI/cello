@@ -84,7 +84,7 @@ async function newCaller(): Promise<string> {
   await until(`${caller} online`, () => (ok(homeP, ["agents"]) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === caller)?.online);
   return caller;
 }
-const call = (caller: string): string => ok(homeP, ["initiate-session", conciergeId, "--agent", caller])["session_id"] as string;
+const call = (caller: string): string => ok(homeP, ["initiate-session", "--anyway", conciergeId, "--agent", caller])["session_id"] as string;
 const heard = (caller: string, session: string): string[] => ((ok(homeP, ["transcript", session, "--agent", caller]) as unknown as { entries: { own: boolean; text?: string }[] }).entries).filter((e) => !e.own && e.text).map((e) => e.text as string);
 const hears = (caller: string, session: string, count: number, seconds?: number): Promise<string[]> => until(`${caller} to hear ${count} line(s)`, () => {
   const got = heard(caller, session);

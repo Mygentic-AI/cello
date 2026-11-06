@@ -90,7 +90,7 @@ function plan(user: string, tools: string[], lastRole: string): { text?: string;
   if (lastRole === "tool") return { text: "Done." };
   const session = /on session ([0-9a-f]{32})/.exec(user)?.[1] ?? /session_id="([0-9a-f]{32})"/.exec(user)?.[1];
   const open = /OPEN:([0-9a-f]{64})/.exec(user)?.[1];
-  if (open) return { call: { name: tool("cello_initiate_session"), args: { agent: HERMES_AGENT, target: open } } };
+  if (open) return { call: { name: tool("cello_initiate_session"), args: { agent: HERMES_AGENT, target: open, anyway: true } } };
   if (user.includes("You haven't replied yet") && session) return { call: { name: tool("cello_send"), args: { agent: HERMES_AGENT, session_id: session, text: "sorry, reminded", signal: "over" } } };
   if (user.includes("SAY_NOTHING")) return { text: "I'll think about it." };
   if (/closed their side|final message/.test(user) && session) return { call: { name: tool("cello_close_session"), args: { agent: HERMES_AGENT, session_id: session } } };
@@ -237,7 +237,7 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
   assert.equal(cello(hermesSide, ["receive", "--agent", HERMES_AGENT], "someone-else").json["error"], "agent_held");
 
   // Someone writes. Hermes wakes with nobody touching it, and the answer comes back through the tool.
-  const session = ok(peerSide, ["initiate-session", hermesId, "--agent", "Peer_One"])["session_id"] as string;
+  const session = ok(peerSide, ["initiate-session", "--anyway", hermesId, "--agent", "Peer_One"])["session_id"] as string;
   ok(peerSide, ["send", session, "WORD_ONE hello", "--over", "--agent", "Peer_One"]);
   const firstReply = await until("the first answer", () => read(peerSide, "Peer_One").messages.find((m) => m.text?.includes("answer to WORD_ONE")));
   assert.ok(firstReply);
@@ -332,8 +332,8 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
   const beforePeer = connections();
   startGateway(modelPort);
   await until("the bridge back in peer scope", () => connections() > beforePeer, 120);
-  const one = ok(peerSide, ["initiate-session", hermesId, "--agent", "Peer_One"])["session_id"] as string;
-  const two = ok(peerSide, ["initiate-session", hermesId, "--agent", "Peer_Two"])["session_id"] as string;
+  const one = ok(peerSide, ["initiate-session", "--anyway", hermesId, "--agent", "Peer_One"])["session_id"] as string;
+  const two = ok(peerSide, ["initiate-session", "--anyway", hermesId, "--agent", "Peer_Two"])["session_id"] as string;
   ok(peerSide, ["send", one, "SECRET_ALPHA from one", "--over", "--agent", "Peer_One"]);
   await until("one's answer", () => read(peerSide, "Peer_One").messages.find((m) => m.text?.includes("SECRET_ALPHA")));
   ok(peerSide, ["send", two, "SECRET_BRAVO from two", "--over", "--agent", "Peer_Two"]);

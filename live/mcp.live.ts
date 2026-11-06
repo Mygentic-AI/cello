@@ -105,7 +105,7 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   const refused = await two.tool("cello_use_agent", { agent: hostileName });
   assert.deepEqual([refused["isError"], refused["error"]], [true, "agent_held"]);
 
-  const started = await one.tool("cello_initiate_session", { target: ben["agent_id"] });
+  const started = await one.tool("cello_initiate_session", { anyway: true, target: ben["agent_id"] });
   assert.equal(started["state"], "active");
   const sessionId = started["session_id"] as string;
   const hello = await two.bell("session_started");

@@ -315,7 +315,7 @@ async function worker(caller: string): Promise<void> {
       case "bench":
         return bench();
       case "initiate": {
-        const run = await must(["initiate-session", command["target"] as string, "--agent", agent]);
+        const run = await must(["initiate-session", "--anyway", command["target"] as string, "--agent", agent]);
         return { start: run.start, end: run.end, ...run.json };
       }
       // Waits for a caller to arrive. Leftovers from earlier sessions are read so that they don't end the wait early.

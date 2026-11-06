@@ -134,7 +134,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   newSocket.close();
 
   // Starting a session wakes the other side.
-  const started = await alice.call("initiate_session", { target: bobId }) as { session_id: string; state: string };
+  const started = await alice.call("initiate_session", { anyway: true, target: bobId }) as { session_id: string; state: string };
   assert.equal(started.state, "active");
   const sessionId = started.session_id;
   const hello = await bob.bell("session_started");
@@ -232,12 +232,12 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal(outsider.agent_id.length, 64);
 
   // Too big says to split it, and the session carries on.
-  const roomy = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  const roomy = await alice.call("initiate_session", { anyway: true, target: bobId }) as { session_id: string };
   await bob.bell("session_started");
   await assert.rejects(alice.send(roomy.session_id, "words ".repeat(250_000), "over"), (err: Error & { code: string }) => err.code === "too_large" && /Split it.*Nothing was sent/.test(err.message));
 
   // A notice skips the read-first rule, so it can answer something older. The reader is told.
-  const crossing = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  const crossing = await alice.call("initiate_session", { anyway: true, target: bobId }) as { session_id: string };
   await bob.bell("session_started");
   await alice.send(crossing.session_id, "did you get my question", "over");
   await bob.bell("message");
@@ -254,7 +254,7 @@ test("two agents through one daemon: every signal, a daemon killed twice, and a 
   assert.equal((await bob.receive()).guidance?.some((g) => g.text.startsWith("Their last")), false, "a reply that saw everything has no lag");
 
   // Closing with something unread still closes, and says what was never read. Their close doesn't count as a message.
-  const second = await alice.call("initiate_session", { target: bobId }) as { session_id: string };
+  const second = await alice.call("initiate_session", { anyway: true, target: bobId }) as { session_id: string };
   await bob.bell("session_started");
   await alice.send(second.session_id, "you never read this", "over");
   await bob.bell("message");
@@ -291,7 +291,7 @@ test("a message waits on the server for a laptop that's shut, unreadable, then g
   await online(mine, "Dana");
   await online(theirs, "Erin");
   const dana = await mine.attach("Dana");
-  const started = await dana.call("initiate_session", { target: erinId }) as { session_id: string; state: string };
+  const started = await dana.call("initiate_session", { anyway: true, target: erinId }) as { session_id: string; state: string };
   assert.equal(started.state, "active");
 
   theirs.kill();

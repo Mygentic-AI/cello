@@ -91,7 +91,7 @@ async function round(level: number): Promise<Json> {
   const dialled = await Promise.all(callers.map(async (c) => {
     const t0 = Date.now();
     try {
-      const session = (await run(c.home, ["initiate-session", conciergeId, "--agent", c.name]))["session_id"] as string;
+      const session = (await run(c.home, ["initiate-session", "--anyway", conciergeId, "--agent", c.name]))["session_id"] as string;
       return { ...c, session, t0, dialMs: Date.now() - t0 };
     } catch (error) {
       failures.push(`${c.name} dial: ${(error as Error).message}`);
