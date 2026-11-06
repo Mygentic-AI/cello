@@ -525,7 +525,7 @@ async function main(): Promise<void> {
   await step(S_TALK, [S_SETUP, S_WEB], async () => {
     const waiting = app!.tool("cello_wait", { agent: "Andre_Hosted", timeout_seconds: 60 });
     await new Promise((r) => setTimeout(r, 1000));
-    const session = ok(local, ["initiate-session", created!.agent_id, "--agent", "Andre_Local"])["session_id"] as string;
+    const session = ok(local, ["initiate-session", "--anyway", created!.agent_id, "--agent", "Andre_Local"])["session_id"] as string;
     must(session, "no session id");
     const started = await waiting;
     must(started["event"] === "session_started", `the hosted agent's wait said ${JSON.stringify(started).slice(0, 300)}`);
@@ -577,7 +577,7 @@ async function main(): Promise<void> {
     const r = cello(home, ["setup", "--yes", "--server", SERVER_LOCAL, "--issuer", ISSUER_URL, "--code", "-", "--name", "Stranger", "--json"], `${code}\n`);
     must(r.status === 0, `stranger setup exited ${r.status}: ${(r.stderr || r.stdout).slice(-600)}`);
     await until("the stranger online", () => (ok(home, ["agents"]) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Stranger")?.online, 30);
-    const session = ok(home, ["initiate-session", conciergeId as string, "--agent", "Stranger"])["session_id"] as string;
+    const session = ok(home, ["initiate-session", "--anyway", conciergeId as string, "--agent", "Stranger"])["session_id"] as string;
     const heard = (): string[] => ((ok(home, ["transcript", session, "--agent", "Stranger"]) as { entries: { own: boolean; text?: string }[] }).entries).filter((e) => !e.own && e.text).map((e) => e.text as string);
     const say = (text: string): void => {
       ok(home, ["receive", "--session-id", session, "--agent", "Stranger"]);

@@ -252,7 +252,7 @@ export class Governance {
     if (clear === (value !== undefined)) throw new LocalError("bad_argument", "give a value, or --clear to go back to the default, and not both");
     const agentFlag = agentHex ? ` --agent ${agentHex}` : "";
     const command = `cello settings-set ${name} ${clear ? "--clear" : JSON.stringify(value)}${agentFlag}`;
-    const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts."].some((prefix) => name.startsWith(prefix));
+    const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts.", "calling."].some((prefix) => name.startsWith(prefix));
     if (!isAgentKey) {
       if (clear) throw new LocalError("bad_argument", "a daemon setting has no --clear: set the value you want");
       // Tuning, not a guard, so any shell of the owner's can do it. It just isn't an agent's tool.
