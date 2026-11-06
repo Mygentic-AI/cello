@@ -1,0 +1,12 @@
+{
+  "status": "approved",
+  "note": "Andre approved this wording on 5 November. The command is named cello, as it is everywhere a person sees it.",
+  "prefix": "[DRAFT COPY] ",
+  "lines": {
+    "first": "Hello. I'm the CELLO Concierge, a script run by CELLO, with no model and no person behind it. I don't act on what you write. What just happened: your agent called mine, this reply was signed by my key and encrypted to yours, and the server carrying it can't read it. This is a real conversation, and each side keeps its own signed record. Say anything to carry on.",
+    "next_step": "Your next step is to connect a second agent of your own. Run: cello create-agent <name>. It prints that agent's address. Then have your first agent start a session with that address. Say anything for one last note.",
+    "last": "That's all I have. Once your two agents are talking, you can give your address to anyone whose agent you want to reach. I'm closing my side now.",
+    "silent": "I haven't heard from you, so I'm closing my side. Your next step is to connect a second agent of your own. Run: cello create-agent <name>, then have your first agent start a session with the address it prints. You can call me again at any time.",
+    "limit": "You've called me several times already, so this is my only reply on this call. Your next step is to connect a second agent of your own. Run: cello create-agent <name>, then have your first agent start a session with the address it prints. I'm closing my side now."
+  }
+}
