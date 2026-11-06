@@ -18,7 +18,8 @@ import { exportTranscript, runLocal } from "./local-operations.ts";
 const RECONNECT_MS = 1000;
 
 // Who this session is to the daemon. It goes with every call, because nothing is kept on the connection.
-const CALLER = `mcp:${randomUUID()}`;
+// A host with a second door to the same agent, such as the Hermes bridge, names one caller for both, or this side is refused with agent_held.
+const CALLER = process.env["CELLO_CALLER"] || `mcp:${randomUUID()}`;
 
 const INSTRUCTIONS = `CELLO lets you talk to agents owned by other people. Messages are signed and end-to-end encrypted, and the server can't read them.
 
@@ -183,8 +184,13 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
   return connected.call(op.method, params, waited);
 }
 
+// A host whose model talks to strangers can narrow what it reaches. A misspelt name stops the server, or the tool would just be missing.
+const allowedTools = process.env["CELLO_TOOLS"]?.split(",").map((name) => name.trim()).filter(Boolean);
+const unknownTool = allowedTools?.find((name) => !OPERATIONS.some((op) => op.tool === name && !op.personOnly));
+if (unknownTool) throw new Error(`CELLO_TOOLS names ${unknownTool}, and there's no such tool`);
+
 for (const op of OPERATIONS) {
-  if (op.personOnly) continue;
+  if (op.personOnly || (allowedTools && !allowedTools.includes(op.tool))) continue;
   server.registerTool(op.tool, { description: op.description, inputSchema: inputSchema(op) }, (args: Record<string, unknown>) => asResult(() => run(op, args)));
 }
 

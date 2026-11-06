@@ -21,7 +21,8 @@
     "dist",
     "README.md",
     ".claude-plugin",
-    "plugins"
+    "plugins",
+    "hermes"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
