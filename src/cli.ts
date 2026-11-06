@@ -300,8 +300,8 @@ async function confirmPerson(refusal: string): Promise<void> {
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
 
-const BRIDGE_USAGE = `Usage: cello-v2 bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public | --not-public] [--allow-initiate]
-       cello-v2 bridge daemon-unit
+const BRIDGE_USAGE = `Usage: cello bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public | --not-public] [--allow-initiate]
+       cello bridge daemon-unit
 
 hermes connects a Hermes install to one agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin. A flag you leave out goes back to its default.
 --public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.

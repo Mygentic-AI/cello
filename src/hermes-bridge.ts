@@ -1,4 +1,4 @@
-// cello-v2 bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands. A person runs it at a terminal.
+// cello bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands. A person runs it at a terminal.
 // It's safe to run again, and it has to be after an upgrade, because Hermes keeps a copy of the plugin.
 import { spawn } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -89,7 +89,7 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   if (landing && !SAFE_SESSION_ID.test(landing)) return refuse(`--landing-session '${landing}' isn't a session id.`);
 
   // Strangers' text goes straight to this agent's model, so a public agent doesn't start on the rules alone.
-  if (isPublic && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello-v2 screener install");
+  if (isPublic && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello screener install");
 
   const tools = isPublic ? [...PUBLIC_TOOLS, ...(allowInitiate ? ["cello_initiate_session"] : [])] : undefined;
   const settings: Record<string, string> = {
@@ -100,7 +100,7 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     CELLO_CALLER: BRIDGE_CALLER,
     CELLO_SESSION_SCOPE: scope,
     CELLO_CHANNEL_NOTIFICATIONS: channels,
-    ...(process.env["CELLO_V2_HOME"] ? { CELLO_V2_HOME: celloHome() } : {}),
+    ...(process.env["CELLO_HOME"] ? { CELLO_HOME: celloHome() } : {}),
     ...(landing ? { CELLO_LANDING_SESSION: landing } : {}),
   };
   const wanted = withEnv(hermesEnv, settings, [...RETIRED_ENV, ...(landing ? [] : ["CELLO_LANDING_SESSION"]), ...(isPublic ? [] : ["CELLO_PUBLIC", "CELLO_TOOLS"]), ...(allowInitiate ? [] : ["CELLO_ALLOW_INITIATE"])]);
@@ -137,7 +137,7 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
 
   // By full path, so a gateway started by a service manager with a short PATH still finds it.
   // The limit is enforced by the tool process itself. 'hermes config set' can only write a string, which Hermes would read as one tool's name.
-  const mcpEnv = [`CELLO_CALLER=${BRIDGE_CALLER}`, ...(process.env["CELLO_V2_HOME"] ? [`CELLO_V2_HOME=${celloHome()}`] : []), ...(tools ? [`CELLO_TOOLS=${tools.join(",")}`] : [])];
+  const mcpEnv = [`CELLO_CALLER=${BRIDGE_CALLER}`, ...(process.env["CELLO_HOME"] ? [`CELLO_HOME=${celloHome()}`] : []), ...(tools ? [`CELLO_TOOLS=${tools.join(",")}`] : [])];
   const mcpAdd = ["mcp", "add", "cello", "--env", ...mcpEnv, "--command", process.execPath, "--args", mcpEntry()];
   // The tools first: an enabled plugin with no tools reads messages and can never answer them.
   const steps = [mcpAdd, ["plugins", "enable", "cello"]];
@@ -160,16 +160,16 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     }
   }
   if (tools) out.push(`Tools the model can reach: ${tools.join(", ")}`);
-  out.push("", "Now restart the gateway, so Hermes loads the plugin: hermes gateway restart", "The daemon must stay up by itself on a server: cello-v2 bridge daemon-unit");
+  out.push("", "Now restart the gateway, so Hermes loads the plugin: hermes gateway restart", "The daemon must stay up by itself on a server: cello bridge daemon-unit");
   return { ok: true, output: out.join("\n") };
 }
 
-// A systemd user unit that runs the daemon in the foreground. Not 'cello-v2 login', which starts it and exits, so a plain unit would call that a failure.
+// A systemd user unit that runs the daemon in the foreground. Not 'cello login', which starts it and exits, so a plain unit would call that a failure.
 export function daemonUnit(): string {
-  return `# ~/.config/systemd/user/cello-v2-daemon.service
-# Then: systemctl --user daemon-reload && systemctl --user enable --now cello-v2-daemon
+  return `# ~/.config/systemd/user/cello-daemon.service
+# Then: systemctl --user daemon-reload && systemctl --user enable --now cello-daemon
 # And once, so it starts at boot with nobody logged in: loginctl enable-linger $USER
-# Run 'cello-v2 login --server <url>' once first, then 'cello-v2 logout', because the server's address lives in the database.
+# Run 'cello login --server <url>' once first, then 'cello logout', because the server's address lives in the database.
 [Unit]
 Description=CELLO daemon
 After=network-online.target
@@ -177,7 +177,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=${process.execPath} ${daemonEntry()}
-Environment=CELLO_V2_HOME=${celloHome()}
+Environment=CELLO_HOME=${celloHome()}
 Restart=always
 RestartSec=2
 StandardOutput=append:${logPath()}

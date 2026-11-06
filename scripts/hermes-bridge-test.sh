@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-hermes}" CELLO_PORT="${CELLO_PORT:-18950}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-hermes}" CELLO_PORT="${CELLO_PORT:-18950}"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 cd "$server_dir"

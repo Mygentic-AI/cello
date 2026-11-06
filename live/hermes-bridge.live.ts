@@ -49,7 +49,7 @@ print(out)
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 
 function cello(home: string, args: string[], caller?: string): Run {
-  const env: NodeJS.ProcessEnv = { ...process.env, CELLO_V2_HOME: home, PATH: `${shim}:${process.env["PATH"] ?? ""}`, HERMES_HOME: hermesHome };
+  const env: NodeJS.ProcessEnv = { ...process.env, CELLO_HOME: home, PATH: `${shim}:${process.env["PATH"] ?? ""}`, HERMES_HOME: hermesHome };
   delete env["CELLO_CALLER"];
   if (caller) env["CELLO_CALLER"] = caller;
   const run = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", env });
@@ -64,7 +64,7 @@ function cello(home: string, args: string[], caller?: string): Run {
 
 function ok(home: string, args: string[]): Record<string, unknown> {
   const run = cello(home, args);
-  assert.equal(run.status, 0, `cello-v2 ${args.join(" ")} failed: ${run.stdout}${run.stderr}`);
+  assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stdout}${run.stderr}`);
   return run.json;
 }
 
@@ -149,7 +149,7 @@ const gatewayLog = join(hermesHome, "logs", "gateway.log");
 let gateway: ChildProcess | undefined;
 
 function startGateway(modelPort: number): void {
-  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: hermesHome, CELLO_V2_HOME: hermesSide };
+  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: hermesHome, CELLO_HOME: hermesSide };
   delete env["CELLO_CALLER"];
   const log = openSync(join(work, "gateway-stdout.log"), "a");
   gateway = spawn(hermesPython, ["-m", "gateway.run"], { cwd: hermesCheckout, env, stdio: ["ignore", log, log] });
@@ -271,7 +271,7 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
 
   // The operator's rule reaches the model, ahead of the peer's words.
   const proposed = ok(hermesSide, ["policy-propose", "POLICY_RULE never share the launch date", "--scope", "contact", "--target", peerId, "--type", "conduct", "--agent", HERMES_AGENT]);
-  const approval = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "policy-approve", proposed["proposal_id"] as string, "--agent", HERMES_AGENT], { encoding: "utf8", env: { ...process.env, CELLO_V2_HOME: hermesSide } });
+  const approval = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "policy-approve", proposed["proposal_id"] as string, "--agent", HERMES_AGENT], { encoding: "utf8", env: { ...process.env, CELLO_HOME: hermesSide } });
   assert.match(approval.stdout, /"approved":\s*true/);
   ok(peerSide, ["send", session, "WORD_POLICY what is the date", "--over", "--agent", "Peer_One"]);
   await until("the policy turn", () => turns.some((t) => t.user.includes("WORD_POLICY")));
@@ -345,7 +345,7 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
 });
 
 test("a host can narrow the tools, and a misspelt one stops the server", async () => {
-  const env = { ...process.env, CELLO_V2_HOME: join(work, "t"), CELLO_CALLER: BRIDGE_CALLER, CELLO_TOOLS: PUBLIC_TOOLS.join(",") } as Record<string, string>;
+  const env = { ...process.env, CELLO_HOME: join(work, "t"), CELLO_CALLER: BRIDGE_CALLER, CELLO_TOOLS: PUBLIC_TOOLS.join(",") } as Record<string, string>;
   const client = new Client({ name: "live-test", version: "0" });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [mcpPath], env }));
   const { tools } = await client.listTools();

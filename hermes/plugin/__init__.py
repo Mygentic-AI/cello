@@ -8,7 +8,7 @@ process under the same caller name.
 session_scope: agent (default) is one conversation per CELLO agent. peer is one per counterparty,
 for a desk where two callers must never share a context.
 
-Installed by 'cello-v2 bridge hermes'. Re-run that to upgrade, rather than editing this file.
+Installed by 'cello bridge hermes'. Re-run that to upgrade, rather than editing this file.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def _hermes_home() -> Path:
 
 def _socket_path(explicit_home: Optional[Any] = None) -> Path:
     raw = str(explicit_home).strip() if explicit_home is not None else ""
-    home = raw or _get_cello_env("CELLO_V2_HOME") or str(Path.home() / ".cello-v2")
+    home = raw or _get_cello_env("CELLO_HOME") or str(Path.home() / ".cello")
     return Path(home) / "daemon.sock"
 
 
@@ -305,10 +305,10 @@ class CelloAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         complaint = self._invalid_settings()
         if complaint is not None:
-            logger.error("[cello] Refusing to start: %s. Re-running 'cello-v2 bridge hermes' writes valid values.", complaint)
+            logger.error("[cello] Refusing to start: %s. Re-running 'cello bridge hermes' writes valid values.", complaint)
             return False
         if not self._agent_name:
-            logger.error("[cello] CELLO_AGENT_NAME isn't set. Run 'cello-v2 bridge hermes --agent <name>', then restart the gateway.")
+            logger.error("[cello] CELLO_AGENT_NAME isn't set. Run 'cello bridge hermes --agent <name>', then restart the gateway.")
             return False
         self._closing = False
         self._displaced = False
@@ -316,7 +316,7 @@ class CelloAdapter(BasePlatformAdapter):
         try:
             await self._establish()
         except Exception as exc:
-            logger.error("[cello] Could not hold agent '%s' through the daemon at %s: %s. If it isn't running, start it with 'cello-v2 login'.", self._agent_name, self._socket, exc)
+            logger.error("[cello] Could not hold agent '%s' through the daemon at %s: %s. If it isn't running, start it with 'cello login'.", self._agent_name, self._socket, exc)
             self._closing = True
             if self._read_task is not None and not self._read_task.done():
                 self._read_task.cancel()
@@ -570,7 +570,7 @@ class CelloAdapter(BasePlatformAdapter):
         elif kind == "screening_delayed":
             logger.info("[cello] A long message on session %s is still being screened", data.get("session_id"))
         elif kind == "agent_status":
-            how = "See it with cello_agent_status(agent=\"" + self._agent_name + "\")." if self._has_tool("cello_agent_status") else "Tell your operator, who can see it with: cello-v2 agent-status --agent " + self._agent_name
+            how = "See it with cello_agent_status(agent=\"" + self._agent_name + "\")." if self._has_tool("cello_agent_status") else "Tell your operator, who can see it with: cello agent-status --agent " + self._agent_name
             await self._start_turn(self._agent_name, "cello-daemon", "[CELLO] This agent's status has changed. " + how, data, "status")
         elif kind == "agent_displaced":
             await self._on_displaced(data)
@@ -628,7 +628,7 @@ class CelloAdapter(BasePlatformAdapter):
         elif kind == "channel_notice":
             text = "[CELLO] There's a notice about channel " + channel + ". See it with cello_channels(agent=\"" + self._agent_name + "\")."
         else:
-            how = "See who with cello_channel_requests(agent=\"" + self._agent_name + "\", channel_id=\"" + channel + "\")." if self._has_tool("cello_channel_requests") else "Tell your operator, who can see who with: cello-v2 channel-requests --agent " + self._agent_name
+            how = "See who with cello_channel_requests(agent=\"" + self._agent_name + "\", channel_id=\"" + channel + "\")." if self._has_tool("cello_channel_requests") else "Tell your operator, who can see who with: cello channel-requests --agent " + self._agent_name
             text = "[CELLO] Someone has asked to join channel " + channel + ". " + how
         # Under peer scope a channel gets its own conversation and never lands in a customer's.
         chat_id = self._agent_name if self._session_scope == "agent" else "channel-" + channel[:16]
@@ -878,7 +878,7 @@ def _env_enablement() -> Optional[dict]:
         ("caller", "CELLO_CALLER"),
         ("session_scope", "CELLO_SESSION_SCOPE"),
         ("channel_notifications", "CELLO_CHANNEL_NOTIFICATIONS"),
-        ("cello_home", "CELLO_V2_HOME"),
+        ("cello_home", "CELLO_HOME"),
     ):
         val = _get_cello_env(env_name)
         if val:
@@ -888,7 +888,7 @@ def _env_enablement() -> Optional[dict]:
 
 def interactive_setup() -> None:
     from hermes_cli.cli_output import print_info
-    print_info("CELLO is set up from a terminal: cello-v2 bridge hermes --agent <name>")
+    print_info("CELLO is set up from a terminal: cello bridge hermes --agent <name>")
 
 
 def _parse_tool_result(result: Any) -> Optional[Dict[str, Any]]:
@@ -1006,7 +1006,7 @@ def _platform_hint() -> str:
         "every call. cello_initiate_session starts a session, cello_close_session closes and seals one, and cello_status and "
         "cello_sessions show state. When the other side closes, or sends its final message, call cello_close_session.\n"
         "\n"
-        "NEVER run the 'cello-v2' command-line program, or restart the daemon: one daemon serves every agent on this machine. "
+        "NEVER run the 'cello' command-line program, or restart the daemon: one daemon serves every agent on this machine. "
         "Never pass force: it throws this conversation off the agent. If a tool returns an error, read it, fix the cause, and retry.\n"
         "\n"
         "Answer [SILENT] only for a notice that needs nothing from you, never when a peer has written and is waiting."
@@ -1021,7 +1021,7 @@ def register(ctx) -> None:
         check_fn=check_cello_requirements,
         is_connected=_is_connected,
         required_env=["CELLO_AGENT_NAME"],
-        install_hint="Start the CELLO daemon with 'cello-v2 login', then run 'cello-v2 bridge hermes --agent <name>'.",
+        install_hint="Start the CELLO daemon with 'cello login', then run 'cello bridge hermes --agent <name>'.",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         emoji="\U0001F3BB",
