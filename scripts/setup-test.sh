@@ -8,7 +8,7 @@ CELLO_TRUSTED_ISSUERS=$(CELLO_ISSUER_DIR="$CELLO_ISSUER_DIR" node "$here/live/is
 export CELLO_TRUSTED_ISSUERS
 # The server a test starts must not fetch the real issuer's list.
 export CELLO_ISSUER_LIST_URL=off
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-setup}" CELLO_PORT="${CELLO_PORT:-18950}" CELLO_SERVER_DIR="$server_dir"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-setup}" CELLO_PORT="${CELLO_PORT:-18950}" CELLO_SERVER_DIR="$server_dir"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
@@ -21,8 +21,8 @@ if [ ! -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ]; then
 fi
 cd "$server_dir"
 # Builds running at once have frozen this machine, so only the build takes the shared lock.
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
-mkdir -p "$HOME/cello-v2-live-runs"
+lock="$HOME/cello-live-runs/.heavy-lock"
+mkdir -p "$HOME/cello-live-runs"
 held=""
 trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT

@@ -2,7 +2,7 @@
 # Andre's go-live test, rehearsed on this Mac against local copies of every service: a server, the issuer's real image
 # with test keys and a list signed by two test roots, the waitlist's code issuance, the hosted page, provisioner and host
 # agent with a hosted container, and the Concierge. It walks the test and records each step, pass or fail, with timing,
-# in ~/cello-v2-live-runs/rehearsal-<time>/results.md. It leaves nothing running, and touches no cloud.
+# in ~/cello-live-runs/rehearsal-<time>/results.md. It leaves nothing running, and touches no cloud.
 #
 # Each checkout defaults to the rehearsal worktree beside this one (<repo>/.claude/worktrees/rehearsal). Set R_BUILD=0
 # to reuse images already built. Ports 23000-23999 only; its own COMPOSE_PROJECT_NAME.
@@ -21,7 +21,7 @@ export R_ISSUER_IMAGE="${R_ISSUER_IMAGE:-cello-issuer:rehearsal}" R_HOSTED_IMAGE
 # The rehearsal's server uses the test-signed list it is given, and must not fetch the real issuer's.
 export CELLO_ISSUER_LIST_URL=off
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-rehearsal}"
-export R_EVIDENCE="${R_EVIDENCE:-$HOME/cello-v2-live-runs/rehearsal-$(date +%Y%m%d-%H%M%S)}"
+export R_EVIDENCE="${R_EVIDENCE:-$HOME/cello-live-runs/rehearsal-$(date +%Y%m%d-%H%M%S)}"
 for d in "$R_SERVER_DIR" "$R_ISSUER_DIR" "$R_TC_DIR" "$R_MCP_DIR" "$R_WAITLIST_MIGRATIONS" "$R_OPS_MIGRATIONS"; do
   [ -d "$d" ] || { echo "Missing $d. Make the rehearsal worktree there, or set its R_ variable." >&2; exit 1; }
 done

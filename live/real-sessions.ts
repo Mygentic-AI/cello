@@ -49,7 +49,7 @@ const home = join(base, "home");
 const env = { ...process.env, CELLO_HOME: home };
 const startedAt = Date.now();
 const stamp = new Date(startedAt).toISOString().replaceAll(":", "-").slice(0, 19);
-const evidence = join(homedir(), "cello-v2-live-runs", stamp);
+const evidence = join(homedir(), "cello-live-runs", stamp);
 mkdirSync(evidence, { recursive: true });
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

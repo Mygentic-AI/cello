@@ -14,7 +14,7 @@ const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const programPath = new URL("../concierge/concierge.ts", import.meta.url).pathname;
 const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
 const root = mkdtempSync(join(tmpdir(), "cello-concierge-stress-"));
-const evidence = join(homedir(), "cello-v2-live-runs", `concierge-stress-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+const evidence = join(homedir(), "cello-live-runs", `concierge-stress-${new Date().toISOString().replace(/[:.]/g, "-")}`);
 mkdirSync(evidence, { recursive: true });
 const bin = join(root, "bin");
 mkdirSync(bin);

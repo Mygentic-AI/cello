@@ -1,6 +1,6 @@
 // Is a message crossing a server fast enough when the agents are far apart? No model turns: the real CLI on this
 // machine and on a far VM, through a real server, in temporary homes.
-//   node live/two-machines.ts --server wss://host/v1 --instance cello-v2-far --zone europe-west1-c
+//   node live/two-machines.ts --server wss://host/v1 --instance cello-far --zone europe-west1-c
 // Each machine stamps its own clock and runs its side of a conversation by itself, so the slow SSH link that
 // carries orders is never inside a measurement. --worker is the half that runs on each machine.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -717,7 +717,7 @@ async function orchestrate(): Promise<void> {
   if (dirty) throw new Error(`uncommitted changes in src or live, so the far machine wouldn't run this code:\n${dirty}`);
   const commit = git("rev-parse", "--short=8", "HEAD");
   const time = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const dir = join(homedir(), "cello-v2-live-runs", `two-machines-${time}`);
+  const dir = join(homedir(), "cello-live-runs", `two-machines-${time}`);
   mkdirSync(dir, { recursive: true });
   const raw = join(dir, "raw.jsonl");
   const ssh = ["compute", "ssh", args.instance, "--project", args.project, "--zone", args.zone, "--tunnel-through-iap", "--quiet", "--ssh-flag=-oServerAliveInterval=15", "--command"];
@@ -727,18 +727,18 @@ async function orchestrate(): Promise<void> {
     say(`copying ${commit} to ${args.instance}`);
     const archive = execFileSync("git", ["-C", here, "archive", "HEAD"], { maxBuffer: 1e9 });
     // The prepare script needs git, which the copy doesn't have, so scripts stay off and the one native package is built by name.
-    execFileSync("gcloud", [...ssh, "rm -rf ~/cello-v2 && mkdir -p ~/cello-v2 && tar -x -C ~/cello-v2 && cd ~/cello-v2 && pnpm install --frozen-lockfile --ignore-scripts --reporter=silent && pnpm rebuild @signalapp/sqlcipher --reporter=silent"], { input: archive, stdio: ["pipe", "ignore", "pipe"], maxBuffer: 1e9 });
+    execFileSync("gcloud", [...ssh, "rm -rf ~/cello && mkdir -p ~/cello && tar -x -C ~/cello && cd ~/cello && pnpm install --frozen-lockfile --ignore-scripts --reporter=silent && pnpm rebuild @signalapp/sqlcipher --reporter=silent"], { input: archive, stdio: ["pipe", "ignore", "pipe"], maxBuffer: 1e9 });
   }
 
   // Before any worker starts, because each machine's workers and homes belong to one run at a time.
   say(`leftovers here: ${execFileSync(process.execPath, [new URL(import.meta.url).pathname, "--clean-leftovers"], { encoding: "utf8" }).trim()}`);
-  say(`leftovers on ${args.instance}: ${execFileSync("gcloud", [...ssh, "node ~/cello-v2/live/two-machines.ts --clean-leftovers"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()}`);
+  say(`leftovers on ${args.instance}: ${execFileSync("gcloud", [...ssh, "node ~/cello/live/two-machines.ts --clean-leftovers"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()}`);
 
   const local = (name: string): Side => new Side(name, process.execPath, [new URL(import.meta.url).pathname, "--worker", "--caller", `two-machines-${name}`], join(dir, `stderr-${name}.log`));
   // The Mac's link drops now and then, and a dropped link before anything has started costs nothing but a retry.
   const far = async (name: string): Promise<Side> => {
     for (let attempt = 1; ; attempt++) {
-      const side = new Side(name, "gcloud", [...ssh, `node ~/cello-v2/live/two-machines.ts --worker --caller two-machines-${name}`], join(dir, `stderr-${name}.log`));
+      const side = new Side(name, "gcloud", [...ssh, `node ~/cello/live/two-machines.ts --worker --caller two-machines-${name}`], join(dir, `stderr-${name}.log`));
       try {
         await side.call("login", { server: args.server });
         return side;

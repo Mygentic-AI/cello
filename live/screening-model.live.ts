@@ -27,7 +27,7 @@ function cello(home: string, args: string[], input?: string): Json {
 }
 
 function home(withModel = false): string {
-  const made = mkdtempSync(join(tmpdir(), "cello-v2-model-"));
+  const made = mkdtempSync(join(tmpdir(), "cello-model-"));
   homes.push(made);
   if (withModel) {
     const source = process.env["MODEL_SOURCE"];
@@ -101,7 +101,7 @@ test("with the model running, a long screen doesn't stall the main thread, and a
   // A database restored on a machine without the model says so, plainly, and keeps working on the deterministic rules.
   cello(reader, ["logout"]);
   homes.splice(homes.indexOf(reader), 1);
-  const restored = mkdtempSync(join(tmpdir(), "cello-v2-model-"));
+  const restored = mkdtempSync(join(tmpdir(), "cello-model-"));
   mkdirSync(restored, { recursive: true });
   copyFileSync(join(reader, "cello.db"), join(restored, "cello.db"));
   copyFileSync(join(reader, "cello.db.key"), join(restored, "cello.db.key"));

@@ -53,7 +53,7 @@ test("garbage pushes from the server leave the daemon running", async () => {
     });
   });
 
-  const home = mkdtempSync(join(tmpdir(), "cello-v2-hostile-"));
+  const home = mkdtempSync(join(tmpdir(), "cello-hostile-"));
   const entry = fileURLToPath(new URL("../src/daemon/main.ts", import.meta.url));
   const daemon = spawn(process.execPath, [entry, `ws://127.0.0.1:${port}/`], { env: { ...process.env, CELLO_HOME: home }, stdio: "ignore" });
   const socketPath = join(home, "daemon.sock");

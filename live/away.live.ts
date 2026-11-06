@@ -18,7 +18,7 @@ interface Read { messages: { text?: string; closed_their_side?: boolean }[]; not
 interface View { session_id: string; state: string; own_closed: boolean; peer_closed: boolean; position: number; away_visit?: string }
 
 class Machine {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-away-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-away-"));
   run(args: string[]): { stderr: string } {
     return spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }

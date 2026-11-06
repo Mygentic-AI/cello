@@ -12,7 +12,7 @@ const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
 type Json = Record<string, unknown>;
 
 class Machine {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-bump-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-bump-"));
   run(args: string[], input?: string): { status: number | null; stdout: string; stderr: string; json: Json } {
     const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};

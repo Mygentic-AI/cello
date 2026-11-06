@@ -6,7 +6,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
 # Servers require a verified email signal, and each daemon here collects a real one.
 . "$here/scripts/test-issuer-env.sh"
-mkdir -p "$HOME/cello-v2-live-runs"
+mkdir -p "$HOME/cello-live-runs"
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from this repo's. In cello-server, run scripts/sync-protocol.sh and commit." >&2
   exit 1
@@ -25,11 +25,11 @@ cleanup() {
   done
   # Killed mid-build: this run still holds the heavy-run lock, and nothing else would free it.
   if [ -f "$pids.locked" ]; then
-    rmdir "$HOME/cello-v2-live-runs/.heavy-lock" 2>/dev/null
+    rmdir "$HOME/cello-live-runs/.heavy-lock" 2>/dev/null
     rm -f "$pids.locked"
   fi
   rm -f "$pids"
-  for name in cello-v2-fed-a cello-v2-fed-b; do
+  for name in cello-fed-a cello-fed-b; do
     "$server_dir/scripts/server.sh" down --name "$name" --delete-data >/dev/null 2>&1
   done
 }

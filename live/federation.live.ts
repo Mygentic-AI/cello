@@ -20,11 +20,11 @@ const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server
 const pidsFile = process.env["CELLO_FED_PIDS"];
 const issuerPort = Number(new URL(process.env["CELLO_TEST_ISSUER_URL"] as string).port);
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
-const evidence = join(homedir(), "cello-v2-live-runs", `federation-${stamp}`);
+const evidence = join(homedir(), "cello-live-runs", `federation-${stamp}`);
 mkdirSync(evidence, { recursive: true });
 
-const A = { name: "cello-v2-fed-a", port: 18400, url: "ws://127.0.0.1:18400/v1" };
-const B = { name: "cello-v2-fed-b", port: 18401, url: "ws://127.0.0.1:18401/v1" };
+const A = { name: "cello-fed-a", port: 18400, url: "ws://127.0.0.1:18400/v1" };
+const B = { name: "cello-fed-b", port: 18401, url: "ws://127.0.0.1:18401/v1" };
 type Server = typeof A;
 
 const report: Record<string, unknown> = { started: stamp };
@@ -35,7 +35,7 @@ function say(line: string): void {
 }
 
 const built = new Set<string>();
-const heavyLock = join(homedir(), "cello-v2-live-runs", ".heavy-lock");
+const heavyLock = join(homedir(), "cello-live-runs", ".heavy-lock");
 
 // Builds running at once have overloaded this machine, so a build holds the lock, and the test itself doesn't. The script frees it if this run is killed mid-build.
 function holdingBuildLock<T>(work: () => T): T {
@@ -103,7 +103,7 @@ const everyone: { run(args: string[]): Run }[] = [];
 
 // One owner's machine: its own daemon, in its own folder, with its own caller.
 function side(name: string, home: Server) {
-  let dir = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-`));
+  let dir = mkdtempSync(join(tmpdir(), `cello-fed-${name}-`));
   const run = (args: string[]): Run => {
     const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` } });
     let json: Record<string, unknown> = {};
@@ -125,7 +125,7 @@ function side(name: string, home: Server) {
     // Only the database and its key go to the new folder, and login is told nothing.
     restoreInNewHome: () => {
       must(["logout"]);
-      const fresh = mkdtempSync(join(tmpdir(), `cello-v2-fed-${name}-restored-`));
+      const fresh = mkdtempSync(join(tmpdir(), `cello-fed-${name}-restored-`));
       for (const file of ["cello.db", "cello.db.key"]) copyFileSync(join(dir, file), join(fresh, file));
       assert.deepEqual(readdirSync(fresh).sort(), ["cello.db", "cello.db.key"]);
       dir = fresh;
@@ -336,7 +336,7 @@ test("an agent on one server talks to an agent on another, and neither server le
   const checkB = bob.act("verify-session", session);
   assert.deepEqual([checkA["ok"], checkB["ok"], checkA["position"]], [true, true, 8]);
   assert.equal(checkA["root"], checkB["root"]);
-  const files = mkdtempSync(join(tmpdir(), "cello-v2-fed-files-"));
+  const files = mkdtempSync(join(tmpdir(), "cello-fed-files-"));
   const saved = (name: string, value: unknown): string => {
     const path = join(files, name);
     writeFileSync(path, JSON.stringify(value));

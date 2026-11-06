@@ -3,7 +3,7 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-live}" CELLO_PORT="${CELLO_PORT:-18090}" CELLO_SERVER_DIR="$server_dir"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-live}" CELLO_PORT="${CELLO_PORT:-18090}" CELLO_SERVER_DIR="$server_dir"
 # Servers require a verified email signal, and each daemon here collects a real one.
 . "$here/scripts/test-issuer-env.sh"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
@@ -16,8 +16,8 @@ fi
 cd "$server_dir"
 # A test's own cleanup is skipped when it times out or is force-exited, which left daemons running. Only this run's
 # daemons carry these ports in their command, so a person's real daemon is never touched. The install test's runs as .js.
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
-mkdir -p "$HOME/cello-v2-live-runs"
+lock="$HOME/cello-live-runs/.heavy-lock"
+mkdir -p "$HOME/cello-live-runs"
 held=""
 trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "daemon/main.js ws://127.0.0.1:${CELLO_INSTALL_PORT:-18095}/v1" 2>/dev/null || true; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 waited=0

@@ -3,13 +3,13 @@
 #
 # Runs what the publish workflow runs: install, build, typecheck, lint, the whole test suite, and the release check that refuses
 # an empty shipped issuer list or an empty Concierge address. Records the commit only if every step passes, in
-# ~/.cache/.cello-v2-pre-tag-gate. Tag that commit and no other: any later commit needs the gate again.
+# ~/.cache/.cello-pre-tag-gate. Tag that commit and no other: any later commit needs the gate again.
 # (The publish guard hook only reads cello-client's marker today. Extending it to this one is a separate change.)
 #
 # Usage: scripts/pre-tag-gate.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-marker="$HOME/.cache/.cello-v2-pre-tag-gate"
+marker="$HOME/.cache/.cello-pre-tag-gate"
 rm -f "$marker"
 
 # Untracked files count: tsc and the tests read them, and the tag doesn't carry them.

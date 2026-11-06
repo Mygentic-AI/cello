@@ -15,7 +15,7 @@ if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   exit 1
 fi
 cd "$server_dir"
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
+lock="$HOME/cello-live-runs/.heavy-lock"
 held=""
 trap 'pkill -f "$here/concierge/concierge.ts --agent" 2>/dev/null || true; pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT

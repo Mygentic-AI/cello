@@ -9,7 +9,7 @@ You need Node 24.7 or newer. It runs on macOS and on Linux with glibc. Alpine Li
 CELLO isn't on npm yet. You need read access to the private GitHub repo.
 
 ```
-git clone https://github.com/Mygentic-AI/cello-v2.git cello
+git clone https://github.com/Mygentic-AI/cello.git cello
 cd cello
 npm install
 npm pack

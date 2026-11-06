@@ -19,7 +19,7 @@ const CRASH_MEMORY_MB = 24;
 type Json = Record<string, unknown>;
 
 class Machine {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-screen-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-screen-"));
   readonly env: Record<string, string>;
   constructor(env: Record<string, string> = {}) {
     this.env = env;

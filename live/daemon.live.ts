@@ -25,7 +25,7 @@ interface AgentStatus { name: string; agent_id: string; online: boolean; unread:
 interface Status { pid: number; connected: boolean; agents: AgentStatus[] }
 
 class Daemon {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-live-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-live-"));
   cli(...args: string[]): string {
     return execFileSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: this.home } });
   }

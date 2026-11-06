@@ -23,7 +23,7 @@ import { fromB64, signedSealCertificate, toB64 } from "../src/protocol/wire.ts";
 import { SEAL_NOTE, compareTranscripts } from "../src/guidance.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
-const home = mkdtempSync(join(tmpdir(), "cello-v2-cli-"));
+const home = mkdtempSync(join(tmpdir(), "cello-cli-"));
 const cliPath = REAL_CLI;
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server", import.meta.url).pathname;
 
@@ -240,7 +240,7 @@ interface SealOutput {
   statement: Record<string, string>;
 }
 
-const scratch = mkdtempSync(join(tmpdir(), "cello-v2-seal-files-"));
+const scratch = mkdtempSync(join(tmpdir(), "cello-seal-files-"));
 let nextFile = 0;
 
 function saved(content: unknown): string {
@@ -257,7 +257,7 @@ function verify(file: string, sealKey: string, inHome = home): Record<string, un
 
 test("seals: one party, partial, across a daemon kill, and checked offline with tampering caught", { timeout: 200_000 }, async () => {
   // Two machines' worth of state: each agent has its own daemon, so one can really be offline.
-  const kitHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-kit-"));
+  const kitHome = mkdtempSync(join(tmpdir(), "cello-cli-kit-"));
   okIn(kitHome, ["login", "--server", url]);
   const kit = okIn(kitHome, ["create-agent", "Kit"]);
   ok(["create-agent", "Jan"]);
@@ -410,7 +410,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   okIn(kitHome, ["logout"]);
   ok(["logout"]);
   compose("stop", "server");
-  const stranger = mkdtempSync(join(tmpdir(), "cello-v2-stranger-"));
+  const stranger = mkdtempSync(join(tmpdir(), "cello-stranger-"));
   assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
   const offline = verify(wholeFile, sealKey, stranger) as unknown as SealOutput;
   assert.deepEqual([offline.witnessed_through, offline.received_through], [4, 3]);
@@ -424,7 +424,7 @@ test("a standby past its time tells each side once, across restarts, and changes
 
   // Two machines' worth of state, each shell with its own caller.
   const side = (agent: string) => {
-    const inHome = mkdtempSync(join(tmpdir(), `cello-v2-cli-${agent}-`));
+    const inHome = mkdtempSync(join(tmpdir(), `cello-cli-${agent}-`));
     const caller = `shell-${agent}`;
     const must = (args: string[]): Record<string, unknown> => {
       const done = cello(args, undefined, caller, inHome);
@@ -658,8 +658,8 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   });
   const sealKey = (await (await fetch(healthz)).json() as { seal_key: string }).seal_key;
 
-  const nedHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-ned-"));
-  const oraHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-ora-"));
+  const nedHome = mkdtempSync(join(tmpdir(), "cello-cli-ned-"));
+  const oraHome = mkdtempSync(join(tmpdir(), "cello-cli-ora-"));
   okIn(nedHome, ["login", "--server", url]);
   okIn(oraHome, ["login", "--server", url]);
   const nedAgent = okIn(nedHome, ["create-agent", "Ned"]);
@@ -880,7 +880,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   // Nothing running: no daemon, no server, and a home with nothing in it. The files still check out, and forgeries still fail.
   okIn(nedHome, ["logout"]);
   okIn(oraHome, ["logout"]);
-  const stranger = mkdtempSync(join(tmpdir(), "cello-v2-stranger-"));
+  const stranger = mkdtempSync(join(tmpdir(), "cello-stranger-"));
   assert.equal(cello(["status"], undefined, undefined, stranger).json["error"], "daemon_not_running");
   const offline = check(noServerFile, sealKey, stranger);
   assert.ok(offline.ok, offline.message);
@@ -922,7 +922,7 @@ async function lyingProxy(rewrite: { current: ((answer: { record: SealRecordOnWi
 test("a server that lies about a seal gets a named refusal, and nothing is reported or stored as sealed", { timeout: 120_000 }, async () => {
   const rewrite: Parameters<typeof lyingProxy>[0] = { current: null };
   const proxy = await lyingProxy(rewrite);
-  const liarHome = mkdtempSync(join(tmpdir(), "cello-v2-cli-liar-"));
+  const liarHome = mkdtempSync(join(tmpdir(), "cello-cli-liar-"));
   // The proxy lives in this process, so a command mustn't block it the way spawnSync would.
   const run = (args: string[]): Promise<Run> => new Promise((resolve) => {
     execFile(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: liarHome } }, (err, stdout, stderr) => {

@@ -13,7 +13,7 @@ function filesHoldingMarker(dir: string): string[] {
 }
 
 test("the database is encrypted on disk, while open and after closing", () => {
-  const dir = mkdtempSync(join(tmpdir(), "cello-v2-store-"));
+  const dir = mkdtempSync(join(tmpdir(), "cello-store-"));
   const path = join(dir, "cello.db");
   const store = new Store(path);
   store.setConfig("marker", MARKER);
@@ -28,7 +28,7 @@ test("the database is encrypted on disk, while open and after closing", () => {
 });
 
 test("the database refuses to open with a missing key, rather than starting a new one", () => {
-  const dir = mkdtempSync(join(tmpdir(), "cello-v2-store-"));
+  const dir = mkdtempSync(join(tmpdir(), "cello-store-"));
   const path = join(dir, "cello.db");
   new Store(path).close();
   rmSync(`${path}.key`);

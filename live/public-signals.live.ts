@@ -14,7 +14,7 @@ type Json = Record<string, unknown>;
 interface Signal { signal_hash: string; type: string; public?: boolean; counts_as_verified: boolean; issuer_standing: string; notes: string[]; payload?: unknown }
 
 class Machine {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-pub-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-pub-"));
   run(args: string[], input?: string): { status: number | null; stdout: string; stderr: string; json: Json } {
     const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};

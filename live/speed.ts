@@ -4,7 +4,7 @@
 //   node live/speed.ts --local [--server-dir ../cello-server] [--scenarios a,b] [--seconds 60] [--cpu-prof]
 //   node live/speed.ts --server wss://host/v1 --gentle
 //
-// Raw numbers and the report go to ~/cello-v2-live-runs/speed-<time>/.
+// Raw numbers and the report go to ~/cello-live-runs/speed-<time>/.
 import { cliFor } from "./cli-path.ts";
 import { identityCodec } from "../src/protocol/wire.ts";
 import { StandInIssuer, standInKeys } from "./stand-in-issuer.ts";
@@ -35,7 +35,7 @@ const { values: args } = parseArgs({
     "cpu-prof": { type: "boolean", default: false },
     "deep-target": { type: "string", default: "560" },
     label: { type: "string", default: "" },
-    project: { type: "string", default: "cello-v2-speed" },
+    project: { type: "string", default: "cello-speed" },
     port: { type: "string", default: "18190" },
   },
 });
@@ -52,7 +52,7 @@ const MB1 = 1_000_000;
 // One command's limit. It must outlast the daemon's own 90-second answer limit, so a stuck call shows as that error.
 const COMMAND_LIMIT_MS = 120_000;
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const runDir = join(homedir(), "cello-v2-live-runs", `speed-${stamp}${args.label ? `-${args.label}` : ""}`);
+const runDir = join(homedir(), "cello-live-runs", `speed-${stamp}${args.label ? `-${args.label}` : ""}`);
 mkdirSync(runDir, { recursive: true });
 
 function say(line: string): void {
@@ -95,7 +95,7 @@ interface Run { status: number | null; json: Record<string, unknown>; ms: number
 const homes: Home[] = [];
 
 class Home {
-  readonly path = mkdtempSync(join(tmpdir(), "cello-v2-speed-"));
+  readonly path = mkdtempSync(join(tmpdir(), "cello-speed-"));
   pid: number | undefined;
   constructor() {
     homes.push(this);
@@ -1067,7 +1067,7 @@ async function anatomy(): Promise<void> {
     primitives[`hashBoth${size}Ms`] = await timed(() => { ciphertextHash(sealed); saltedContentHash(salt, body); }, 5);
     primitives[`jsonAndBase64${size}Ms`] = await timed(() => JSON.parse(JSON.stringify({ ciphertext: toB64(sealed) })), 5);
   }
-  const dir = mkdtempSync(join(tmpdir(), "cello-v2-speed-store-"));
+  const dir = mkdtempSync(join(tmpdir(), "cello-speed-store-"));
   const store = new Store(join(dir, "cello.db"));
   const agentId = signer.id;
   const sessionId = new Uint8Array(randomBytes(16));

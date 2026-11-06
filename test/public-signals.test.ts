@@ -34,7 +34,7 @@ const envelope = (subject: string, over: Partial<TrustSignalEnvelope> = {}): Tru
 interface Calls { published: Uint8Array[]; unpublished: Uint8Array[] }
 
 function setup(read: () => Uint8Array[], failing = false): { wallet: Wallet; signals: SignalStore; calls: Calls; store: Store } {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-public-")), "cello.db"));
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-public-")), "cello.db"));
   for (const [signer, name] of [[ann, "Ann"], [bea, "Bea"]] as const) store.insertAgent(signer.id, name, fill(1, 32), fill(2, 32));
   const calls: Calls = { published: [], unpublished: [] };
   const hooks: WalletHooks = {
@@ -136,7 +136,7 @@ function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean }
 }
 
 function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array }, notes: string[] = [], shippedList: string | null = null, roots: WalletHooks["roots"] = () => { throw new RootKeysNotConfigured("none"); }): { wallet: Wallet; signals: SignalStore; store: Store } {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-public-")), "cello.db"));
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-public-")), "cello.db"));
   for (const [signer, name] of [[ann, "Ann"], [bea, "Bea"]] as const) store.insertAgent(signer.id, name, fill(1, 32), fill(2, 32));
   const hooks: WalletHooks = {
     keys: () => { throw new Error("not used"); },

@@ -15,7 +15,7 @@ const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18700/v1";
 type Json = Record<string, unknown>;
 
 class Machine {
-  readonly home = mkdtempSync(join(tmpdir(), "cello-v2-page-"));
+  readonly home = mkdtempSync(join(tmpdir(), "cello-page-"));
   run(args: string[], input?: string): { status: number | null; stderr: string; json: Json } {
     const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });
     let json: Json = {};
@@ -179,7 +179,7 @@ test("a real browser opens the link and the page shows the agents, a signal and 
   const link = linkOf(m);
   const signal = ((await read(link, `signals_list?agent=${ann}`)) as { signals: { signal_hash: string }[] }).signals[0]?.signal_hash as string;
 
-  const profile = mkdtempSync(join(tmpdir(), "cello-v2-page-chrome-"));
+  const profile = mkdtempSync(join(tmpdir(), "cello-page-chrome-"));
   const run = spawnSync(CHROME, ["--headless=new", "--disable-gpu", `--user-data-dir=${profile}`, "--virtual-time-budget=8000", "--dump-dom", `http://127.0.0.1:${link.port}/#${link.token}`], { encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, `Chrome failed: ${run.stderr.slice(-400)}`);
   const dom = run.stdout;
@@ -214,7 +214,7 @@ test("hostile text on the page is shown as text and runs nothing", { skip: exist
     }
   });
 
-  const profile = mkdtempSync(join(tmpdir(), "cello-v2-page-chrome-"));
+  const profile = mkdtempSync(join(tmpdir(), "cello-page-chrome-"));
   const run = spawnSync(CHROME, ["--headless=new", "--disable-gpu", `--user-data-dir=${profile}`, "--virtual-time-budget=8000", "--dump-dom", `http://127.0.0.1:${link.port}/#${link.token}`], { encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, `Chrome failed: ${run.stderr.slice(-400)}`);
   const dom = run.stdout;

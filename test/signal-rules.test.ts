@@ -62,7 +62,7 @@ test("strictness is a partial order, and a different demand is not a stricter on
 });
 
 function rulesOn(): { rules: SignalRules; store: Store; id: Uint8Array } {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-rules-")), "cello.db"));
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-rules-")), "cello.db"));
   store.insertAgent(ann.id, "Ann", fill(1, 32), fill(2, 32));
   return { rules: new SignalRules(store), store, id: ann.id };
 }
@@ -100,7 +100,7 @@ test("what counts as loosening: a lower demand, a swapped one, a looser rule for
 });
 
 test("anyone can ask for more, and only a person can ask for less, in both directions", () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-rules-")), "cello.db"));
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-rules-")), "cello.db"));
   store.insertAgent(ann.id, "Ann", fill(1, 32), fill(2, 32));
   const notices: string[] = [];
   const governance = new Governance(store, { notify: (_agent, text) => { notices.push(text); }, isLocalAgent: () => false });
@@ -164,7 +164,7 @@ test("a signal from the agent's own operator satisfies nothing: not a type, not 
 });
 
 test("a loosening prompt and the notice to the agent name the old and the new rule in words, never a row", async () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-v2-rules-")), "cello.db"));
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-rules-")), "cello.db"));
   store.insertAgent(ann.id, "Ann", fill(1, 32), fill(2, 32));
   const notices: string[] = [];
   const governance = new Governance(store, { notify: (_agent, text) => { notices.push(text); }, isLocalAgent: () => false });

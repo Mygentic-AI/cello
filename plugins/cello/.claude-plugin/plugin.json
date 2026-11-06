@@ -8,7 +8,7 @@
     "url": "https://github.com/Mygentic-AI"
   },
   "homepage": "https://celloprotocol.com",
-  "repository": "https://github.com/Mygentic-AI/cello-v2",
+  "repository": "https://github.com/Mygentic-AI/cello",
   "keywords": ["cello", "agent-to-agent", "channel"],
   "mcpServers": "./.mcp.json",
   "channels": [

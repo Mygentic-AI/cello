@@ -15,7 +15,7 @@ import { DAEMON_STOPPED_DOORBELL, SIGNAL_ERROR, channelNoticeDoorbell } from "..
 import { OPERATIONS } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
-const home = mkdtempSync(join(tmpdir(), "cello-v2-mcp-"));
+const home = mkdtempSync(join(tmpdir(), "cello-mcp-"));
 const env = { ...process.env, CELLO_HOME: home } as Record<string, string>;
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const cli = (...args: string[]): string => execFileSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env });
@@ -206,7 +206,7 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   assert.equal(settled["received_through"], settled["witnessed_through"]);
   assert.equal((await one.tool("cello_seal", { session_id: sessionId }))["seal_id"], settled["seal_id"], "a repeat with nothing changed is the same seal");
   assert.ok(((await one.tool("cello_seals"))["seals"] as unknown[]).length >= 1);
-  const sealFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-seal-")), "seal.json");
+  const sealFile = join(mkdtempSync(join(tmpdir(), "cello-mcp-seal-")), "seal.json");
   writeFileSync(sealFile, JSON.stringify(await one.tool("cello_export_seal", { seal_id: seal.seal_id })));
   const checked = await one.tool("cello_verify_seal", { file: sealFile, seal_key: seal.seal_key });
   assert.deepEqual([checked["ok"], checked["seal_id"]], [true, seal.seal_id]);
@@ -217,9 +217,9 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   assert.ok(firstWords);
   const notAbsolute = await one.tool("cello_export_transcript", { session_id: sessionId, all: true, out: "transcript.json" });
   assert.deepEqual([notAbsolute["isError"], notAbsolute["error"]], [true, "bad_out_path"]);
-  const nothingChosen = await one.tool("cello_export_transcript", { session_id: sessionId, out: join(tmpdir(), "cello-v2-never-written.json") });
+  const nothingChosen = await one.tool("cello_export_transcript", { session_id: sessionId, out: join(tmpdir(), "cello-never-written.json") });
   assert.equal(nothingChosen["error"], "no_reveal_chosen");
-  const transcriptFile = join(mkdtempSync(join(tmpdir(), "cello-v2-mcp-transcript-")), "transcript.json");
+  const transcriptFile = join(mkdtempSync(join(tmpdir(), "cello-mcp-transcript-")), "transcript.json");
   const answer = await one.tool("cello_export_transcript", { session_id: sessionId, reveal: "1", out: transcriptFile });
   assert.equal(answer["file"], transcriptFile);
   assert.ok(!JSON.stringify(answer).includes(firstWords), "the answer goes to a model, and it holds no plaintext");

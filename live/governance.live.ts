@@ -27,7 +27,7 @@ interface SessionView { session_id: string; tier: string; with: string; bytes_re
 class Machine {
   readonly home: string;
   constructor(home?: string) {
-    this.home = home ?? mkdtempSync(join(tmpdir(), "cello-v2-gov-"));
+    this.home = home ?? mkdtempSync(join(tmpdir(), "cello-gov-"));
   }
   run(args: string[], input?: string): { status: number | null; stderr: string; json: Json } {
     const run = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", input: input ?? "", maxBuffer: 64_000_000, env: { ...process.env, CELLO_HOME: this.home } });

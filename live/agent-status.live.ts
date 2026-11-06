@@ -22,11 +22,11 @@ const serverDir = process.env["CELLO_SERVER_DIR"] ?? new URL("../../cello-server
 const pidsFile = process.env["CELLO_STATUS_PIDS"];
 const cliPath = REAL_CLI;
 const stamp = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
-const evidence = join(homedir(), "cello-v2-live-runs", `status-${stamp}`);
+const evidence = join(homedir(), "cello-live-runs", `status-${stamp}`);
 mkdirSync(evidence, { recursive: true });
 
 // A run beside another one sets its own names and ports. The first of the two ports is A's.
-const project = process.env["CELLO_STATUS_PROJECT"] ?? "cello-v2-status";
+const project = process.env["CELLO_STATUS_PROJECT"] ?? "cello-status";
 const firstPort = Number(process.env["CELLO_STATUS_PORT"] ?? 18800);
 const A = { name: `${project}-a`, port: firstPort, url: `ws://127.0.0.1:${firstPort}/v1` };
 const B = { name: `${project}-b`, port: firstPort + 1, url: `ws://127.0.0.1:${firstPort + 1}/v1` };
@@ -92,7 +92,7 @@ interface Status { pid: number; agents: { online: boolean; unread: number; statu
 const everyone: { run(args: string[]): Run }[] = [];
 
 function side(name: string, home: Server) {
-  const dir = mkdtempSync(join(tmpdir(), `cello-v2-status-${name}-`));
+  const dir = mkdtempSync(join(tmpdir(), `cello-status-${name}-`));
   const env = { ...process.env, CELLO_HOME: dir, CELLO_CALLER: `shell-${name}` };
   const run = (args: string[], input?: string): Run => {
     const done = spawnSync(process.execPath, [cliFor(args), ...args], { encoding: "utf8", env, ...(input === undefined ? {} : { input }) });
@@ -305,7 +305,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   assert.equal(sealed.sealed, true, "a suspended agent must be able to seal");
   const health = JSON.parse(server(["up", "--name", A.name, "--port", String(A.port), "--no-build"], portalEnv).trim().split("\n").at(-1) as string) as { seal_key: string };
   await until("Cara back after the server's restart check", () => cara.status().agents[0]?.online);
-  const file = join(mkdtempSync(join(tmpdir(), "cello-v2-status-seal-")), "seal.json");
+  const file = join(mkdtempSync(join(tmpdir(), "cello-status-seal-")), "seal.json");
   writeFileSync(file, JSON.stringify(cara.act("export-seal", sealed.seal_id)));
   assert.equal(side("Reader", A).must(["verify-seal", file, "--seal-key", health.seal_key])["ok"], true);
   say("the suspended agent sealed, and the seal verifies offline");
@@ -378,7 +378,7 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   const genuine = await statement(portal, StatusIssuer.portal, target.signer.id, AgentStatus.suspended, StatusReason.none);
   const alteredFields = signedStatusStatement.decode(genuine);
   forgeries.push(["altered after a real signature", signedStatusStatement.encode({ fields: { ...alteredFields.fields, status: AgentStatus.retired }, signature: alteredFields.signature }), "bad_signature"]);
-  const dir = mkdtempSync(join(tmpdir(), "cello-v2-status-forged-"));
+  const dir = mkdtempSync(join(tmpdir(), "cello-status-forged-"));
   for (const [what, forged, code] of forgeries) {
     const path = join(dir, `${code}-${forgeries.findIndex((f) => f[0] === what)}.json`);
     writeFileSync(path, JSON.stringify(forged));

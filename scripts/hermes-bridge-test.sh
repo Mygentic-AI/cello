@@ -15,8 +15,8 @@ if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
 fi
 cd "$server_dir"
 # Builds running at once have frozen this machine, so only the build takes the shared lock.
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
-mkdir -p "$HOME/cello-v2-live-runs"
+lock="$HOME/cello-live-runs/.heavy-lock"
+mkdir -p "$HOME/cello-live-runs"
 held=""
 trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 waited=0

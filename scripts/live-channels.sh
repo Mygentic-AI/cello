@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-channels}" CELLO_PORT="${CELLO_PORT:-18600}" CELLO_SERVER_DIR="$server_dir"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-channels}" CELLO_PORT="${CELLO_PORT:-18600}" CELLO_SERVER_DIR="$server_dir"
 # Servers require a verified email signal, and each daemon here collects a real one.
 . "$here/scripts/test-issuer-env.sh"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
@@ -15,7 +15,7 @@ if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
 fi
 cd "$server_dir"
 # Builds running at once have frozen this machine, so only the build takes the shared lock. The test itself doesn't need it.
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
+lock="$HOME/cello-live-runs/.heavy-lock"
 held=""
 # A test's own cleanup is skipped when it times out or is force-exited. Only this run's daemons carry this port.
 trap 'pkill -f "daemon/main.ts ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; cd "$server_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
