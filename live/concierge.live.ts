@@ -75,7 +75,7 @@ async function newCaller(): Promise<string> {
   return name;
 }
 function call(caller: string): string {
-  return ok(homeP, ["initiate-session", conciergeId, "--agent", caller])["session_id"] as string;
+  return ok(homeP, ["initiate-session", "--anyway", conciergeId, "--agent", caller])["session_id"] as string;
 }
 interface Entry { own: boolean; text?: string; signal?: string; closed_their_side?: boolean }
 const record = (caller: string, session: string): Entry[] => (ok(homeP, ["transcript", session, "--agent", caller]) as unknown as { entries: Entry[] }).entries;

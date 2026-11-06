@@ -82,8 +82,9 @@ import { logEvent } from "./log.ts";
 import { OutboundRateLimiter } from "./rate-limit.ts";
 import { type LanguageGuard, type ModelFact, OutboundScreen, type ScreenJob, type ScreeningLevel, ScreeningQueue } from "./screening.ts";
 import { type Settings, loadSettings } from "./settings.ts";
-import { TIER, tierName } from "./tiers.ts";
+import { TIER, tierFromName, tierName } from "./tiers.ts";
 import { type Evaluation, type RuleDirection, evaluate, isNoRule } from "./signal-rules.ts";
+import { CHECK_BELOW_KEY } from "./reach.ts";
 import type { AgentStatusRow, EntryRow, SessionRow, Store } from "./store.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { compareTranscripts, type ChannelNoticeKind, LOST_MESSAGE_GUIDANCE, NO_SESSION_GUIDANCE, OTHER_AGENTS_SESSION_GUIDANCE, SEAL_NOTE, SESSION_CLOSED_GUIDANCE, SIGNAL_ERROR, TRUNCATED_SESSION_GUIDANCE, noAgentGuidance, refusedGuidance, sealMismatchMessage, sessionGuidance, tooLargeMessage, unreadWarning } from "../guidance.ts";
@@ -2557,12 +2558,33 @@ export class Engine {
     }
     const targetId = parseHex(address.id, 32, "target");
     if (equalBytes(targetId, agent.signer.id)) throw new LocalError("bad_argument", "an agent can't start a session with itself");
+    if (params["anyway"] !== true) this.#checkFirst(agent, target, targetId);
     const route = await this.#reach(agent, address.server);
     try {
       return await this.#initiateOn(agent, route, targetId, typeof params["signals"] === "string" ? params["signals"] : undefined);
     } finally {
       this.#doneOpening(route);
     }
+  }
+
+  // The speed bump: a call below the owner's set tier stops before anything leaves this machine. No lookup runs by itself,
+  // so the agent gets a moment to judge. A block is below every setting, and has its own stop above.
+  #checkFirst(agent: AgentContext, target: string, targetId: Uint8Array): void {
+    const tier = this.governance.contacts.tierOf(agent.signer.id, targetId);
+    const setting = this.governance.reach.setting(agent.signer.id, CHECK_BELOW_KEY);
+    const threshold = tierFromName(setting);
+    if (threshold === undefined) throw new LocalError("settings_missing", `${CHECK_BELOW_KEY} holds ${setting}, which isn't a tier`);
+    if (tier === TIER.BLOCKED || tier >= threshold) return;
+    const avoid = threshold === TIER.KNOWN
+      ? `To skip this check for it in future, add it to your contacts: cello contact-add ${toHex(targetId)} --agent ${agent.hex}`
+      : `To skip this check for it in future, a person can raise it to ${setting}: cello contact-set-tier ${toHex(targetId)} --tier ${setting} --agent ${agent.hex}`;
+    throw new LocalError("check_first", [
+      `Not called yet. This is your operator's own setting, not a refusal from the other agent, which hasn't been contacted.`,
+      `It's ${tierName(tier)} to ${agent.name}, and your operator asks for a check before calling anyone below ${setting}.`,
+      `Next: look at its public signals, and judge whether to go ahead: cello signals lookup ${target} --agent ${agent.hex}`,
+      `To call it anyway, run initiate-session again with anyway set (--anyway).`,
+      avoid,
+    ].join("\n"));
   }
 
   // The callee's server hosts, and each side connects to it directly. No server relays for another.

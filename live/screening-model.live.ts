@@ -73,8 +73,8 @@ test("with the model running, a long screen doesn't stall the main thread, and a
   cello(sender, ["create-agent", "Sam"]);
   cello(other, ["create-agent", "Oli"]);
   for (const made of [sender, reader, other]) await until("online", () => (cello(made, ["status"]) as unknown as Status).agents[0]?.online, 20_000);
-  const session = cello(sender, ["initiate-session", readerId, "--agent", "Sam"])["session_id"] as string;
-  const side = cello(other, ["initiate-session", readerId, "--agent", "Oli"])["session_id"] as string;
+  const session = cello(sender, ["initiate-session", "--anyway", readerId, "--agent", "Sam"])["session_id"] as string;
+  const side = cello(other, ["initiate-session", "--anyway", readerId, "--agent", "Oli"])["session_id"] as string;
 
   // About 40 windows of prose, so roughly 15 seconds of model time, with the attack at the very end.
   const long = `${"The quarterly plan covers staffing, budget and the new office lease in some detail.\n".repeat(2000)}${HOSTILE}`;
