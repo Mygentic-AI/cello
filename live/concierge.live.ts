@@ -9,7 +9,8 @@ import { after, before, test } from "node:test";
 import { loadLines } from "../concierge/concierge.ts";
 
 const url = process.env["CELLO_URL"] as string;
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+// Each home's first agent collects a real signal from the stand-in issuer, because servers refuse registration without one.
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const programPath = new URL("../concierge/concierge.ts", import.meta.url).pathname;
 const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
 const root = mkdtempSync(join(tmpdir(), "cello-concierge-"));
@@ -111,7 +112,7 @@ test("a stranger gets a reply within seconds with nothing said, then the next st
   const took = Date.now() - started;
   assert.ok(took < 8000, `the first reply took ${took} ms`);
   process.stdout.write(`first reply after ${took} ms\n`);
-  assert.ok(lines.first.startsWith("[DRAFT COPY] "), "draft lines say so to whoever reads them");
+  assert.ok(!lines.first.startsWith("[DRAFT COPY]"), "approved lines go out without the draft label");
 
   say(caller, session, "hello");
   assert.deepEqual((await hears(caller, session, 2)).at(-1), lines.next_step);

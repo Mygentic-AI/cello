@@ -9,7 +9,8 @@ import { loadLines } from "../concierge/concierge.ts";
 const url = process.env["CELLO_URL"] as string;
 const levels = (process.env["LEVELS"] ?? "2,3,5,10,15,20").split(",").map(Number);
 const GIVE_UP_MS = 120_000;
-const cliPath = new URL("../src/cli.ts", import.meta.url).pathname;
+// Each home's first agent collects a real signal from the stand-in issuer, because servers refuse registration without one.
+const cliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname;
 const programPath = new URL("../concierge/concierge.ts", import.meta.url).pathname;
 const lines = loadLines(new URL("../concierge/lines.draft.json", import.meta.url).pathname);
 const root = mkdtempSync(join(tmpdir(), "cello-concierge-stress-"));
