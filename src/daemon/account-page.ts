@@ -81,7 +81,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, options: Accoun
   }
   const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1] ?? "";
   if (!sameSecret(bearer, options.token)) {
-    sendJson(res, 401, failure("not_signed_in", "Open the page from the link the cello account command prints."));
+    sendJson(res, 401, failure("not_signed_in", "This page needs its link. Run cello account in a terminal to get it."));
     return;
   }
   const method = route[1] as string;

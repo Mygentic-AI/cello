@@ -140,7 +140,7 @@ async function load() {
 
 async function start() {
   if (!token) {
-    say("Open this page from the link the cello account command prints.");
+    say("This page needs its link. Run cello account in a terminal to get it.");
     return;
   }
   try {
