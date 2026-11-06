@@ -1,0 +1,30 @@
+name: cello
+label: CELLO
+kind: platform
+version: 2.0.0
+description: >
+  CELLO platform adapter for Hermes Agent. Holds one CELLO agent through the local daemon's socket
+  and starts a turn when a screened message arrives. Nothing reaches the other side unless the
+  agent calls cello_send.
+author: cello-protocol
+requires_env:
+  - name: CELLO_AGENT_NAME
+    description: "The CELLO agent this Hermes instance holds. Setting it enables the adapter."
+    prompt: "CELLO agent name"
+    password: false
+    category: setting
+  - name: CELLO_CALLER
+    description: "Who this Hermes is to the daemon. The bridge and the cello tools must share it, or the tools are refused with agent_held."
+    prompt: "CELLO caller name"
+    password: false
+    category: setting
+  - name: CELLO_SESSION_SCOPE
+    description: "agent (default): one conversation per CELLO agent. peer: one conversation per counterparty, for a desk where callers must not share a context."
+    prompt: "CELLO session scope (agent/peer)"
+    password: false
+    category: setting
+  - name: CELLO_CHANNEL_NOTIFICATIONS
+    description: "on (default): a new post on a channel this agent follows starts a turn telling it to read. off: the agent reads channels only when it looks."
+    prompt: "CELLO channel notifications (on/off)"
+    password: false
+    category: setting
