@@ -183,9 +183,9 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     for (const [flag, setting] of [["issuer", "issuer_url"], ["concierge", "concierge_address"]] as const) {
       const value = text(flag);
       // "none" is for this run only: it changes no setting, so a test or a script can set up without calling anyone.
-      if (value && !(flag === "concierge" && value === "none")) await client.call("settings_set", { name: setting, value, caller: host.caller });
+      if (value && !(flag === "concierge" && value.toLowerCase() === "none")) await client.call("settings_set", { name: setting, value, caller: host.caller });
     }
-    const skipConcierge = text("concierge") === "none";
+    const skipConcierge = text("concierge")?.toLowerCase() === "none";
 
     const agent = await client.call("enroll_agent", { name: text("name"), code }) as {
       name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean;

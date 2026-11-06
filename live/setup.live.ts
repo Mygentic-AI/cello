@@ -422,7 +422,8 @@ test("--concierge none sets up without calling anyone, and leaves the setting as
   const done = await run(home, setupArgs(["--code", newCode(), "--name", "Eve", "--concierge", "none", "--json"]));
   assert.equal(done.status, 0, done.stderr);
   assert.equal(done.json["concierge"], null, "nobody was called");
-  const plain = await run(newHome(), setupArgs(["--code", newCode(), "--name", "Eve", "--concierge", "none"]));
+  // However it is spelled: an upper-case None must not become the address of an agent to call.
+  const plain = await run(newHome(), setupArgs(["--code", newCode(), "--name", "Eve", "--concierge", "None"]));
   assert.equal(plain.status, 0, plain.stderr);
   assert.match(plain.stdout, /Not calling the Concierge, as asked\./);
   assert.doesNotMatch(plain.stdout, /Calling the CELLO Concierge/);
