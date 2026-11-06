@@ -2,8 +2,11 @@
 #
 # Always `pnpm publish`, never `npm publish`.
 #
-# LAST STEP BEFORE THE FIRST REAL PUBLISH: remove `"private": true` from package.json. Until then, this
-# workflow stops at the guard below and burns no version. The package's final name is a separate change.
+# Before tagging: run scripts/pre-tag-gate.sh on the commit, and run the "npm credential check" workflow once (it has never run here).
+# The first publish also needs the repo secret NPM_TOKEN, an npm automation token. That secret is Andre's to add.
+# Nothing publishes until a tag equal to `v<version in package.json>` is pushed, and the release check below refuses a build whose
+# shipped issuer list or Concierge address is empty, so merging this does not release anything.
+# This publishes to `beta` only. `latest` moves with the "npm promote to latest" workflow.
 name: Publish
 
 on:
@@ -40,6 +43,8 @@ jobs:
           run_install: false
 
       - run: pnpm install --frozen-lockfile
+      # Empty shipped list or empty Concierge address, or a list the production roots didn't sign: refused before anything is built.
+      - run: node tools/check-release.ts
       - run: pnpm run test
       - run: pnpm run lint
       - run: pnpm run typecheck

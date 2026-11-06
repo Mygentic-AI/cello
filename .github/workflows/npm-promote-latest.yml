@@ -1,0 +1,60 @@
+# Moves @cello-protocol/cli from `beta` to `latest`. Modelled on cello-client's promote workflow, for one package.
+#
+# CI publishes to `beta`, and the install route (`npm i -g @cello-protocol/cli@latest`) reads `latest`, so a release isn't delivered
+# until this runs. Doing it by hand from a laptop needs a local token that expires silently.
+#
+# `confirm_version` must equal the beta version now, so a run can't promote a build nobody looked at. Before the first run, install
+# beta into an empty prefix and run `cello setup --help`.
+#
+# After v2's first promotion, `latest` stops being v1's 0.0.306. `@cello-protocol/connect` (v1's MCP shim, which the old plugin runs
+# as `npx @cello-protocol/connect@latest`) is not touched here: deprecating it needs an npm login, which is Andre's.
+name: npm promote to latest
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: "cli's beta version, exactly (guards against promoting an unexpected build)"
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: beta -> latest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: The build being promoted is the one that was asked for
+        env:
+          CONFIRM: ${{ inputs.confirm_version }}
+        run: |
+          actual=$(npm view @cello-protocol/cli@beta version)
+          echo "cli beta = $actual, expected = $CONFIRM"
+          if [ "$actual" != "$CONFIRM" ]; then
+            echo "FAIL: cli's beta is $actual, not $CONFIRM. Something published since you read the version."
+            exit 1
+          fi
+
+      - name: Promote
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CONFIRM: ${{ inputs.confirm_version }}
+        run: npm dist-tag add "@cello-protocol/cli@$CONFIRM" latest
+
+      # npm's CDN can lag a just-set dist-tag, so this retries rather than failing a promotion that took.
+      - name: latest resolves to the promoted version
+        env:
+          CONFIRM: ${{ inputs.confirm_version }}
+        run: |
+          for attempt in $(seq 1 6); do
+            got=$(npm view @cello-protocol/cli@latest version 2>/dev/null || echo missing)
+            if [ "$got" = "$CONFIRM" ]; then echo "OK: cli latest=$got"; exit 0; fi
+            echo "cli latest=$got, expected $CONFIRM (attempt $attempt of 6)"
+            sleep 10
+          done
+          echo "FAIL: cli latest never became $CONFIRM"
+          exit 1
