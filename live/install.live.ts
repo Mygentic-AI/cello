@@ -134,6 +134,7 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
   const sourceFiles = (readdirSync(join(repo, "src"), { recursive: true }) as string[]).filter((path) => path.endsWith(".ts"));
   const expected = [
     ...sourceFiles.map((path) => join("dist", path.replace(/\.ts$/, ".js"))),
+    ...sourceFiles.map((path) => join("dist", path.replace(/\.ts$/, ".d.ts"))),
     ".claude-plugin/marketplace.json",
     "README.md",
     "hermes/plugin/__init__.py",
@@ -145,7 +146,7 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
     "plugins/cello/.mcp.json",
     "plugins/cello/skills/cello/SKILL.md",
   ].sort();
-  assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file per source file, plus these");
+  assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file and its types per source file, plus these");
 
   const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { private?: boolean; engines?: { node?: string }; bin?: Record<string, string> };
   assert.equal(manifest.private, true, "nothing can publish this by accident");
@@ -228,7 +229,7 @@ test("the installed cello-mcp speaks real stdio, starts before login, lists ever
   try {
     assert.ok(client.getServerCapabilities()?.experimental?.["claude/channel"], "it declares itself as a channel");
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
-    assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly).map((op) => op.tool).sort());
+    assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly && !op.programOnly).map((op) => op.tool).sort());
 
     const call = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       const result = await client.callTool({ name, arguments: args }) as { content: { text: string }[] };

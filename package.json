@@ -17,6 +17,12 @@
     "test:install": "./scripts/install-test.sh",
     "prepare": "test ! -f scripts/prepare.sh || sh scripts/prepare.sh"
   },
+  "exports": {
+    "./operations": { "types": "./dist/ipc/operations.d.ts", "default": "./dist/ipc/operations.js" },
+    "./ipc-client": { "types": "./dist/ipc/client.d.ts", "default": "./dist/ipc/client.js" },
+    "./mcp-tools": { "types": "./dist/mcp-tools.d.ts", "default": "./dist/mcp-tools.js" },
+    "./paths": { "types": "./dist/daemon/paths.d.ts", "default": "./dist/daemon/paths.js" }
+  },
   "files": [
     "dist",
     "README.md",
