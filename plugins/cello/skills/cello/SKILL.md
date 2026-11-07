@@ -27,7 +27,7 @@ An `agent_id` (64 hex) is the identity. A name is a label its owner chose, and n
 
 ## Start a session
 
-`cello_initiate_session` with `target`: `<agent_id>@<server>`, or the `agent_id` alone on your own server. That server sees this machine's network address. Refused with `check_first` when the agent is below your operator's set tier (by default, anyone not in your contacts). It's your operator's setting, and the other side hasn't been contacted. Check it with `cello_signals_lookup`, then call again with `anyway: true` if it holds up.
+`cello_initiate_session` with `target`: `<agent_id>@<server>`, or the `agent_id` alone on your own server. That server sees this machine's network address. A call to an agent outside your contacts goes ahead and comes back with a `warning`. Pass it to your operator word for word, including the `cello contact-add` command it shows, so they can add the agent if they know it.
 
 State `waiting` means no answer yet, and you can't send until it starts: end your turn, and a doorbell says when it has. Incoming sessions need no accepting: the same doorbell rings, and another rings when a message arrives.
 

@@ -79,7 +79,7 @@ async function pair(a: Machine, aName: string, b: Machine, bName: string): Promi
   const bId = b.ok(["create-agent", bName])["agent_id"] as string;
   b.ok(["settings-set", "away.answering", "false", "--agent", bName]);
   await until("both online", () => a.ok(["agents"]) && b.ok(["agents"]) && (a.ok(["status"]) as { agents: { online: boolean }[] }).agents.every((x) => x.online) && (b.ok(["status"]) as { agents: { online: boolean }[] }).agents.every((x) => x.online));
-  const session = a.ok(["initiate-session", "--anyway", bId, "--agent", aName])["session_id"] as string;
+  const session = a.ok(["initiate-session", bId, "--agent", aName])["session_id"] as string;
   return { session, aId, bId };
 }
 
@@ -165,7 +165,7 @@ test("a queue of long messages: nobody overtakes, the reply gate holds, stop get
 
   // A second conversation, from another machine, on the same reader. Its short message passes the long lane.
   const benId = (b.ok(["agents"]) as { agents: { agent_id: string }[] }).agents[0]?.agent_id as string;
-  const other = c.ok(["initiate-session", "--anyway", benId, "--agent", "Carl"])["session_id"] as string;
+  const other = c.ok(["initiate-session", benId, "--agent", "Carl"])["session_id"] as string;
   const sentAt = Date.now();
   c.ok(["send", other, "-", "--over", "--agent", "Carl"], "a short message from someone else");
   const otherRead = await until("the other conversation's message", () => {
@@ -235,8 +235,8 @@ test("a session's very first message, if it's long, still tells its sender the p
   first.ok(["create-agent", "Flo"]);
   reader.ok(["settings-set", "away.answering", "false", "--agent", "Rio"]);
   for (const m of [reader, busy, first]) await until("online", () => (m.ok(["status"]) as { agents: { online: boolean }[] }).agents[0]?.online);
-  const busySession = busy.ok(["initiate-session", "--anyway", readerId, "--agent", "Bo"])["session_id"] as string;
-  const firstSession = first.ok(["initiate-session", "--anyway", readerId, "--agent", "Flo"])["session_id"] as string;
+  const busySession = busy.ok(["initiate-session", readerId, "--agent", "Bo"])["session_id"] as string;
+  const firstSession = first.ok(["initiate-session", readerId, "--agent", "Flo"])["session_id"] as string;
   for (let i = 1; i <= 3; i++) busy.ok(["send", busySession, "-", "--over", "--agent", "Bo"], big(`busy${i}`));
   assert.equal(first.ok(["send", firstSession, "-", "--over", "--agent", "Flo"], big("first"))["position"], 1);
   const told = await until("the first sender to be told", () => (first.ok(["receive", "--agent", "Flo"]) as unknown as Read).notices.find((n) => /still screening position 1, for about \d+ more seconds/.test(n.text)));

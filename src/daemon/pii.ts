@@ -28,7 +28,8 @@ interface Candidate { start: number; end: number; category: PIICategory; value: 
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const IP_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g;
-const CC_RE = /\b(?:\d[ -]?){13,19}\b/g;
+// A card number starts 2 to 6. A millisecond timestamp starts 1, and passes the checksum one time in ten.
+const CC_RE = /\b[2-6](?:[ -]?\d){12,18}\b/g;
 const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/g;
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?/;

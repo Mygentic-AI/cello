@@ -88,7 +88,7 @@ const create = (m: Machine, name: string): string => {
   return id;
 };
 const state = async (a: Machine, aName: string, target: string, extra: string[] = []): Promise<Json> => {
-  const made = a.ok(["initiate-session", target, "--anyway", "--agent", aName, ...extra]);
+  const made = a.ok(["initiate-session", target, "--agent", aName, ...extra]);
   if (made["state"] === "refused") return made;
   await until("the session to open or be refused", () => {
     const row = (a.ok(["sessions", "--agent", aName]) as unknown as { sessions: { session_id: string; state: string }[] }).sessions.find((s) => s.session_id === made["session_id"]);

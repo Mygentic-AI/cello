@@ -376,10 +376,9 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Start a session with another agent, by its address or agent_id.",
     scoped: true,
     acts: true,
-    description: "Start a session with another agent. Its address is its agent_id and its server, like an email address, and the conversation lives on that server: this machine connects there directly, so that server sees this machine's network address. An agent_id alone means an agent on your own server. Returns session_id. State \"waiting\" means the other side hasn't answered yet. Refused with check_first, before anything is sent, if the agent is below the tier your operator set in calling.check_below (by default, anyone not in your contacts): that's your operator's setting, not the other side. Look it up with signals-lookup, then call again with anyway, or add it to your contacts to skip the check next time.",
+    description: "Start a session with another agent. Its address is its agent_id and its server, like an email address, and the conversation lives on that server: this machine connects there directly, so that server sees this machine's network address. An agent_id alone means an agent on your own server. Returns session_id. State \"waiting\" means the other side hasn't answered yet. A call to an agent outside your contacts goes ahead and comes back with a warning: tell your operator, and show them the command it gives to add the agent if they know it.",
     params: [
       { name: "target", kind: "string", required: true, positional: true, description: "The other agent's address, <agent_id>@<server>, or its agent_id alone if it's on your own server" },
-      { name: "anyway", kind: "boolean", description: "Go ahead past check_first, your operator's speed bump for agents below their set tier. Use it once you've looked at the agent's public signals with signals-lookup and judged it worth calling." },
       { name: "signals", kind: "string", description: "Which of your signals go with the call. Left out: your default set, the ones signals-list shows as included. \"none\": no signals. Or a comma-separated list of signal hashes. At most 8, sealed so only that agent can read them. The answer says how many went (signals_sent), and says so if none could." },
     ],
   },

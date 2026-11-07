@@ -1,7 +1,7 @@
 // How a person reads a wallet at a terminal. Wording and columns from cello-client's trust-signals command: see COPIED.md.
 interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
-  same_operator: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];
+  same_operator?: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];
   subject_kind: string; issuer_kind: string; issuer_pubkey: string; supersedes_hash: string | null; counts_as_verified: boolean; schema_version?: number; payload?: unknown;
 }
 

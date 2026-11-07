@@ -255,7 +255,7 @@ test("an agent on one server talks to an agent on another, and neither server le
 
   // ---- Ann calls Bob by key plus server. The conversation lives on Bob's server. ----
   const lines = ["ann first: the quarterly figure is seven", "bob: looking into the figure now", "bob again: confirmed, the figure stands", "ann while her server is down: thank you", "ann while bob is away: one more thing", "bob: that wraps it up from my side"];
-  const started2 = ann.act("initiate-session", "--anyway", bobAgent.address);
+  const started2 = ann.act("initiate-session", bobAgent.address);
   assert.equal(started2["state"], "active");
   const session = started2["session_id"] as string;
   const hostedOn = (who: ReturnType<typeof side>): unknown => (who.act("sessions") as { sessions: { hosted_on: string }[] }).sessions[0]?.hosted_on;
@@ -375,7 +375,7 @@ test("an agent on one server talks to an agent on another, and neither server le
 
   // ---- And back: Bob calls Ann at her server, which now hosts. ----
   const backLines = ["bob calling back: one question", "ann answering on her own server"];
-  const back = bob.act("initiate-session", "--anyway", annAgent.address);
+  const back = bob.act("initiate-session", annAgent.address);
   assert.equal(back["state"], "active");
   const backSession = back["session_id"] as string;
   bob.act("send", backSession, backLines[0] as string, "--over");
@@ -400,7 +400,7 @@ test("an agent on one server talks to an agent on another, and neither server le
   // A refusal crosses servers too: a visitor on Bob's server hears the same words at once. Bob shuts nothing for Ann.
   const blockedCaller = ann.must(["create-agent", "AnnSpare"]) as { agent_id: string };
   bob.act("contact-set-tier", blockedCaller.agent_id, "--tier", "blocked");
-  const refused = ann.must(["initiate-session", "--anyway", bobAgent.address, "--agent", "AnnSpare"]);
+  const refused = ann.must(["initiate-session", bobAgent.address, "--agent", "AnnSpare"]);
   assert.equal(refused["state"], "refused");
   assert.equal(refused["message"], "This agent is not accepting connections. Retrying will not change this.");
   assert.ok(!sql(B, `SELECT refusal::text FROM sessions WHERE encode(session_id, 'hex') = '${refused["session_id"] as string}'`).includes("not_accepting"));
@@ -408,7 +408,7 @@ test("an agent on one server talks to an agent on another, and neither server le
   // ---- Long messages take a second connection, which on a visit has to go to the hosting server, both ways. ----
   const longFromAnn = `long from ann: ${"the figure stands ".repeat(1200)}`;
   const longFromBob = `long from bob: ${"understood and noted ".repeat(1200)}`;
-  const longSession = ann.act("initiate-session", "--anyway", bobAgent.address)["session_id"] as string;
+  const longSession = ann.act("initiate-session", bobAgent.address)["session_id"] as string;
   assert.equal(ann.act("send", longSession, longFromAnn, "--over")["sent"], true);
   await gets(bob);
   assert.deepEqual(textsRead(bob.read()), [longFromAnn], "a message over 8 KB crossed to the hosting server and arrived whole");
@@ -441,8 +441,8 @@ test("an agent on one server talks to an agent on another, and neither server le
   await new Promise<void>((resolve, reject) => connect(18405, lanAddress).once("close", () => resolve()).once("error", reject));
   await until("the control connection to arrive", () => lured === 1);
   lured = 0;
-  assert.equal(ann.refused("initiate-session", "--anyway", `${bobAgent.id}@${lureUrl}`), "plain_text_server");
-  assert.equal(ann.refused("initiate-session", "--anyway", `${bobAgent.id}@ws://evil.example:18405/v1`), "plain_text_server");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@${lureUrl}`), "plain_text_server");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@ws://evil.example:18405/v1`), "plain_text_server");
   await new Promise((resolve) => setTimeout(resolve, 1500));
   assert.equal(lured, 0, "the daemon connected to the plain-text host");
   assert.ok(!ann.status().visiting.some((v) => v.server === lureUrl), "it isn't even trying in the background");
@@ -456,10 +456,10 @@ test("an agent on one server talks to an agent on another, and neither server le
   // ---- Where an agent can and can't be called. ----
   const cara = side("Cara", B);
   await create(cara);
-  assert.equal(ann.refused("initiate-session", "--anyway", `${bobAgent.id}@127.0.0.1:18400`), "unknown_agent", "Ann's server doesn't hold Bob, and doesn't relay for his");
-  assert.equal(cara.refused("initiate-session", "--anyway", annAgent.address.replace("18400", "18401")), "unknown_agent", "Ann is only a visitor on Bob's server, so she can't be called there");
-  assert.equal(ann.refused("initiate-session", "--anyway", `${bobAgent.id}@127.0.0.1:18419`), "server_unreachable", "an address nobody answers at fails by name");
-  assert.equal(ann.refused("initiate-session", "--anyway", `${bobAgent.id}@not a server`), "bad_argument");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@127.0.0.1:18400`), "unknown_agent", "Ann's server doesn't hold Bob, and doesn't relay for his");
+  assert.equal(cara.refused("initiate-session", annAgent.address.replace("18400", "18401")), "unknown_agent", "Ann is only a visitor on Bob's server, so she can't be called there");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@127.0.0.1:18419`), "server_unreachable", "an address nobody answers at fails by name");
+  assert.equal(ann.refused("initiate-session", `${bobAgent.id}@not a server`), "bad_argument");
 
   // ---- What a stranger's own software can try. ----
   const stranger = await Stranger.at(B.url);
@@ -521,8 +521,8 @@ test("an agent on one server talks to an agent on another, and neither server le
   assert.match(sql(B, "SELECT has_table_privilege('cello_app', 'agents', 'DELETE')::text"), /false/, "the service still can't delete a row itself");
   assert.equal(closedHealth.federation, "closed");
   await until("Bob and Cara back", () => bob.status().agents.every((a) => a.online) && cara.status().agents.every((a) => a.online), 600);
-  assert.equal(ann.refused("initiate-session", "--anyway", bobAgent.address), "federation_closed");
-  const inside = cara.act("initiate-session", "--anyway", bobAgent.id);
+  assert.equal(ann.refused("initiate-session", bobAgent.address), "federation_closed");
+  const inside = cara.act("initiate-session", bobAgent.id);
   assert.equal(inside["state"], "active", "the server's own agents don't need federation");
   say("closing federation refused the outsider and left the insiders talking");
 

@@ -116,7 +116,7 @@ const contactTier = (m: Machine, agent: string, id: string): string | undefined 
 const read = (m: Machine, agent: string): Read => m.ok(["receive", "--agent", agent]) as unknown as Read;
 
 async function call(a: Machine, aName: string, bId: string): Promise<string> {
-  const session = (a.ok(["initiate-session", "--anyway", bId, "--agent", aName]))["session_id"] as string;
+  const session = (a.ok(["initiate-session", bId, "--agent", aName]))["session_id"] as string;
   await until("the session to open", () => (a.ok(["sessions", "--agent", aName]) as unknown as { sessions: { session_id: string; state: string }[] }).sessions.find((s) => s.session_id === session)?.state === "active");
   return session;
 }
@@ -449,7 +449,7 @@ test("the gate: a blocked caller hears the sentence at once, nothing is kept, an
   b.ok(["contact-set-tier", aId, "--tier", "blocked", "--agent", "Bo"]);
 
   const started = Date.now();
-  const first = a.ok(["initiate-session", "--anyway", bId, "--agent", "AceOfDiamonds"]);
+  const first = a.ok(["initiate-session", bId, "--agent", "AceOfDiamonds"]);
   assert.equal(first["state"], "refused", "a definite no, not waiting");
   assert.equal(first["message"], REFUSED);
   assert.ok(Date.now() - started < 10_000, "with no timeout");
@@ -474,7 +474,7 @@ test("the gate: a blocked caller hears the sentence at once, nothing is kept, an
 
   // Your own block is a stop sign the other way too, and a person can drive through it.
   a.ok(["contact-set-tier", bId, "--tier", "blocked", "--agent", "AceOfDiamonds"]);
-  a.refused(["initiate-session", "--anyway", bId, "--agent", "AceOfDiamonds"], "person_required");
+  a.refused(["initiate-session", bId, "--agent", "AceOfDiamonds"], "person_required");
 });
 
 test("the gate: a whitelisted caller connects with every other tier shut, and a stranger over the limit hears a fixed sentence", async () => {
@@ -486,27 +486,27 @@ test("the gate: a whitelisted caller connects with every other tier shut, and a 
   const bId = idOf(b, "Bex");
   for (const tier of ["unknown", "known", "vip"]) b.ok(["settings-set", `bounds.${tier}.not_accepting`, "true", "--agent", "Bex"]);
   assert.match(b.person(["contact-set-tier", friendId, "--tier", "whitelisted", "--agent", "Bex"]), /whitelisted/);
-  assert.equal(friend.ok(["initiate-session", "--anyway", bId, "--agent", "Fay"])["state"], "active");
-  assert.equal(stranger.ok(["initiate-session", "--anyway", bId, "--agent", "Sam"])["message"], REFUSED, "the same words for a shut tier as for a block");
+  assert.equal(friend.ok(["initiate-session", bId, "--agent", "Fay"])["state"], "active");
+  assert.equal(stranger.ok(["initiate-session", bId, "--agent", "Sam"])["message"], REFUSED, "the same words for a shut tier as for a block");
 
   // Open the door to strangers, one conversation each, and quiet stops counting after a real minute.
   assert.match(b.person(["settings-set", "bounds.unknown.not_accepting", "false", "--agent", "Bex"]), /"value":"false"/);
   b.ok(["settings-set", "bounds.unknown.max_sessions", "1", "--agent", "Bex"]);
   assert.match(b.person(["settings-set", "limits.quiet_minutes", "1", "--agent", "Bex"]), /"value":"1"/);
-  const open = stranger.ok(["initiate-session", "--anyway", bId, "--agent", "Sam"]);
+  const open = stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
   assert.equal(open["state"], "active");
-  const over = stranger.ok(["initiate-session", "--anyway", bId, "--agent", "Sam"]);
+  const over = stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
   assert.equal(over["state"], "refused");
   assert.equal(over["message"], BUSY, "nothing here says why, or what tier");
   // Its daemon writes these after the server takes the refusal, which can be just after the caller hears it.
   await until("the owner to hear about a limit", () => read(b, "Bex").notices.some((n) => /over a limit/.test(n.text)));
-  stranger.ok(["initiate-session", "--anyway", bId, "--agent", "Sam"]);
+  stranger.ok(["initiate-session", bId, "--agent", "Sam"]);
   const samId = (stranger.ok(["agents"]) as unknown as { agents: { agent_id: string }[] }).agents[0]?.agent_id;
   await until("the second knock on the ledger", () => inbox(b, "Bex").refused_callers.find((r) => r.contact_id === samId && r.reason === "busy" && r.times >= 3));
   assert.ok(!read(b, "Bex").notices.some((n) => /over a limit/.test(n.text)), "and only once in the cooldown");
 
   await new Promise((resolve) => setTimeout(resolve, 61_000));
-  assert.equal(stranger.ok(["initiate-session", "--anyway", bId, "--agent", "Sam"])["state"], "active", "a quiet session stops counting");
+  assert.equal(stranger.ok(["initiate-session", bId, "--agent", "Sam"])["state"], "active", "a quiet session stops counting");
   assert.equal(stranger.ok(["send", open["session_id"] as string, "still here", "--over", "--agent", "Sam"])["sent"], true, "and it's still open");
   await until("the message in the quiet session", () => read(b, "Bex").messages.find((m) => m.text === "still here"));
 });
@@ -519,13 +519,13 @@ test("the gate: one caller knocking a thousand times is one row, and pushes nobo
   const otherId = idOf(other, "Oz");
   const bId = idOf(b, "Bee");
   b.ok(["contact-set-tier", otherId, "--tier", "blocked", "--agent", "Bee"]);
-  other.ok(["initiate-session", "--anyway", bId, "--agent", "Oz"]);
+  other.ok(["initiate-session", bId, "--agent", "Oz"]);
   b.ok(["contact-set-tier", noisyId, "--tier", "blocked", "--agent", "Bee"]);
 
   const client = await IpcClient.connect(socketPath(noisy.home));
   try {
     for (let i = 0; i < KNOCKS; i++) {
-      const answer = await client.call("initiate_session", { anyway: true, agent: "Nog", caller: "cli", target: bId }) as { state: string };
+      const answer = await client.call("initiate_session", { agent: "Nog", caller: "cli", target: bId }) as { state: string };
       assert.equal(answer.state, "refused", `knock ${i}`);
     }
   } finally {
