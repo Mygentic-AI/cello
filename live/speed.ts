@@ -1,5 +1,5 @@
 // The speed test: real processes, every action a CLI command, no model turns. It tests the plumbing only:
-// v2 has no screener yet, so nothing here says how v1's 3 November screening failure would go.
+// it doesn't measure screening, so nothing here says how the old version's 3 November screening failure would go.
 //
 //   node live/speed.ts --local [--server-dir ../cello-server] [--scenarios a,b] [--seconds 60] [--cpu-prof]
 //   node live/speed.ts --server wss://host/v1 --gentle
@@ -1123,7 +1123,7 @@ const meta = {
   target: args.server ?? "local",
   machine: `${cpus().length} cores`,
   loadAtStart: loadavg(),
-  note: "Plumbing only. v2 has no screener yet, so this can't show the 3 November failure is solved.",
+  note: "Plumbing only. Screening isn't measured, so this can't show the 3 November failure is solved.",
 };
 
 const SCENARIOS: Record<string, () => Promise<void>> = args.gentle

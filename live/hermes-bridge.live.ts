@@ -18,9 +18,9 @@ const enrollingCliPath = new URL("./enrolling-cli.ts", import.meta.url).pathname
 const mcpPath = new URL("../src/mcp.ts", import.meta.url).pathname;
 const hermesCheckout = process.env["HERMES_CHECKOUT"] ?? join(process.env["HOME"] as string, ".hermes", "hermes-agent");
 const hermesPython = join(hermesCheckout, "venv", "bin", "python3");
-const hermesHome = process.env["HERMES_BRIDGE_HOME"] ?? realpathSync(mkdtempSync(join(tmpdir(), "cv2-hh-")));
+const hermesHome = process.env["HERMES_BRIDGE_HOME"] ?? realpathSync(mkdtempSync(join(tmpdir(), "cello-hh-")));
 // Short, because a socket's path has a length limit.
-const work = realpathSync(mkdtempSync(join(tmpdir(), "cv2-hb-")));
+const work = realpathSync(mkdtempSync(join(tmpdir(), "cello-hb-")));
 const hermesSide = join(work, "h");
 const peerSide = join(work, "p");
 const shim = join(work, "bin");

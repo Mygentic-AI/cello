@@ -19,7 +19,7 @@ const url = `ws://127.0.0.1:${port}/v1`;
 const TESTS = 5;
 
 // Short, because a daemon's socket path has a length limit of about 104 bytes here.
-const work = realpathSync(mkdtempSync(join(tmpdir(), "cv2-inst-")));
+const work = realpathSync(mkdtempSync(join(tmpdir(), "cello-inst-")));
 const prefix = join(work, "prefix");
 const home = join(work, "home");
 const cwd = join(work, "cwd");

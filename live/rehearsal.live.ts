@@ -29,7 +29,7 @@ const E = (name: string): string => {
   if (!v) throw new Error(`${name} is required (scripts/rehearsal.sh sets it)`);
   return v;
 };
-const V2 = new URL("..", import.meta.url).pathname;
+const REPO = new URL("..", import.meta.url).pathname;
 const SERVER_DIR = E("R_SERVER_DIR");
 const ISSUER_DIR = E("R_ISSUER_DIR");
 const TC_DIR = E("R_TC_DIR"); // trustless-cello checkout
@@ -61,7 +61,7 @@ const CONCIERGE_NAME = `${PROJECT}-concierge`;
 const ANDRE = `andre-${randomInt(1e9)}@example.test`;
 const STRANGER = `stranger-${randomInt(1e9)}@example.test`;
 const WORK = mkdtempSync("/private/tmp/cr-"); // Docker on a Mac mounts /private/tmp at the same path
-const cli = join(V2, "src/cli.ts");
+const cli = join(REPO, "src/cli.ts");
 
 // ---------- the record ----------
 interface Step { name: string; result: "PASS" | "FAIL" | "SKIP" | "NOTE"; seconds: number; detail: string }

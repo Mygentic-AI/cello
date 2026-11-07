@@ -44,7 +44,7 @@ const ANY_DOORBELL = /<channel source="[^"]*cello"/;
 
 // A short path, because a Unix socket path can't be long.
 // Resolved, because macOS's /tmp is a link and Claude Code files its transcripts under the real path.
-const base = realpathSync(mkdtempSync("/tmp/cv2-"));
+const base = realpathSync(mkdtempSync("/tmp/cello-"));
 const home = join(base, "home");
 const env = { ...process.env, CELLO_HOME: home };
 const startedAt = Date.now();
