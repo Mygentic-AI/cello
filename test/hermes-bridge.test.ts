@@ -24,7 +24,7 @@ const options = (hermesHome: string, exec: Exec, more: Partial<BridgeOptions> = 
 const toolsOf = (calls: string[][]): string | undefined => calls.find((c) => c[0] === "mcp" && c[1] === "add")?.find((a) => a.startsWith("CELLO_TOOLS="));
 
 test("a public agent stays public when the installer runs again without the flag", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cv2-bt-"));
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   assert.equal((await installBridge(options(home, recorder().exec, { public: true, allowInitiate: true }))).ok, true);
 
   const again = recorder();
@@ -52,7 +52,7 @@ test("a public agent stays public when the installer runs again without the flag
 const landingIn = (home: string): unknown => JSON.parse(readFileSync(join(home, "cello", "landing-session.json"), "utf8")).session_id;
 
 test("an agent moves its own notifications to the session it's in, and back, and nothing else", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cv2-bt-"));
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "current" }).ok, false, "no bridge yet");
   assert.equal((await installBridge(options(home, recorder().exec))).ok, true);
   const before = readFileSync(join(home, ".env"), "utf8");
@@ -78,7 +78,7 @@ test("an agent moves its own notifications to the session it's in, and back, and
 });
 
 test("an install takes current and default too, and refuses a landing session under peer scope", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cv2-bt-"));
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "20261107_075030_72e2f2e2" }))).ok, true);
   assert.equal(landingIn(home), "20261107_075030_72e2f2e2");
   assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "default" }))).ok, true);
@@ -88,7 +88,7 @@ test("an install takes current and default too, and refuses a landing session un
 });
 
 test("the plugin isn't enabled unless the tools it needs were added", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cv2-bt-"));
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   const failing = recorder("mcp");
   assert.equal((await installBridge(options(home, failing.exec))).ok, false);
   assert.equal(failing.calls.some((c) => c[0] === "plugins"), false);
