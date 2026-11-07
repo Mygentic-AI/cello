@@ -1,6 +1,6 @@
 {
   "name": "@cello-protocol/cli",
-  "version": "0.0.307",
+  "version": "0.0.308",
   "type": "module",
   "engines": {
     "node": ">=24.7"
