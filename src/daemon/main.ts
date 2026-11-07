@@ -129,6 +129,26 @@ function stopListening(socket: Socket): void {
   }
 }
 
+// A Claude session (caller mcp:<uuid>) talks over one long-lived connection, so when its last one closes the session is
+// gone, and every hold it took goes with it, however it was taken. Identity still comes from each call; only the hold ends.
+// The command line and named callers like hermes may connect per call, so their holds last until they let go.
+const sessionSockets = new Map<string, Set<Socket>>();
+
+function noteSessionSocket(socket: Socket, caller: unknown): void {
+  if (typeof caller !== "string" || !caller.startsWith("mcp:")) return;
+  const set = sessionSockets.get(caller) ?? new Set<Socket>();
+  set.add(socket);
+  sessionSockets.set(caller, set);
+}
+
+function releaseSessionHolds(socket: Socket): void {
+  for (const [caller, set] of sessionSockets) {
+    if (!set.delete(socket) || set.size > 0) continue;
+    sessionSockets.delete(caller);
+    for (const [agent, holder] of holders) if (holder.caller === caller) holders.delete(agent);
+  }
+}
+
 let shuttingDown = false;
 
 function shutdown(): void {
@@ -484,6 +504,7 @@ const ipc = createServer((socket) => {
       socket.destroy();
       return;
     }
+    noteSessionSocket(socket, request.params?.["caller"]);
     handle(socket, request.method, request.params ?? {}).then(
       (result) => {
         if (result instanceof AfterWrite) respond({ id: request.id, ok: true, result: result.result }, result.commit);
@@ -503,6 +524,7 @@ const ipc = createServer((socket) => {
   socket.on("close", () => {
     stopListening(socket);
     sockets.delete(socket);
+    releaseSessionHolds(socket);
   });
   socket.on("error", () => undefined);
 });

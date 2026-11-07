@@ -317,3 +317,27 @@ test("a message waits on the server for a laptop that's shut, unreadable, then g
   assert.doesNotMatch(logs, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, "the server's log holds an IP address");
   assert.doesNotMatch(logs, /\b[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}\b|\b[0-9a-f]{1,4}::[0-9a-f:]*[0-9a-f]\b/i, "the server's log holds an IPv6 address");
 });
+
+test("a Claude session's hold ends when its connection does, however it was taken; the command line's doesn't", async () => {
+  const daemon = newDaemon();
+  daemon.login();
+  daemon.createAgent("Holly");
+  const sock = join(daemon.home, "daemon.sock");
+
+  // A session that never selected the agent takes hold just by reading, then goes away, as on a restart or /mcp.
+  const old = await IpcClient.connect(sock);
+  await old.call("receive", { agent: "Holly", caller: "mcp:old-session" });
+  old.close();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const fresh = await IpcClient.connect(sock);
+  await fresh.call("receive", { agent: "Holly", caller: "mcp:new-session" });
+  fresh.close();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  // The command line connects per command, and its hold lasts until it lets go.
+  daemon.cli("use-agent", "--agent", "Holly");
+  const after = await IpcClient.connect(sock);
+  await assert.rejects(after.call("receive", { agent: "Holly", caller: "mcp:third-session" }), /agent_held|holds Holly/);
+  after.close();
+});
