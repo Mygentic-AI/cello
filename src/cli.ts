@@ -11,7 +11,7 @@ import { celloHome, holdsOldVersion, logPath, oldVersionMessage, socketPath } fr
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
-import { daemonUnit, installBridge } from "./hermes-bridge.ts";
+import { daemonUnit, installBridge, setLanding } from "./hermes-bridge.ts";
 import { SETUP_HELP, setup } from "./setup.ts";
 import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-sign.ts";
 import { RootKeysNotConfigured } from "./protocol/issuer-list.ts";
@@ -308,10 +308,28 @@ async function confirmPerson(refusal: string): Promise<void> {
   if (answer !== code) refuse("not_confirmed", "That wasn't the code. Nothing changed.");
 }
 
-const BRIDGE_USAGE = `Usage: cello bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>] [--public | --not-public] [--allow-initiate]
+const BRIDGE_USAGE = `Usage: cello bridge hermes --agent <name> [--hermes-home <path>] [--session-scope agent|peer] [--channel-notifications on|off] [--landing-session <id>|current|default] [--public | --not-public] [--allow-initiate]
        cello bridge daemon-unit
 
-hermes connects a Hermes install to one agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin. A flag you leave out goes back to its default.
+hermes connects one Hermes profile to one CELLO agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin.
+A flag you leave out goes back to its default.
+
+The bridge decides where the agent's notifications go: a new session request, a message, a channel post.
+  --session-scope agent    (default) everything goes to one session. That's the agent's own CELLO session, made the first time,
+                           unless a landing session is set.
+  --session-scope peer     each caller gets a session of their own, kept for the next time they call, so two callers never share one.
+                           For an agent strangers reach, like a support desk. Channel notices get a session of their own.
+  --landing-session <id>   under agent scope, send everything to this Hermes session instead: a dated id, or a Desktop chat's local-... id.
+  --landing-session current  the Hermes session this command runs in. HERMES_SESSION_ID says which.
+  --landing-session default  back to the agent's own CELLO session.
+  --channel-notifications on|off  whether a new post on a channel the agent follows wakes it (default on).
+
+An agent can move its own notifications, with no person and no restart: inside Hermes, run
+  cello bridge hermes --agent <name> --landing-session current
+before reaching out, so the reply lands in the session it's working in. Only --agent, --hermes-home and --landing-session go with it.
+Everything else takes a person at a terminal.
+
+A Hermes with several profiles: run this once per profile, with --hermes-home pointing at that profile (for example ~/.hermes/profiles/<name>).
 --public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.
 daemon-unit prints a systemd unit that keeps the daemon up on a server.
 `;
@@ -328,7 +346,10 @@ async function bridgeCommand(args: string[]): Promise<void> {
     return;
   }
   if (target !== "hermes") usageError(`no such bridge: ${target}. Only hermes exists.`);
-  if (process.env["CELLO_CALLER"]) fail(`${JSON.stringify({ error: "person_required", message: "Installing a bridge takes a person. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own." })}\n`, EXIT_REFUSED);
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(BRIDGE_USAGE);
+    return;
+  }
   const values: Record<string, string> = {};
   const flags = new Set<string>();
   for (let i = 0; i < rest.length; i++) {
@@ -342,6 +363,16 @@ async function bridgeCommand(args: string[]): Promise<void> {
   }
   const agent = values["--agent"];
   if (!agent) usageError(`bridge hermes needs --agent. ${BRIDGE_USAGE}`);
+  if (process.env["CELLO_CALLER"]) {
+    // An agent's shell may move where its own notifications land, as v1 let it, and nothing else.
+    const landingOnly = values["--landing-session"] !== undefined && flags.size === 0
+      && Object.keys(values).every((k) => ["--agent", "--hermes-home", "--landing-session"].includes(k));
+    if (!landingOnly) fail(`${JSON.stringify({ error: "person_required", message: "Installing or changing a bridge takes a person. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own. An agent may only move its own notifications: cello bridge hermes --agent <name> --landing-session current" })}\n`, EXIT_REFUSED);
+    const moved = setLanding({ agent, hermesHome: values["--hermes-home"], landingSession: values["--landing-session"] as string });
+    if (!moved.ok) fail(`${moved.output}\n`, EXIT_REFUSED);
+    process.stdout.write(`${moved.output}\n`);
+    return;
+  }
   const result = await installBridge({
     agent,
     hermesHome: values["--hermes-home"],

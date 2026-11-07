@@ -66,6 +66,42 @@ function withEnv(existing: string, set: Record<string, string>, drop: string[]):
   return `${lines.join("\n")}\n`;
 }
 
+// --landing-session takes a session id, or one of these words, as v1's did.
+// current: the Hermes session this command runs in, so an agent can say "send my notifications here".
+// default: back to the agent's own CELLO session.
+function resolveLanding(value: string | undefined): { landing: string | null | undefined; error?: string } {
+  const raw = value?.trim();
+  if (raw === undefined || raw === "") return { landing: undefined };
+  if (raw.toLowerCase() === "default") return { landing: null };
+  if (raw.toLowerCase() === "current") {
+    const current = (process.env["HERMES_SESSION_ID"] ?? "").trim();
+    if (!current) return { landing: undefined, error: "--landing-session current needs HERMES_SESSION_ID, which Hermes sets in a session's commands. Run it from inside the Hermes session you mean, or pass that session's id." };
+    return SAFE_SESSION_ID.test(current) ? { landing: current } : { landing: undefined, error: `HERMES_SESSION_ID '${current}' isn't a session id.` };
+  }
+  return SAFE_SESSION_ID.test(raw) ? { landing: raw } : { landing: undefined, error: `--landing-session '${raw}' isn't a session id.` };
+}
+
+const landingFileOf = (hermesHome: string): string => join(hermesHome, "cello", "landing-session.json");
+
+// The one bridge setting an agent may change itself: where its own notifications land. It writes only the landing file, which the
+// plugin reads on every notification, so nothing restarts. Everything else about the bridge still takes a person.
+export function setLanding(options: { agent: string; hermesHome?: string; landingSession: string }): { ok: boolean; output: string } {
+  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
+  const envPath = join(hermesHome, ".env");
+  if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A person sets it up first with cello bridge hermes.` };
+  const bridged = readFileSync(envPath, "utf8").split("\n").find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
+  // An agent moves its own notifications, never another profile's.
+  if (bridged !== options.agent.trim()) return { ok: false, output: `${hermesHome} is bridged to ${bridged ?? "no agent"}, not ${options.agent}. Nothing changed.` };
+  if (readFileSync(envPath, "utf8").split("\n").includes("CELLO_SESSION_SCOPE=peer")) return { ok: false, output: "This agent gives each caller their own session, so there's no one landing session to move. Nothing changed." };
+  const { landing, error } = resolveLanding(options.landingSession);
+  if (error) return { ok: false, output: error };
+  const file = landingFileOf(hermesHome);
+  mkdirSync(join(hermesHome, "cello"), { recursive: true });
+  // A null says default on purpose, so an older CELLO_LANDING_SESSION in .env doesn't take over.
+  writeFileSync(file, `${JSON.stringify({ session_id: landing ?? null })}\n`);
+  return { ok: true, output: landing ? `${options.agent}'s notifications now land in session ${landing}, from the next one.` : `${options.agent}'s notifications go back to its own CELLO session, from the next one.` };
+}
+
 export async function installBridge(options: BridgeOptions): Promise<{ ok: boolean; output: string }> {
   const refuse = (output: string): { ok: boolean; output: string } => ({ ok: false, output });
   const agent = options.agent.trim();
@@ -85,8 +121,10 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   const channels = options.channelNotifications ?? "on";
   if (!(CHANNEL_NOTIFICATIONS as readonly string[]).includes(channels)) return refuse(`--channel-notifications must be one of ${CHANNEL_NOTIFICATIONS.join(", ")}, not '${channels}'.`);
   if (options.allowInitiate && !isPublic) return refuse("--allow-initiate only means something with --public.");
-  const landing = options.landingSession?.trim();
-  if (landing && !SAFE_SESSION_ID.test(landing)) return refuse(`--landing-session '${landing}' isn't a session id.`);
+  const resolved = resolveLanding(options.landingSession);
+  if (resolved.error) return refuse(resolved.error);
+  if (resolved.landing && scope === "peer") return refuse("--landing-session only means something with --session-scope agent: under peer each caller has their own session.");
+  const landing = resolved.landing ?? undefined;
 
   // Strangers' text goes straight to this agent's model, so a public agent doesn't start on the rules alone.
   if (isPublic && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello screener install");
@@ -127,7 +165,7 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   }
   if (envNeedsWriting) writeFileSync(envPath, wanted, { mode: 0o600 });
   out.push(`Agent: ${agent}, scope ${scope}, caller ${BRIDGE_CALLER}${landing ? `, landing session ${landing}` : ""}`);
-  const landingFile = join(hermesHome, "cello", "landing-session.json");
+  const landingFile = landingFileOf(hermesHome);
   if (landing) {
     mkdirSync(join(hermesHome, "cello"), { recursive: true });
     writeFileSync(landingFile, `${JSON.stringify({ session_id: landing })}\n`);
