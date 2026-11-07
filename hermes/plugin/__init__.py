@@ -283,54 +283,48 @@ class CelloAdapter(BasePlatformAdapter):
             logger.warning("[cello] Could not read the landing session file: %s", exc)
         return _safe_scalar(self._landing_session)
 
-    async def _land(self, source: Any, session_key: str, landing_sid: str) -> None:
-        """Points this agent's route at the landing session the way Hermes' own /resume does.
+    def _landing_for(self, session_id: Optional[str]) -> Optional[str]:
+        """The Hermes session this agent's notifications go to, when it isn't its own CELLO chat: the chat that opened
+        this CELLO session, or the landing session. Under peer scope each caller has their own chat, so never."""
+        if self._session_scope != "agent":
+            return None
+        bound = self._bindings.get(session_id) if session_id else None
+        if bound is not None and _HERMES_SESSION_RE.fullmatch(bound):
+            return bound
+        return self._get_landing_session_id()
 
-        A bare switch_session is only one step of it. When the target is a Desktop chat, Hermes releases that
-        chat's local receipt as the conversation moves onto this route, so the Desktop must be moved with it
-        (follow_hand_off), and the move has to start from the conversation's head. Skipping those left the
-        Desktop holding a chat with no receipt: its typing stopped arriving and recovery refused it for good."""
+    async def _wake_landing(self, landing_sid: str, text: str) -> bool:
+        """Delivers a notification into the landing session on that session's own route, the way Hermes wakes a chat
+        for a finished background task: it joins the chat's queue, runs after any turn in progress, and the chat
+        stays where it is.
+
+        Pointing this agent's CELLO route at the session instead, even the full way /resume does, moves the
+        conversation off its surface: Hermes rewrote a Desktop chat as a CELLO one, and the Desktop could no longer
+        send to it. False means it couldn't be done, and the notification goes to this agent's own CELLO chat."""
         runner = getattr(self, "gateway_runner", None)
         store = getattr(runner, "session_store", None)
         if store is None:
-            return
+            return False
         try:
-            from gateway.session_route_recovery import conversation_head, follow_hand_off
-        except ImportError:
-            conversation_head = follow_hand_off = None
-        try:
-            entry = store.get_or_create_session(source)
-            route_key = getattr(entry, "session_key", None) or session_key
-            target, authority, local_owner = landing_sid, None, None
-            if conversation_head is not None:
-                authority, local_owner, target = await conversation_head(runner, landing_sid)
-                if local_owner is None:
-                    target = landing_sid
-            elif landing_sid.startswith("local-"):
-                # Half a move breaks the Desktop chat, so it's refused, and messages go to this agent's own session.
-                logger.error("[cello] This Hermes can't hand a Desktop chat over, so landing session %s was not used", landing_sid)
-                return
-            if entry.session_id == target:
-                return
-            release = getattr(runner, "_release_running_agent_state", None)
-            if callable(release):
-                release(route_key)
-            if store.switch_session(route_key, target, preserve_prompt_pin=False) is None:
-                logger.warning("[cello] The gateway refused to switch %s to landing session %s", route_key, target)
-                return
-            if local_owner is not None and authority is not None and follow_hand_off is not None:
-                follow_hand_off(authority, source, route_key, authority.logical_owner(target), local_owner)
-            # A conversation boundary, as /resume treats it: this route's model pin and per-conversation state
-            # belong to the conversation it left.
-            clear = getattr(runner, "_clear_conversation_scope", None)
-            if callable(clear):
-                clear(route_key, reason="resume")
-            store.set_model_override(route_key, None)
-            if hasattr(runner, "_evict_cached_agent"):
-                runner._evict_cached_agent(route_key)
-            logger.info("[cello] Landed %s on session %s", route_key, target)
+            from gateway.wake import deliver_wake
+            # The session's own chat. A CELLO route can point at it too, after an older bridge moved it, and
+            # waking that one would put the notification on CELLO's surface again.
+            entry = next((e for e in store.list_sessions() if e.session_id == landing_sid
+                          and getattr(e.origin, "platform", None) not in (None, self.platform)), None)
+            if entry is None:
+                logger.warning("[cello] Landing session %s isn't open in any chat, so this goes to %s's own CELLO chat", landing_sid, self._agent_name)
+                return False
+            adapter = getattr(runner, "adapters", {}).get(entry.origin.platform)
+            if adapter is None:
+                logger.warning("[cello] No %s adapter is running for landing session %s, so this goes to %s's own CELLO chat",
+                               entry.origin.platform, landing_sid, self._agent_name)
+                return False
+            await deliver_wake(adapter, text=text, session_id=landing_sid, source=entry.origin, notification_category="result")
+            logger.info("[cello] Woke landing session %s on %s", landing_sid, entry.session_key)
+            return True
         except Exception as exc:
-            logger.warning("[cello] Could not switch to landing session %s: %s", landing_sid, exc)
+            logger.warning("[cello] Could not wake landing session %s (%s), so this goes to %s's own CELLO chat", landing_sid, exc, self._agent_name)
+            return False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -583,6 +577,9 @@ class CelloAdapter(BasePlatformAdapter):
         await super().handle_message(event)
 
     async def _start_turn(self, chat_id: str, user_id: str, text: str, raw: Dict[str, Any], kind: str, chat_name: str = "CELLO", user_name: str = "CELLO") -> None:
+        landing = self._landing_for(raw.get("session_id") if isinstance(raw, dict) else None)
+        if landing and await self._wake_landing(landing, text):
+            return
         source = self.build_source(chat_id=chat_id, chat_name=chat_name, chat_type="dm", user_id=user_id, user_name=user_name)
         await self.handle_message(MessageEvent(
             text=text,
@@ -689,10 +686,9 @@ class CelloAdapter(BasePlatformAdapter):
         peer = await self._peer_of(session_id, data)
         bound_chat = self._bindings.get(session_id)
         chat_id = bound_chat if bound_chat is not None else self._chat_id_for(peer)
-        bound_sid = None
         if bound_chat is not None and self._session_scope == "agent" and _HERMES_SESSION_RE.fullmatch(bound_chat):
-            # A desktop chat's session id builds a route nothing maps to. Route normally, and point the route at it.
-            bound_sid = bound_chat
+            # A desktop chat's session id builds a route nothing maps to. The turn is woken in that chat instead
+            # (_landing_for), and this agent's own chat is where it goes if that can't be done.
             chat_id = self._chat_id_for(peer)
         if chat_id is None:
             # Guessing would put one customer's words in another's conversation. It stays unread in the daemon.
@@ -701,10 +697,6 @@ class CelloAdapter(BasePlatformAdapter):
 
         source = self.build_source(chat_id=chat_id, chat_name="CELLO", chat_type="dm", user_id=peer or "cello-daemon", user_name="CELLO")
         session_key = self._session_key_for(source)
-        if (bound_chat is None or bound_sid is not None) and self._session_scope == "agent":
-            landing = bound_sid or self._get_landing_session_id()
-            if landing:
-                await self._land(source, session_key, landing)
 
         if session_key in self._active_sessions:
             attempts = frame.get("_cello_busy_retries", 0)
