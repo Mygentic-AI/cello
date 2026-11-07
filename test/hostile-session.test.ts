@@ -280,3 +280,13 @@ test("a renamed agent keeps its sessions, contacts and hold under the new name, 
   await s.client.call("create_agent", { name: "Second" }).catch(() => undefined);
   await assert.rejects(s.client.call("rename_agent", { agent: "Renamed", name: "Second" }), (err: { code?: string }) => err.code === "agent_name_taken");
 });
+
+test("a rename moves a self-offered name that was the old name, and keeps one set apart from it", { timeout: 60_000 }, async () => {
+  const s = await scene();
+  await s.client.call("moniker", { agent: "Target", moniker: "Apart" });
+  const kept = await s.client.call("rename_agent", { agent: "Target", name: "Second" }) as { offers_name: string };
+  assert.equal(kept.offers_name, "Apart");
+  await s.client.call("moniker", { agent: "Second", moniker: "Second" });
+  const moved = await s.client.call("rename_agent", { agent: "Second", name: "Third" }) as { offers_name: string };
+  assert.equal(moved.offers_name, "Third");
+});

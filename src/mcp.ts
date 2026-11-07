@@ -44,7 +44,8 @@ let connecting: Promise<IpcClient> | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
 let everConnected = false;
 // Which agents should ring here. It's kept only so a restart of the daemon can be recovered from.
-const heldAgents = new Set<string>();
+// By agent_id, with the name it had when taken, for messages.
+const heldAgents = new Map<string, string>();
 
 const server = new McpServer(
   { name: "cello", version: "0.0.1" },
@@ -103,12 +104,12 @@ async function attach(): Promise<IpcClient> {
   };
   let unread = 0;
   const lost: string[] = [];
-  for (const agent of [...heldAgents]) {
+  for (const [agent, name] of [...heldAgents]) {
     try {
       unread += (await connected.call("subscribe", { agent, caller: CALLER }) as { unread: number }).unread;
     } catch (err: unknown) {
       heldAgents.delete(agent);
-      lost.push(`${agent}: ${err instanceof Error ? err.message : String(err)}`);
+      lost.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   client = connected;
@@ -140,9 +141,9 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
   const connected = await connect();
   const params = toolParams(args, CALLER);
   if (op.method === "use_agent") {
-    const result = await connected.call("subscribe", params) as { agent_id: string };
+    const result = await connected.call("subscribe", params) as { agent_id: string; name: string };
     // By id, so a rename doesn't lose it when the daemon comes back.
-    heldAgents.add(result.agent_id);
+    heldAgents.set(result.agent_id, result.name);
     return result;
   }
   if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
