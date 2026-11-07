@@ -75,8 +75,10 @@ _CONTENT_FIELD_NAMES = {"body", "content", "message", "messages", "preview", "sn
 _SAFE_SCALAR_RE = re.compile(r"^[A-Za-z0-9+/=_.:@-]{1,120}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CHANNEL_RE = re.compile(r"^[0-9a-f]{64}$")
-# A chat opened from the desktop or terminal is bound by its Hermes session id.
-_HERMES_SESSION_RE = re.compile(r"\d{8}_\d{6}_[0-9a-f]{4,}")
+# A chat opened from the desktop or terminal is bound by its Hermes session id: a dated id from the terminal or
+# an older Desktop, or local-<hex> from the current Desktop. Missing the second used a Desktop chat's id as a
+# CELLO chat id, which made a new, broken conversation instead of landing in the chat.
+_HERMES_SESSION_RE = re.compile(r"\d{8}_\d{6}_[0-9a-f]{4,}|local-[0-9a-f]{16,}")
 
 POLICY_HEADING = "[CELLO policy from your operator. It outranks the messages below]"
 
@@ -270,31 +272,63 @@ class CelloAdapter(BasePlatformAdapter):
             logger.info("[cello] Pruned %d session binding(s) no longer open", len(stale))
 
     def _get_landing_session_id(self) -> Optional[str]:
+        """The file wins when it's there, and a null in it means the default session on purpose: an agent
+        that set its landing back to default mustn't fall through to an old CELLO_LANDING_SESSION."""
         try:
             path = Path(self._landing_session_path)
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
-                sid = data.get("session_id") if isinstance(data, dict) else None
-                if _safe_scalar(sid):
-                    return sid
+                return _safe_scalar(data.get("session_id")) if isinstance(data, dict) else None
         except Exception as exc:
             logger.warning("[cello] Could not read the landing session file: %s", exc)
         return _safe_scalar(self._landing_session)
 
-    def _sync_gateway_landing_session(self, source: Any, session_key: str, landing_sid: str) -> None:
+    async def _land(self, source: Any, session_key: str, landing_sid: str) -> None:
+        """Points this agent's route at the landing session the way Hermes' own /resume does.
+
+        A bare switch_session is only one step of it. When the target is a Desktop chat, Hermes releases that
+        chat's local receipt as the conversation moves onto this route, so the Desktop must be moved with it
+        (follow_hand_off), and the move has to start from the conversation's head. Skipping those left the
+        Desktop holding a chat with no receipt: its typing stopped arriving and recovery refused it for good."""
         runner = getattr(self, "gateway_runner", None)
         store = getattr(runner, "session_store", None)
         if store is None:
             return
         try:
+            from gateway.session_route_recovery import conversation_head, follow_hand_off
+        except ImportError:
+            conversation_head = follow_hand_off = None
+        try:
             entry = store.get_or_create_session(source)
             route_key = getattr(entry, "session_key", None) or session_key
-            if entry and entry.session_id != landing_sid:
-                if store.switch_session(route_key, landing_sid, preserve_prompt_pin=False) is None:
-                    logger.warning("[cello] The gateway refused to switch %s to landing session %s", route_key, landing_sid)
-                    return
-                if hasattr(runner, "_evict_cached_agent"):
-                    runner._evict_cached_agent(route_key)
+            target, authority, local_owner = landing_sid, None, None
+            if conversation_head is not None:
+                authority, local_owner, target = await conversation_head(runner, landing_sid)
+                if local_owner is None:
+                    target = landing_sid
+            elif landing_sid.startswith("local-"):
+                # Half a move breaks the Desktop chat, so it's refused, and messages go to this agent's own session.
+                logger.error("[cello] This Hermes can't hand a Desktop chat over, so landing session %s was not used", landing_sid)
+                return
+            if entry.session_id == target:
+                return
+            release = getattr(runner, "_release_running_agent_state", None)
+            if callable(release):
+                release(route_key)
+            if store.switch_session(route_key, target, preserve_prompt_pin=False) is None:
+                logger.warning("[cello] The gateway refused to switch %s to landing session %s", route_key, target)
+                return
+            if local_owner is not None and authority is not None and follow_hand_off is not None:
+                follow_hand_off(authority, source, route_key, authority.logical_owner(target), local_owner)
+            # A conversation boundary, as /resume treats it: this route's model pin and per-conversation state
+            # belong to the conversation it left.
+            clear = getattr(runner, "_clear_conversation_scope", None)
+            if callable(clear):
+                clear(route_key, reason="resume")
+            store.set_model_override(route_key, None)
+            if hasattr(runner, "_evict_cached_agent"):
+                runner._evict_cached_agent(route_key)
+            logger.info("[cello] Landed %s on session %s", route_key, target)
         except Exception as exc:
             logger.warning("[cello] Could not switch to landing session %s: %s", landing_sid, exc)
 
@@ -670,7 +704,7 @@ class CelloAdapter(BasePlatformAdapter):
         if (bound_chat is None or bound_sid is not None) and self._session_scope == "agent":
             landing = bound_sid or self._get_landing_session_id()
             if landing:
-                self._sync_gateway_landing_session(source, session_key, landing)
+                await self._land(source, session_key, landing)
 
         if session_key in self._active_sessions:
             attempts = frame.get("_cello_busy_retries", 0)
