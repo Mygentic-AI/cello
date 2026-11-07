@@ -78,8 +78,8 @@ function doorbellText(frame: IpcNotification): string {
 }
 
 function onNotification(frame: IpcNotification): void {
-  const agent = frame.data["agent"];
-  if (frame.notification === "agent_displaced" && typeof agent === "string") heldAgents.delete(agent);
+  const agentId = frame.data["agent_id"];
+  if (frame.notification === "agent_displaced" && typeof agentId === "string") heldAgents.delete(agentId);
   const meta: Record<string, string> = { type: frame.notification };
   for (const key of ["agent", "session_id", "from_id", "channel_id"]) {
     const value = frame.data[key];
@@ -140,12 +140,17 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
   const connected = await connect();
   const params = toolParams(args, CALLER);
   if (op.method === "use_agent") {
-    const result = await connected.call("subscribe", params);
-    heldAgents.add(args["agent"] as string);
+    const result = await connected.call("subscribe", params) as { agent_id: string };
+    // By id, so a rename doesn't lose it when the daemon comes back.
+    heldAgents.add(result.agent_id);
     return result;
   }
   if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
-  if (op.method === "stop_using_agent") heldAgents.delete(args["agent"] as string);
+  if (op.method === "stop_using_agent") {
+    const result = await connected.call(op.method, params, callLimitMs(op, args)) as { agent_id: string };
+    heldAgents.delete(result.agent_id);
+    return result;
+  }
   return connected.call(op.method, params, callLimitMs(op, args));
 }
 

@@ -310,6 +310,10 @@ export class Store {
     this.#prep("DELETE FROM status_outbox WHERE agent_id = ? AND server_url = ? AND statement = ?").run([row.agent_id, row.server_url, row.statement]);
   }
 
+  renameAgent(agentId: Uint8Array, name: string): void {
+    this.#prep("UPDATE agents SET name = ? WHERE agent_id = ?").run([name, agentId]);
+  }
+
   // The row stays, with its keys and its history: a name is freed, and nothing is lost.
   markRemoved(agentId: Uint8Array): void {
     this.#prep("UPDATE agents SET removed = 1 WHERE agent_id = ?").run([agentId]);

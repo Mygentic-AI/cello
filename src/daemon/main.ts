@@ -92,8 +92,8 @@ function takeHold(agentHex: string, caller: string, force: boolean): void {
     for (const listener of [...(listeners.get(agentHex) ?? [])]) {
       if (listener.caller === caller) continue;
       // A wait in progress ends now and says why, rather than running out its time.
-      if (listener.onBell) listener.onBell({ type: "agent_displaced", agent: engine.agentName(agentHex) });
-      else writeFrame(listener.socket, { notification: "agent_displaced", data: { agent: engine.agentName(agentHex) } });
+      if (listener.onBell) listener.onBell({ type: "agent_displaced", agent: engine.agentName(agentHex), agent_id: agentHex });
+      else writeFrame(listener.socket, { notification: "agent_displaced", data: { agent: engine.agentName(agentHex), agent_id: agentHex } });
       listeners.get(agentHex)?.delete(listener);
     }
   }
@@ -359,6 +359,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     // Reading a record acts as nobody, so these need no hold.
     case "agents":
       return engine.agents();
+    case "rename_agent":
+      return engine.renameAgent(engine.resolveAgent(text(params, "agent")), text(params, "name"));
     case "sessions":
       return engine.sessions(engine.resolveAgent(text(params, "agent")), params["all"] === true);
     case "greetings":

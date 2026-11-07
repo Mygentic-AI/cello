@@ -308,6 +308,18 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [{ name: "reason", kind: "string", allowed: ["owner_request", "compromise"], description: "Why. The default is owner_request." }],
   },
   {
+    command: "rename-agent",
+    group: "Agents",
+    summary: "Rename an agent on this machine. Its identity, sessions and contacts stay.",
+    scoped: false,
+    acts: false,
+    description: "Rename an agent on this machine. Its agent_id, keys, sessions, contacts, seals and signals stay as they are: they belong to the id, not the name. If the name it offers others was the old name, they see the new one from its next session. A name set with moniker stays. The old name stops working at once.",
+    params: [
+      { name: "agent", kind: "string", required: true, positional: true, description: "The agent's current name or agent_id." },
+      { name: "name", kind: "string", required: true, positional: true, description: "The new name: 1 to 64 letters, digits, underscores or dashes." },
+    ],
+  },
+  {
     command: "remove-agent",
     group: "Agents",
     summary: "Retire an agent, take it off this machine's lists and free its name.",

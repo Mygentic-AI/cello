@@ -254,3 +254,29 @@ test("two signed acks at one position are kept as proof a stranger can check, an
   await s.client.call("close_session", { agent: s.agent, caller: "t", session_id: s.hex });
   await until("the frozen side's close", () => s.appended.some((entry) => signedEntry.decode(entry).fields.kind === EntryKind.close));
 });
+
+test("a renamed agent keeps its sessions, contacts and hold under the new name, and the old name finds nothing", { timeout: 60_000 }, async () => {
+  const s = await scene();
+  await s.client.call("use_agent", { agent: "Target", caller: "t" });
+  await s.client.call("contact_add", { agent: "Target", caller: "t", contact: toHex(s.mallory.id) });
+
+  const renamed = await s.client.call("rename_agent", { agent: "Target", name: "Renamed" }) as Record<string, unknown>;
+  assert.deepEqual(renamed, { agent_id: s.agent, name: "Renamed", previous_name: "Target", offers_name: "Renamed" });
+
+  const sessions = await s.client.call("sessions", { agent: "Renamed" }) as { sessions: { session_id: string; state: string }[] };
+  assert.equal(sessions.sessions[0]?.session_id, s.hex);
+  const contacts = await s.client.call("contacts", { agent: "Renamed" }) as { contacts: { contact_id: string }[] };
+  assert.ok(contacts.contacts.some((c) => c.contact_id === toHex(s.mallory.id)));
+  // The hold is on the id, so the same caller still has it, and nobody else does without force.
+  await s.client.call("use_agent", { agent: "Renamed", caller: "t" });
+  await assert.rejects(s.client.call("use_agent", { agent: "Renamed", caller: "other" }), /holds Renamed/);
+  const status = await s.client.call("status", {}) as { agents: { name: string; agent_id: string }[] };
+  assert.deepEqual(status.agents.map((a) => [a.name, a.agent_id]), [["Renamed", s.agent]]);
+
+  for (const method of ["sessions", "contacts", "use_agent"]) {
+    await assert.rejects(s.client.call(method, { agent: "Target", caller: "t" }), (err: { code?: string }) => err.code === "unknown_agent");
+  }
+  await assert.rejects(s.client.call("rename_agent", { agent: "Renamed", name: "bad name" }), (err: { code?: string }) => err.code === "bad_argument");
+  await s.client.call("create_agent", { name: "Second" }).catch(() => undefined);
+  await assert.rejects(s.client.call("rename_agent", { agent: "Renamed", name: "Second" }), (err: { code?: string }) => err.code === "agent_name_taken");
+});

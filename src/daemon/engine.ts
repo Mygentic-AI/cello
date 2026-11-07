@@ -151,6 +151,7 @@ export interface Doorbell {
   policy?: unknown;
   policy_error?: string;
   agent: string;
+  agent_id?: string;
   session_id?: string;
   from_id?: string;
   channel_id?: string;
@@ -2528,6 +2529,21 @@ export class Engine {
         return screened;
       },
     };
+  }
+
+  // Everything else keys on agent_id, so only the name and a self-offered name equal to it change. Callers holding it hold its id.
+  renameAgent(agentHex: string, name: string): unknown {
+    const agent = this.#requireAgent(agentHex);
+    this.#checkNewName(name);
+    const taken = [...this.#agents.values()].find((a) => a.name === name && a.hex !== agent.hex);
+    if (taken) throw new LocalError("agent_name_taken", `this machine already has an agent named ${name}`);
+    const previous = agent.name;
+    this.#store.transaction(() => {
+      this.#store.renameAgent(agent.signer.id, name);
+      if (this.governance.reach.offeredName(agent.signer.id) === previous) this.governance.reach.setOfferedName(agent.signer.id, name);
+    });
+    agent.name = name;
+    return { agent_id: agent.hex, name, previous_name: previous, offers_name: this.governance.offeredName(agent.signer.id, name) || null };
   }
 
   resolveAgent(nameOrId: string): string {
