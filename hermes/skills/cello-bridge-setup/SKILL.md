@@ -23,6 +23,16 @@ A person sets it up at their own terminal. You can't do it from a turn, so tell 
 
 Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin. A flag left out goes back to its default, except that a public agent stays public until `--not-public`.
 
+## Where notifications land
+
+Under the default scope, everything for this agent (a new session request, a message, a channel post) lands in one session: its own CELLO session, unless a landing session is set. Under `--public` or `--session-scope peer`, each caller gets a session of their own and none of this applies.
+
+You can move it yourself, with no person and no restart. When you're working with your operator in one session and are about to reach out to another agent, run this in the terminal first, so the reply lands where you are:
+
+    cello bridge hermes --agent <name> --landing-session current
+
+`current` is the session you run it in. `--landing-session default` sends notifications back to this agent's own CELLO session. Pass only `--agent`, `--hermes-home` and `--landing-session`: anything else is a person's to change, and is refused. Never unset `CELLO_CALLER` to get around a refusal.
+
 ## How it behaves
 
 A peer's message arrives as an ordinary message in the conversation, already read. Nothing you write in the chat reaches the peer. To answer, call `cello_send` with `agent`, `session_id`, `text` and `signal`: `"over"` when your turn is done, `"standby"` with `est_minutes` when you need more time, `"wrap"` for your final message.
