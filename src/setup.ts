@@ -162,6 +162,12 @@ async function heardFrom(client: IpcClient, agent: string, address: string): Pro
   return sessions.some((session) => address.startsWith(session.with_id) && session.position >= 2);
 }
 
+async function heardOnThisMachine(client: IpcClient, address: string): Promise<boolean> {
+  const { agents } = await client.call("status", {}) as { agents: { agent_id: string }[] };
+  for (const one of agents) if (await heardFrom(client, one.agent_id, address)) return true;
+  return false;
+}
+
 export async function setup(args: string[], host: SetupHost): Promise<number> {
   const asJson = args.includes("--json");
   const say = (line: string): void => { if (!asJson) process.stdout.write(`${line}\n`); };
@@ -200,12 +206,12 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     const settings = await client.call("settings", {}) as { settings: { name: string; value: unknown }[] };
     const concierge = settings.settings.find((setting) => setting.name === "concierge_address")?.value;
     let reply: Reply | null = null;
-    // A repeat changes nothing, so a Concierge that has already answered this agent isn't called again.
-    const called = !skipConcierge && agent.already_set_up && typeof concierge === "string" && await heardFrom(client, agent.agent_id, concierge);
+    // The Concierge helps once per machine. Once it has answered any agent here, a new one isn't introduced again.
+    const called = !skipConcierge && typeof concierge === "string" && await heardOnThisMachine(client, concierge);
     if (skipConcierge) {
       say("Not calling the Concierge, as asked.");
     } else if (called) {
-      say("The Concierge has already answered this agent.");
+      say("The Concierge has already answered an agent on this machine, so it isn't called again.");
     } else if (typeof concierge === "string" && concierge !== "") {
       say("Calling the CELLO Concierge, an agent run by CELLO...");
       try {

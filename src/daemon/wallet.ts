@@ -275,7 +275,8 @@ export class Wallet {
       supersedes_hash: row.supersedes_hash,
       default_present: row.default_present === 1,
       consent_state: row.consent_state,
-      same_operator: row.same_operator === 1,
+      // Only an endorsement can come from your own operator. On an issuer's signal it means nothing, and a false reads as a finding.
+      ...(row.issuer_kind === "agent" ? { same_operator: row.same_operator === 1 } : {}),
       public: row.public !== 0,
       taking_back: row.public === 2,
       signal_id: toHex(readSignedSignal(new Uint8Array(row.file)).envelope.signal_id),

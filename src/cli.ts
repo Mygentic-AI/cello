@@ -450,6 +450,12 @@ async function main(): Promise<void> {
     process.stdout.write(named ? commandHelp(named) : overview());
     return;
   }
+  if (command === "--version" || command === "-v" || command === "version") {
+    // The package file sits one folder up from both src/ and dist/.
+    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")) as { version: string };
+    process.stdout.write(`${pkg.version}\n`);
+    return;
+  }
   // Only as the first argument, so a message that says --help is still a message.
   const wantsHelp = args[0] === "--help" || args[0] === "-h";
   if (command === "login") {
