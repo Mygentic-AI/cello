@@ -180,7 +180,7 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   // The real default home, and the database opens: this is the native SQLCipher loading from a plain npm install.
   assert.ok(existsSync(join(home, ".cello", "cello.db")));
 
-  const started = ok(["initiate-session", "--anyway", hugo["agent_id"] as string, "--agent", "Gail"]);
+  const started = ok(["initiate-session", hugo["agent_id"] as string, "--agent", "Gail"]);
   const session = started["session_id"] as string;
   assert.equal(started["state"], "active");
   assert.deepEqual(ok(["send", session, "first", "--over", "--agent", "Gail"]), { sent: true, position: 1 });
@@ -249,7 +249,7 @@ test("the installed cello-mcp speaks real stdio, starts before login, lists ever
 
     await call("cello_use_agent", { agent: "Gail" });
     const gailId = (ok(["agents"]) as { agents: { name: string; agent_id: string }[] }).agents.find((a) => a.name === "Gail")?.agent_id;
-    const session = ok(["initiate-session", "--anyway", gailId as string, "--agent", "Hugo"])["session_id"] as string;
+    const session = ok(["initiate-session", gailId as string, "--agent", "Hugo"])["session_id"] as string;
     ok(["send", session, "are you there", "--over", "--agent", "Hugo"]);
     const bell = await until("a message doorbell", () => bells.find((b) => b.meta["type"] === "message"));
     assert.doesNotMatch(JSON.stringify(bell), /are you there/);

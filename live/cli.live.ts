@@ -86,7 +86,7 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   ok(["use-agent", "--agent", "Gail"]);
   assert.deepEqual(ok(["receive"]), { messages: [], notices: [] }, "use-agent is remembered for later commands");
 
-  const started = ok(["initiate-session", "--anyway", hugo["agent_id"] as string, "--agent", "Gail"]);
+  const started = ok(["initiate-session", hugo["agent_id"] as string, "--agent", "Gail"]);
   assert.equal(started["state"], "active");
   const session = started["session_id"] as string;
 
@@ -267,7 +267,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
     const jan = (ok(["status"]) as { agents: { name: string; online: boolean }[] }).agents.find((a) => a.name === "Jan");
     return jan?.online && (okIn(kitHome, ["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online);
   });
-  const session = ok(["initiate-session", "--anyway", kit["agent_id"] as string, "--agent", "Jan"])["session_id"] as string;
+  const session = ok(["initiate-session", kit["agent_id"] as string, "--agent", "Jan"])["session_id"] as string;
   assert.ok(session);
   const secret = "the price is forty-two";
 
@@ -464,7 +464,7 @@ test("a standby past its time tells each side once, across restarts, and changes
   owen.must(["settings-set", "away.answering", "false", "--agent", "Owen"]);
   nora.must(["settings-set", "away.answering", "false", "--agent", "Nora"]);
   await until("both online", () => nora.online() && owen.online());
-  const session = nora.act("initiate-session", "--anyway", owenId)["session_id"] as string;
+  const session = nora.act("initiate-session", owenId)["session_id"] as string;
   assert.ok(session);
 
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -670,7 +670,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   const ned = (...args: string[]): Record<string, unknown> => okIn(nedHome, [...args, "--agent", "Ned"]);
   const ora = (...args: string[]): Record<string, unknown> => okIn(oraHome, [...args, "--agent", "Ora"]);
   const unreadBy = (read: (...args: string[]) => Record<string, unknown>): number => (read("inbox") as { waiting: { ready: number }[] }).waiting.reduce((sum, w) => sum + w.ready, 0);
-  const session = ned("initiate-session", "--anyway", oraAgent["agent_id"] as string)["session_id"] as string;
+  const session = ned("initiate-session", oraAgent["agent_id"] as string)["session_id"] as string;
   const hexSession = `\\x${session}`;
   const nextOut = (): string => join(scratch, `transcript-${nextFile++}.json`);
 
@@ -795,7 +795,7 @@ test("provable transcripts: all and partial reveals, each forgery caught, and ch
   assert.match(fromOra.statement["rests_on_the_sender_and_the_server"] as string, /Positions 3: the counterparty's signature on the entry stands behind the words/);
 
   // A second session and a shorter seal, for the forgeries that need something real from elsewhere.
-  const otherSession = ned("initiate-session", "--anyway", oraAgent["agent_id"] as string)["session_id"] as string;
+  const otherSession = ned("initiate-session", oraAgent["agent_id"] as string)["session_id"] as string;
   ned("send", otherSession, "another matter", "--over");
   ned("seal", otherSession);
   const otherFile = nextOut();
@@ -947,7 +947,7 @@ test("a server that lies about a seal gets a named refusal, and nothing is repor
     await must(["settings-set", "away.answering", "false", "--agent", "Mo"]);
     await must(["settings-set", "away.answering", "false", "--agent", "Lea"]);
     await until("both online", async () => (await must(["status"]) as { agents: { online: boolean }[] }).agents.every((a) => a.online));
-    const session = (await must(["initiate-session", "--anyway", mo["agent_id"] as string, "--agent", "Lea"]))["session_id"] as string;
+    const session = (await must(["initiate-session", mo["agent_id"] as string, "--agent", "Lea"]))["session_id"] as string;
     await must(["send", session, "hello", "--over", "--agent", "Lea"]);
 
     let seenSeals = 0;

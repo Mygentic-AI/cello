@@ -45,7 +45,6 @@ const TIER_DEFAULTS: Record<SettableTier, { max_sessions: number; max_bytes: num
 };
 
 export const CALLING_RAISES_KEY = "contacts.calling_raises_to_known";
-export const CHECK_BELOW_KEY = "calling.check_below";
 
 // loosensWhen: which way needs a person. Text settings go neither way. A switch loosens when it's turned on.
 interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
@@ -53,8 +52,6 @@ interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "
 export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // Ruled off on 4 November: a lure could get itself raised just by persuading an agent to dial it.
   [CALLING_RAISES_KEY]: { default: "false", kind: "switch", description: "Whether this agent calling a stranger raises it to known. Replying to one always does." },
-  // Unknown turns the check off, because only a block sits below it, and a block has its own stop.
-  [CHECK_BELOW_KEY]: { default: "known", kind: "tier", loosensWhen: "lower", description: "Calling an agent below this tier stops with a warning to check its public signals first, unless the call says --anyway. unknown turns it off. known catches every stranger." },
   "limits.stranger_pool": { default: "50", kind: "number", min: 1, max: 100_000, loosensWhen: "higher", description: "Open sessions all strangers together can have with this agent." },
   "limits.quiet_minutes": { default: "120", kind: "number", min: 1, max: 5_256_000, loosensWhen: "lower", description: "A session stops counting toward its caller's limit after this long with nothing new. It stays open." },
   "limits.cap_alarm_minutes": { default: "10", kind: "number", min: 0, max: 100_000, description: "The shortest gap between two notices that one caller keeps hitting a limit." },

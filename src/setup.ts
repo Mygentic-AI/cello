@@ -140,7 +140,7 @@ interface Reply { replied: boolean; text?: string; problem?: string }
 
 async function callConcierge(client: IpcClient, agent: string, address: string, caller: string): Promise<Reply> {
   const fields = { agent, caller };
-  const started = await client.call("initiate_session", { ...fields, target: address, anyway: true }) as { session_id: string };
+  const started = await client.call("initiate_session", { ...fields, target: address }) as { session_id: string };
   await client.call("send", { ...fields, session_id: started.session_id, text: HELLO, signal: "over" });
   const deadline = Date.now() + REPLY_WAIT_SECONDS * 1000;
   try {

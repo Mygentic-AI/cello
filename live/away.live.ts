@@ -90,7 +90,7 @@ const views = (m: Machine, agent: string): View[] => (m.ok(["sessions", "--all",
 const view = (m: Machine, agent: string, session: string): View | undefined => views(m, agent).find((s) => s.session_id === session);
 
 function call(a: Machine, aName: string, bId: string): string {
-  const answer = a.ok(["initiate-session", "--anyway", bId, "--agent", aName]);
+  const answer = a.ok(["initiate-session", bId, "--agent", aName]);
   assert.equal(answer["state"], "active");
   return answer["session_id"] as string;
 }
@@ -178,7 +178,7 @@ test("one message closes a never-answered session, tells the caller, and frees t
   idOf(a, "Gus");
   b.ok(["settings-set", "bounds.unknown.max_sessions", "1", "--agent", "Fay"]);
   const session = call(a, "Gus", bId);
-  const over = a.ok(["initiate-session", "--anyway", bId, "--agent", "Gus"]);
+  const over = a.ok(["initiate-session", bId, "--agent", "Gus"]);
   assert.equal(over["state"], "refused", "the slot is taken");
   await greetingOf(a, "Gus", session);
   a.ok(["send", session, "my one message", "--over", "--agent", "Gus"]);
@@ -211,7 +211,7 @@ test("a suspended agent sends no greeting", async () => {
   idOf(a, "Uma");
   const terminal = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliPath, "suspend", "--agent", "Tam"], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: b.home } });
   assert.match(terminal.stdout, /"status":\s*"suspended"/);
-  const answer = a.run(["initiate-session", "--anyway", bId, "--agent", "Uma"]);
+  const answer = a.run(["initiate-session", bId, "--agent", "Uma"]);
   await new Promise((resolve) => setTimeout(resolve, 2_000));
   assert.deepEqual((a.ok(["greetings", "--agent", "Uma"]) as { greetings: unknown[] }).greetings, [], `the call said ${answer.stderr}`);
 });
@@ -253,7 +253,7 @@ test("an offline daemon can't greet: the caller is told so, and the greeting com
   const a = machine();
   idOf(a, "Kit");
   b.logout();
-  const answer = a.ok(["initiate-session", "--anyway", bId, "--agent", "Kit"]);
+  const answer = a.ok(["initiate-session", bId, "--agent", "Kit"]);
   assert.equal(answer["state"], "waiting");
   assert.match(answer["message"] as string, /offline daemon can't send an away greeting/);
   assert.deepEqual((a.ok(["greetings", "--agent", "Kit"]) as { greetings: unknown[] }).greetings, []);
