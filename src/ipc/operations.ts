@@ -284,7 +284,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "List your agents, and whether each one is online.",
     scoped: false,
     acts: false,
-    description: "List the agents on this machine, whether each one is online, and how much is unread for each.",
+    description: "List the agents on this machine, whether each one is online, and how much is unread for each. With --labels, print one line per agent, its name then its agent_id, to paste into the account site so it can show your agents' names. Nothing is sent: you carry it there.",
     params: [],
   },
   {

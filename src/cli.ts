@@ -45,7 +45,7 @@ function usageLine(op: Operation): string {
     return p.required ? text : `[${text}]`;
   });
   const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
-  const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : []), ...(op.plain ? ["[--json]"] : [])];
+  const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : []), ...(op.plain ? ["[--json]"] : []), ...(op.command === "agents" ? ["[--labels]"] : [])];
   return `cello ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
 }
 
@@ -88,7 +88,7 @@ Usage: cello <command> [args]
 ${sections.join("\n\n")}
 
 Run 'cello <command> --help' for details on any command.
-Commands print JSON on one line, and --pretty indents it.
+Commands print indented JSON.
 A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
 Any agent that can run a shell command can use all of this with no MCP.
@@ -134,10 +134,14 @@ function readValue(param: Param, raw: string): string | number {
   return raw;
 }
 
-// One line by default, because the usual reader is a program or an agent paying for every character.
-let pretty = false;
+// Indented always: the few extra characters cost an agent next to nothing, and a person can read it.
 let asJson = false;
-const render = (value: unknown): string => `${pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`;
+// cello agents --labels: one line per agent, name then agent_id, for pasting into the account site.
+// The person carries it there; the daemon never sends names anywhere.
+let labels = false;
+const render = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+const labelLines = (value: unknown): string =>
+  ((value as { agents?: { name: string; agent_id: string }[] }).agents ?? []).map((a) => `${a.name} ${a.agent_id}\n`).join("");
 
 // Fails on anything it doesn't recognise, so a mistyped flag can't quietly change what a command does.
 function parse(op: Operation, args: string[]): Record<string, unknown> {
@@ -155,8 +159,8 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
       flagsEnded = true;
       continue;
     }
-    if (arg === "--pretty") {
-      pretty = true;
+    if (op.command === "agents" && arg === "--labels") {
+      labels = true;
       continue;
     }
     if (op.plain && arg === "--json") {
@@ -562,7 +566,7 @@ async function main(): Promise<void> {
   }
   const result = answer as { event?: string; ok?: boolean; agent_id?: string };
   client.close();
-  process.stdout.write(op.plain && !asJson ? op.plain(result as never) : render(result));
+  process.stdout.write(labels ? labelLines(result) : op.plain && !asJson ? op.plain(result as never) : render(result));
   // The id, never the name: a name is a label, and it could later mean a different agent.
   if (op.method === "use_agent") writeFileSync(currentAgentFile(), `${result.agent_id as string}\n`, { mode: 0o600 });
   if (op.method === "stop_using_agent" && currentAgent() === result.agent_id) rmSync(currentAgentFile());

@@ -118,7 +118,13 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   const peek = ok(["transcript", session, "--agent", "Hugo"]) as { entries: { text: string }[]; read_position: number };
   assert.deepEqual([peek.entries.map((e) => e.text), peek.read_position], [["--hello from a pipe"], 0], "a transcript doesn't count as reading");
   assert.equal((ok(["sessions", "--agent", "Hugo"]) as { sessions: { unread: number }[] }).sessions[0]?.unread, 1);
-  assert.deepEqual((ok(["agents"]) as { agents: { name: string; online: boolean }[] }).agents.map((a) => [a.name, a.online]), [["Gail", true], ["Hugo", true]]);
+  const listed = cello(["agents"]);
+  assert.deepEqual((listed.json as { agents: { name: string; online: boolean }[] }).agents.map((a) => [a.name, a.online]), [["Gail", true], ["Hugo", true]]);
+  assert.match(listed.stdout, /^\{\n {2}"agents"/, "output is indented, with no flag");
+  // --labels is what a person pastes into the account site: name, then the 64-hex id, one agent per line.
+  const ids = (listed.json as { agents: { agent_id: string }[] }).agents.map((a) => a.agent_id);
+  assert.equal(cello(["agents", "--labels"]).stdout, `Gail ${ids[0]}\nHugo ${ids[1]}\n`);
+  assert.equal(cello(["agents", "--pretty"]).status, 2, "--pretty is gone");
 
   // wait is how an agent with no doorbell learns something arrived.
   const woke = ok(["wait", "--agent", "Hugo", "--timeout-seconds", "20"]);
