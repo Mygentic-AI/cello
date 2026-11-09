@@ -1086,7 +1086,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     session_arg = session_arg if isinstance(session_arg, str) and session_arg else None
 
     if in_client:
-        _track_in_client(is_initiate, is_close, failure, session_arg, result, kwargs)
+        _track_in_client(is_initiate, failure, session_arg, result, kwargs)
         return
     if is_send:
         ended = isinstance(failure, str) and failure in SESSION_ENDED_CODES
@@ -1095,8 +1095,9 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             adapter._run_on_loop(adapter._clear_awaiting, session_arg)
         return
     if is_close:
+        # The binding stays: the other side's close can still arrive, and it belongs in this chat. It goes when the
+        # daemon says the session has closed, or when pruning finds it gone.
         if failure is None and session_arg:
-            adapter._run_on_loop(adapter._unbind_session, session_arg)
             adapter._run_on_loop(adapter._clear_awaiting, session_arg)
         return
     if failure is not None:
@@ -1112,16 +1113,10 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     adapter._run_on_loop(adapter._bind_session, session_id, chat_id)
 
 
-def _track_in_client(is_initiate: bool, is_close: bool, failure: Any, session_arg: Optional[str], result: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
+def _track_in_client(is_initiate: bool, failure: Any, session_arg: Optional[str], result: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
     """Bindings from a process with no adapter. Reminders for unsent replies stay with the gateway's own chats."""
     path = _bindings_file(_hermes_home())
-    if is_close:
-        if failure is None and session_arg:
-            try:
-                _update_bindings(path, lambda b: b.pop(session_arg, None))
-            except Exception as exc:
-                logger.error("[cello] Could not remove the binding for session %s from %s: %s", session_arg, path, exc)
-        return
+    # A close leaves the binding, as in the gateway: the other side's close still has to find this chat.
     if not is_initiate or failure is not None:
         return
     session_id = result.get("session_id")

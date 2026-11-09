@@ -40,6 +40,12 @@ def client() -> None:
         args={"agent": "Desk", "target": "f" * 64},
         result=json.dumps({"result": json.dumps({"session_id": SESSION, "state": "active"})}),
     )
+    # Closing this side first: the other side's close comes later, and must still find this chat.
+    module._on_post_tool_call(
+        tool_name="mcp__cello__cello_close_session",
+        args={"agent": "Desk", "session_id": SESSION},
+        result=json.dumps({"result": json.dumps({"closed": True, "state": "active", "peer_closed": False})}),
+    )
     # A backend that died and left its socket behind.
     import socket
     stale = socket.socket(socket.AF_UNIX)
