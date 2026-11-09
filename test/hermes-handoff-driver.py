@@ -56,17 +56,29 @@ def client() -> None:
 
 
 async def gateway() -> None:
+    from types import SimpleNamespace
     from gateway.config import PlatformConfig
     from hermes_cli.plugins import get_plugin_manager
 
     get_plugin_manager().discover_and_load()
     module = next(m for m in sys.modules.values() if getattr(m, "CelloAdapter", None) is not None and hasattr(m, "_on_post_tool_call"))
     adapter = module.CelloAdapter(PlatformConfig(enabled=True, extra={"agent_name": "Desk"}))
-    adapter._refresh_bindings()
-    landing = adapter._landing_for(SESSION)
-    took = await adapter._hand_to_client(landing, "[CELLO] a reply on session " + SESSION) if landing else False
+    adapter._loop = asyncio.get_running_loop()
+    # As in a gateway that started before the chat opened its session: only a fresh read finds the binding.
+    adapter._bindings = {}
+    # The gateway's own chats. The Desktop chat isn't one of them.
+    adapter.gateway_runner = SimpleNamespace(session_store=SimpleNamespace(list_sessions=lambda: []), adapters={})
+    fallback = []
+
+    async def own_chat(event):
+        fallback.append(event.text)
+
+    adapter.handle_message = own_chat
+    # The daemon says the session closed before the other side's close is through screening.
+    await adapter._on_notification({"notification": "session_closed", "data": {"session_id": SESSION}})
+    await adapter._start_turn("Desk", "f" * 64, "[CELLO] a reply on session " + SESSION, {"session_id": SESSION}, "message")
     refused = await adapter._hand_to_client("20261109_000000_aaaaaa", "for a chat nobody has open")
-    print(json.dumps({"landing": landing, "took": took, "refused": refused}), flush=True)
+    print(json.dumps({"landing": adapter._landing_for(SESSION), "fallback": fallback, "refused": refused}), flush=True)
 
 
 if __name__ == "__main__":

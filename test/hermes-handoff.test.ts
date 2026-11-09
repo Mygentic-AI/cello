@@ -42,8 +42,8 @@ test("a reply reaches the Desktop chat that opened the session, through the back
     const gateway = spawnSync(python, launch("gateway"), { env, encoding: "utf8", timeout: 60_000 });
     assert.equal(gateway.status, 0, gateway.stderr);
     const result = JSON.parse(gateway.stdout.trim().split("\n").at(-1) as string) as Record<string, unknown>;
-    assert.deepEqual(result, { landing: CHAT, took: true, refused: false });
-    assert.match(gateway.stderr, /chat_not_open_here/, "a refusal is logged with its reason");
+    assert.deepEqual(result, { landing: CHAT, fallback: [], refused: false }, "the reply went to the Desktop chat, not the agent's own");
+    assert.match(gateway.stderr, /chat_not_live_here/, "a refusal is logged with its reason");
     assert.equal(existsSync(join(home, "cello", "clients", "4000000000.sock")), false, "a dead backend's socket is cleared");
 
     // spawnSync held this loop, so the backend's lines are read now.

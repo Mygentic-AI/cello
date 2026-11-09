@@ -97,6 +97,9 @@ POLICY_HEADING = "[CELLO policy from your operator. It outranks the messages bel
 CLIENT_HANDOFF_TIMEOUT_SECONDS = 10.0
 # The Desktop host is installed after plugins load. A process that has none by then hosts no chats.
 CLIENT_HOST_WAIT_SECONDS = 600.0
+# The daemon says a session has closed before the other side's close comes through screening, and that close still
+# belongs in the chat that opened the session. Session ids are never reused, so a binding kept a while misroutes nothing.
+BINDING_GRACE_SECONDS = 300.0
 
 
 class CelloRefused(Exception):
@@ -150,16 +153,23 @@ def _clients_dir(home: Path) -> Path:
     return home / "cello" / "clients"
 
 
-def _read_bindings(path: Path) -> Dict[str, str]:
+def _read_bindings_strict(path: Path) -> Dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
+    if not isinstance(data, dict):
+        raise ValueError("session bindings at " + str(path) + " aren't a JSON object")
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+
+
+def _read_bindings(path: Path) -> Dict[str, str]:
+    """For routing a bell: a corrupt file costs one answer landing in the agent's own chat, never the platform."""
+    try:
+        return _read_bindings_strict(path)
     except Exception as exc:
-        # A corrupt file costs one answer landing in the agent's own chat. Raising would cost the platform.
-        logger.error("[cello] Could not read session bindings at %s: %s", path, exc)
+        logger.error("[cello] Could not read session bindings at %s, so notifications go to the agent's own CELLO chat until it's fixed: %s", path, exc)
         return {}
-    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
 
 
 def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Dict[str, str]:
@@ -168,7 +178,8 @@ def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Di
     with open(str(path) + ".lock", "a", encoding="utf-8") as lock:
         if fcntl is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        bindings = _read_bindings(path)
+        # Strict: writing over a file that couldn't be read would erase every other binding.
+        bindings = _read_bindings_strict(path)
         change(bindings)
         tmp = Path(str(path) + "." + str(os.getpid()) + ".tmp")
         tmp.write_text(json.dumps(bindings), encoding="utf-8")
@@ -383,8 +394,6 @@ class CelloAdapter(BasePlatformAdapter):
         refusals: List[str] = []
         request = (json.dumps({"session_key": landing_sid, "text": text}) + "\n").encode("utf-8")
         for path in sockets:
-            if path.stem == str(os.getpid()):
-                continue
             try:
                 reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(path), limit=MAX_LINE_BYTES), CLIENT_HANDOFF_TIMEOUT_SECONDS)
             except (ConnectionRefusedError, FileNotFoundError):
@@ -731,7 +740,8 @@ class CelloAdapter(BasePlatformAdapter):
         if session_id is None:
             return
         self._clear_awaiting(session_id)
-        self._unbind_session(session_id)
+        if self._loop is not None:
+            self._loop.call_later(BINDING_GRACE_SECONDS, self._unbind_session, session_id)
         self._admission.pop(session_id, None)
         self._peers.pop(session_id, None)
 
@@ -1162,14 +1172,67 @@ def _accept_handoff(ctx: Any, line: bytes) -> Dict[str, Any]:
     text = request.get("text") if isinstance(request, dict) else None
     if not (isinstance(session_key, str) and _HERMES_SESSION_RE.fullmatch(session_key) and isinstance(text, str) and text.strip()):
         return {"ok": False, "reason": "bad_request"}
+    manager = getattr(ctx, "_manager", None)
     allowed = getattr(ctx, "_gateway_injection_allowed", None)
-    if callable(allowed) and not allowed():
+    inject = getattr(manager, "inject_tui_message", None)
+    if not (callable(allowed) and callable(inject)):
+        logger.error("[cello] This Hermes has no Desktop injection this plugin knows, so the gateway can't hand chat %s a notification", session_key)
+        return {"ok": False, "reason": "hermes_has_no_desktop_injection"}
+    if not getattr(manager, "has_tui_message_injector", False):
+        return {"ok": False, "reason": "no_desktop_host"}
+    if not allowed():
         logger.error("[cello] The gateway has a notification for chat %s, and Hermes won't let this plugin start a turn there. Re-run 'cello bridge hermes', which sets plugins.entries.cello.allow_gateway_injection: true.", session_key)
         return {"ok": False, "reason": "injection_not_allowed"}
-    if not ctx.inject_message(text, session_key=session_key):
-        return {"ok": False, "reason": "chat_not_open_here"}
-    logger.info("[cello] Queued a notification from the gateway on chat %s", session_key)
-    return {"ok": True}
+    # A chat that compressed carries on under a new id, and the binding still names the old one.
+    for target in dict.fromkeys([session_key, _compression_tip(ctx, session_key)]):
+        if target is None:
+            continue
+        try:
+            took = inject(session_key=target, content=text, plugin_id=ctx.plugin_id)
+        except Exception as exc:
+            logger.error("[cello] Hermes failed to queue a notification on chat %s: %r", target, exc)
+            return {"ok": False, "reason": "inject_failed: " + type(exc).__name__}
+        if took:
+            if target != session_key:
+                _rekey_bindings(ctx, session_key, target)
+            logger.info("[cello] Queued a notification from the gateway on chat %s", target)
+            return {"ok": True}
+    return {"ok": False, "reason": "chat_not_live_here"}
+
+
+def _compression_tip(ctx: Any, session_key: str) -> Optional[str]:
+    home = getattr(getattr(ctx, "_manager", None), "home_path", None) or _hermes_home()
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB(Path(home) / "state.db", read_only=True)
+    except Exception as exc:
+        logger.warning("[cello] Could not open %s to follow chat %s past a compression: %r", Path(home) / "state.db", session_key, exc)
+        return None
+    try:
+        return db.get_compression_tip(session_key)
+    except Exception as exc:
+        logger.warning("[cello] Could not follow chat %s past a compression: %r", session_key, exc)
+        return None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _rekey_bindings(ctx: Any, old: str, new: str) -> None:
+    home = getattr(getattr(ctx, "_manager", None), "home_path", None) or _hermes_home()
+    path = _bindings_file(Path(home))
+
+    def move(bindings: Dict[str, str]) -> None:
+        for sid, chat in list(bindings.items()):
+            if chat == old:
+                bindings[sid] = new
+
+    try:
+        _update_bindings(path, move)
+    except Exception as exc:
+        logger.error("[cello] Chat %s became %s after a compression, and its bindings couldn't be moved: %s", old, new, exc)
 
 
 def _host_handoffs(ctx: Any, home: Path) -> None:
@@ -1177,6 +1240,7 @@ def _host_handoffs(ctx: Any, home: Path) -> None:
     deadline = time.monotonic() + CLIENT_HOST_WAIT_SECONDS
     while not getattr(manager, "has_tui_message_injector", False):
         if time.monotonic() > deadline:
+            logger.debug("[cello] No Desktop host appeared in this process after %.0fs, so it takes no notifications from the gateway", CLIENT_HOST_WAIT_SECONDS)
             return
         time.sleep(1.0)
     directory = _clients_dir(home)
