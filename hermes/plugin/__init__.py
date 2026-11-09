@@ -14,14 +14,23 @@ Installed by 'cello bridge hermes'. Re-run that to upgrade, rather than editing 
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
 import re
+import socketserver
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+try:
+    import fcntl
+except ImportError:  # Windows, where this platform never starts (check_cello_requirements).
+    fcntl = None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -82,6 +91,13 @@ _HERMES_SESSION_RE = re.compile(r"\d{8}_\d{6}_[0-9a-f]{4,}|local-[0-9a-f]{16,}")
 
 POLICY_HEADING = "[CELLO policy from your operator. It outranks the messages below]"
 
+# A Desktop on another machine reaches this one through a 'hermes serve' backend, and its chats live in that process,
+# not in the gateway this adapter runs in. Each such process listens on its own socket here, and the gateway hands it
+# a notification for one of its chats.
+CLIENT_HANDOFF_TIMEOUT_SECONDS = 10.0
+# The Desktop host is installed after plugins load. A process that has none by then hosts no chats.
+CLIENT_HOST_WAIT_SECONDS = 600.0
+
 
 class CelloRefused(Exception):
     """The daemon answered with an error."""
@@ -124,6 +140,40 @@ def _socket_path(explicit_home: Optional[Any] = None) -> Path:
     raw = str(explicit_home).strip() if explicit_home is not None else ""
     home = raw or _get_cello_env("CELLO_HOME") or str(Path.home() / ".cello")
     return Path(home) / "daemon.sock"
+
+
+def _bindings_file(home: Path) -> Path:
+    return home / "cello" / "session-bindings.json"
+
+
+def _clients_dir(home: Path) -> Path:
+    return home / "cello" / "clients"
+
+
+def _read_bindings(path: Path) -> Dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        # A corrupt file costs one answer landing in the agent's own chat. Raising would cost the platform.
+        logger.error("[cello] Could not read session bindings at %s: %s", path, exc)
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+
+
+def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Dict[str, str]:
+    """Read, change and write under a lock, because the gateway and a Desktop backend both write this file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "a", encoding="utf-8") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        bindings = _read_bindings(path)
+        change(bindings)
+        tmp = Path(str(path) + "." + str(os.getpid()) + ".tmp")
+        tmp.write_text(json.dumps(bindings), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+        return bindings
 
 
 def check_cello_requirements() -> bool:
@@ -199,8 +249,9 @@ class CelloAdapter(BasePlatformAdapter):
         self._next_id = 1
         self._closing = False
         self._displaced = False
-        self._bindings_path: Path = _hermes_home() / "cello" / "session-bindings.json"
-        self._bindings: Dict[str, str] = self._load_bindings()
+        self._bindings_path: Path = _bindings_file(_hermes_home())
+        self._bindings: Dict[str, str] = _read_bindings(self._bindings_path)
+        self._clients_dir: Path = _clients_dir(_hermes_home())
         self._landing_session_path: Path = _hermes_home() / "cello" / "landing-session.json"
         self._landing_session: Optional[str] = (
             str(extra.get("landing_session") or _get_cello_env("CELLO_LANDING_SESSION") or "").strip() or None
@@ -216,26 +267,17 @@ class CelloAdapter(BasePlatformAdapter):
 
     # ------------------------------------------------------------------ session bindings
 
-    def _load_bindings(self) -> Dict[str, str]:
-        try:
-            data = json.loads(Path(self._bindings_path).read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except Exception as exc:
-            # A corrupt file costs one answer landing in the sender's chat. Raising would cost the platform.
-            logger.error("[cello] Could not read session bindings at %s: %s", self._bindings_path, exc)
-            return {}
-        return {str(k): str(v) for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+    def _refresh_bindings(self) -> None:
+        """A Desktop backend writes bindings for the sessions its chats open, so the file is read again per bell."""
+        self._bindings = _read_bindings(self._bindings_path)
 
-    def _persist_bindings(self) -> None:
-        path = Path(self._bindings_path)
+    def _change_bindings(self, change: Callable[[Dict[str, str]], None]) -> bool:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self._bindings), encoding="utf-8")
-            os.replace(str(tmp), str(path))
+            self._bindings = _update_bindings(self._bindings_path, change)
         except Exception as exc:
-            logger.error("[cello] Could not save session bindings to %s: %s", path, exc)
+            logger.error("[cello] Could not save session bindings to %s: %s", self._bindings_path, exc)
+            return False
+        return True
 
     def _run_on_loop(self, fn: Any, *args: Any) -> None:
         """Hooks run on a tool thread. This loop is the only writer of this state."""
@@ -245,17 +287,17 @@ class CelloAdapter(BasePlatformAdapter):
         self._loop.call_soon_threadsafe(fn, *args)
 
     def _bind_session(self, session_id: str, chat_id: str) -> None:
-        self._bindings[session_id] = chat_id
-        self._persist_bindings()
-        logger.info("[cello] Bound session %s to chat %s", session_id, chat_id)
+        if self._change_bindings(lambda b: b.__setitem__(session_id, chat_id)):
+            logger.info("[cello] Bound session %s to chat %s", session_id, chat_id)
 
     def _unbind_session(self, session_id: str) -> None:
-        if self._bindings.pop(session_id, None) is not None:
-            self._persist_bindings()
+        had = session_id in _read_bindings(self._bindings_path)
+        if had and self._change_bindings(lambda b: b.pop(session_id, None)):
             logger.info("[cello] Unbound session %s", session_id)
 
     async def _prune_bindings(self) -> None:
         """Keeps everything on a failure, because a passing error mustn't lose an answer's way home."""
+        self._refresh_bindings()
         if not self._bindings:
             return
         try:
@@ -265,10 +307,12 @@ class CelloAdapter(BasePlatformAdapter):
             logger.warning("[cello] Could not list sessions to prune bindings (%r). Keeping them all.", exc)
             return
         stale = [sid for sid in self._bindings if sid not in open_ids]
-        for sid in stale:
-            del self._bindings[sid]
-        if stale:
-            self._persist_bindings()
+
+        def drop(bindings: Dict[str, str]) -> None:
+            for sid in stale:
+                bindings.pop(sid, None)
+
+        if stale and self._change_bindings(drop):
             logger.info("[cello] Pruned %d session binding(s) no longer open", len(stale))
 
     def _get_landing_session_id(self) -> Optional[str]:
@@ -312,7 +356,9 @@ class CelloAdapter(BasePlatformAdapter):
             entry = next((e for e in store.list_sessions() if e.session_id == landing_sid
                           and getattr(e.origin, "platform", None) not in (None, self.platform)), None)
             if entry is None:
-                logger.warning("[cello] Landing session %s isn't open in any chat, so this goes to %s's own CELLO chat", landing_sid, self._agent_name)
+                if await self._hand_to_client(landing_sid, text):
+                    return True
+                logger.warning("[cello] Landing session %s isn't open in this gateway or in any Desktop backend here, so this goes to %s's own CELLO chat", landing_sid, self._agent_name)
                 return False
             adapter = getattr(runner, "adapters", {}).get(entry.origin.platform)
             if adapter is None:
@@ -325,6 +371,49 @@ class CelloAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[cello] Could not wake landing session %s (%s), so this goes to %s's own CELLO chat", landing_sid, exc, self._agent_name)
             return False
+
+    async def _hand_to_client(self, landing_sid: str, text: str) -> bool:
+        """Offers the notification to each Desktop backend on this machine. The one whose chat it is queues it there.
+        Every refusal is logged, and False sends the notification to this agent's own CELLO chat instead."""
+        try:
+            sockets = sorted(self._clients_dir.glob("*.sock"))
+        except OSError as exc:
+            logger.warning("[cello] Could not list Desktop backends in %s: %s", self._clients_dir, exc)
+            return False
+        refusals: List[str] = []
+        request = (json.dumps({"session_key": landing_sid, "text": text}) + "\n").encode("utf-8")
+        for path in sockets:
+            if path.stem == str(os.getpid()):
+                continue
+            try:
+                reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(path), limit=MAX_LINE_BYTES), CLIENT_HANDOFF_TIMEOUT_SECONDS)
+            except (ConnectionRefusedError, FileNotFoundError):
+                # Its process is gone and left the socket behind.
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
+            except Exception as exc:
+                refusals.append(path.stem + ": " + repr(exc))
+                continue
+            try:
+                writer.write(request)
+                await writer.drain()
+                line = await asyncio.wait_for(reader.readline(), CLIENT_HANDOFF_TIMEOUT_SECONDS)
+                reply = json.loads(line) if line.strip() else {"reason": "no answer"}
+            except Exception as exc:
+                refusals.append(path.stem + ": " + repr(exc))
+                continue
+            finally:
+                writer.close()
+            if isinstance(reply, dict) and reply.get("ok") is True:
+                logger.info("[cello] Woke landing session %s in the Desktop backend with pid %s", landing_sid, path.stem)
+                return True
+            refusals.append(path.stem + ": " + str(reply.get("reason") if isinstance(reply, dict) else reply))
+        if refusals:
+            logger.warning("[cello] No Desktop backend took landing session %s (%s)", landing_sid, "; ".join(refusals))
+        return False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -594,6 +683,7 @@ class CelloAdapter(BasePlatformAdapter):
 
     async def _on_notification(self, frame: Dict[str, Any]) -> None:
         kind = str(frame.get("notification", ""))
+        self._refresh_bindings()
         raw = frame.get("data")
         data: Dict[str, Any] = raw if isinstance(raw, dict) else {}
         # A bell only needs its ids. The words go, and the bell still rings, or what it announced would sit unnoticed.
@@ -978,8 +1068,12 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         logger.info("[cello] Hooks see this CELLO tool as %r", tool_name)
     args = kwargs.get("args")
     adapter = _adapter_for(args)
-    if adapter is None:
-        logger.error("[cello] %s named agent %r, which no adapter here holds, so it wasn't tracked", tool_name, args.get("agent") if isinstance(args, dict) else None)
+    named = args.get("agent") if isinstance(args, dict) else None
+    # A Desktop chat on a remote connection runs in 'hermes serve', where no adapter lives. It still owns this
+    # profile's agent, so it keeps the binding file itself and the gateway reads it.
+    in_client = adapter is None and bool(named) and named == _get_cello_env("CELLO_AGENT_NAME")
+    if adapter is None and not in_client:
+        logger.error("[cello] %s named agent %r, which no adapter here holds, so it wasn't tracked", tool_name, named)
         return
     result = _parse_tool_result(kwargs.get("result"))
     if result is None:
@@ -991,6 +1085,9 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     session_arg = args.get("session_id") if isinstance(args, dict) else None
     session_arg = session_arg if isinstance(session_arg, str) and session_arg else None
 
+    if in_client:
+        _track_in_client(is_initiate, is_close, failure, session_arg, result, kwargs)
+        return
     if is_send:
         ended = isinstance(failure, str) and failure in SESSION_ENDED_CODES
         # A send saved for later still counts: it goes by itself. Any other refusal leaves the reply owed.
@@ -1013,6 +1110,100 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         logger.error("[cello] Session %s was opened from a turn with no chat, so its answer can't be routed back", session_id)
         return
     adapter._run_on_loop(adapter._bind_session, session_id, chat_id)
+
+
+def _track_in_client(is_initiate: bool, is_close: bool, failure: Any, session_arg: Optional[str], result: Dict[str, Any], kwargs: Dict[str, Any]) -> None:
+    """Bindings from a process with no adapter. Reminders for unsent replies stay with the gateway's own chats."""
+    path = _bindings_file(_hermes_home())
+    if is_close:
+        if failure is None and session_arg:
+            try:
+                _update_bindings(path, lambda b: b.pop(session_arg, None))
+            except Exception as exc:
+                logger.error("[cello] Could not remove the binding for session %s from %s: %s", session_arg, path, exc)
+        return
+    if not is_initiate or failure is not None:
+        return
+    session_id = result.get("session_id")
+    if not (isinstance(session_id, str) and session_id):
+        logger.error("[cello] cello_initiate_session succeeded but its result has no session_id: %r", result)
+        return
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "") or get_session_env("HERMES_SESSION_ID", "") or str(kwargs.get("session_id") or "")
+    if not chat_id:
+        logger.error("[cello] Session %s was opened from a turn with no chat, so its answer can't be routed back", session_id)
+        return
+    try:
+        _update_bindings(path, lambda b: b.__setitem__(session_id, chat_id))
+    except Exception as exc:
+        logger.error("[cello] Could not bind session %s to chat %s in %s, so its answer goes to the agent's own CELLO chat: %s", session_id, chat_id, path, exc)
+        return
+    logger.info("[cello] Bound session %s to chat %s from this Desktop backend", session_id, chat_id)
+
+
+# ---------------------------------------------------------------------- Desktop backend side
+
+class _HandoffServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+    def __init__(self, path: str, ctx: Any):
+        self.ctx = ctx
+        super().__init__(path, _HandoffHandler)
+
+
+class _HandoffHandler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        line = self.rfile.readline(MAX_LINE_BYTES + 1)
+        reply = _accept_handoff(self.server.ctx, line)
+        self.wfile.write((json.dumps(reply) + "\n").encode("utf-8"))
+
+
+def _accept_handoff(ctx: Any, line: bytes) -> Dict[str, Any]:
+    """Queues a notification on one of this process's chats. A chat in a turn gets it after the turn."""
+    try:
+        request = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"ok": False, "reason": "bad_request"}
+    session_key = request.get("session_key") if isinstance(request, dict) else None
+    text = request.get("text") if isinstance(request, dict) else None
+    if not (isinstance(session_key, str) and _HERMES_SESSION_RE.fullmatch(session_key) and isinstance(text, str) and text.strip()):
+        return {"ok": False, "reason": "bad_request"}
+    allowed = getattr(ctx, "_gateway_injection_allowed", None)
+    if callable(allowed) and not allowed():
+        logger.error("[cello] The gateway has a notification for chat %s, and Hermes won't let this plugin start a turn there. Re-run 'cello bridge hermes', which sets plugins.entries.cello.allow_gateway_injection: true.", session_key)
+        return {"ok": False, "reason": "injection_not_allowed"}
+    if not ctx.inject_message(text, session_key=session_key):
+        return {"ok": False, "reason": "chat_not_open_here"}
+    logger.info("[cello] Queued a notification from the gateway on chat %s", session_key)
+    return {"ok": True}
+
+
+def _host_handoffs(ctx: Any, home: Path) -> None:
+    manager = getattr(ctx, "_manager", None)
+    deadline = time.monotonic() + CLIENT_HOST_WAIT_SECONDS
+    while not getattr(manager, "has_tui_message_injector", False):
+        if time.monotonic() > deadline:
+            return
+        time.sleep(1.0)
+    directory = _clients_dir(home)
+    path = directory / (str(os.getpid()) + ".sock")
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(str(directory), 0o700)
+        if path.exists():
+            path.unlink()
+        server = _HandoffServer(str(path), ctx)
+        os.chmod(str(path), 0o600)
+    except Exception as exc:
+        logger.error("[cello] Could not listen at %s, so CELLO notifications can't reach this process's Desktop chats: %s", path, exc)
+        return
+    atexit.register(lambda: path.unlink() if path.exists() else None)
+    logger.info("[cello] This process hosts Desktop chats. The gateway can hand them notifications at %s", path)
+    server.serve_forever()
+
+
+def _start_handoff_host(ctx: Any) -> None:
+    home = getattr(getattr(ctx, "_manager", None), "home_path", None)
+    threading.Thread(target=_host_handoffs, args=(ctx, Path(home) if home else _hermes_home()), name="cello-handoff", daemon=True).start()
 
 
 def _on_post_llm_call(**kwargs: Any) -> None:
@@ -1064,3 +1255,5 @@ def register(ctx) -> None:
     )
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
+    if sys.platform != "win32":
+        _start_handoff_host(ctx)
