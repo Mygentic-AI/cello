@@ -319,18 +319,18 @@ hermes connects one Hermes profile to one CELLO agent on this machine. Run it ag
 A flag you leave out goes back to its default.
 
 The bridge decides where the agent's notifications go: a new session request, a message, a channel post.
-  --session-scope agent    (default) everything goes to one session. That's the agent's own CELLO session, made the first time,
-                           unless a landing session is set.
+  --session-scope agent    (default) a session the agent opens answers in the Hermes chat that opened it. Everything else goes
+                           to one session: the agent's own CELLO session, made the first time, unless a landing session is set.
   --session-scope peer     each caller gets a session of their own, kept for the next time they call, so two callers never share one.
                            For an agent strangers reach, like a support desk. Channel notices get a session of their own.
-  --landing-session <id>   under agent scope, send everything to this Hermes session instead: a dated id, or a Desktop chat's local-... id.
+  --landing-session <id>   under agent scope, send that to this Hermes session instead: a dated id, or a Desktop chat's local-... id.
   --landing-session current  the Hermes session this command runs in. HERMES_SESSION_ID says which.
   --landing-session default  back to the agent's own CELLO session.
   --channel-notifications on|off  whether a new post on a channel the agent follows wakes it (default on).
 
 An agent can move its own notifications, with no person and no restart: inside Hermes, run
-  cello bridge hermes --agent <name> --landing-session current
-before reaching out, so the reply lands in the session it's working in. Only --agent, --hermes-home and --landing-session go with it.
+  cello bridge hermes --agent <name> --hermes-home <path> --landing-session current
+so sessions others open, and channel posts, land in the session it's working in. Only --agent, --hermes-home and --landing-session go with it.
 Everything else takes a person at a terminal.
 
 A Hermes with several profiles: run this once per profile, with --hermes-home pointing at that profile (for example ~/.hermes/profiles/<name>).
