@@ -93,3 +93,15 @@ test("the plugin isn't enabled unless the tools it needs were added", async () =
   assert.equal((await installBridge(options(home, failing.exec))).ok, false);
   assert.equal(failing.calls.some((c) => c[0] === "plugins"), false);
 });
+
+const injectionOf = (calls: string[][]): string | undefined => calls.find((c) => c[0] === "config" && c[2] === "plugins.entries.cello.allow_gateway_injection")?.[3];
+
+test("agent scope lets the plugin start a turn in a Desktop chat, and peer scope takes that back", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
+  const agentScope = recorder();
+  assert.equal((await installBridge(options(home, agentScope.exec))).ok, true);
+  assert.equal(injectionOf(agentScope.calls), "true");
+  const peerScope = recorder();
+  assert.equal((await installBridge(options(home, peerScope.exec, { sessionScope: "peer" }))).ok, true);
+  assert.equal(injectionOf(peerScope.calls), "false");
+});

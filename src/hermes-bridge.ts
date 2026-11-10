@@ -178,7 +178,10 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   const mcpEnv = [`CELLO_CALLER=${BRIDGE_CALLER}`, ...(process.env["CELLO_HOME"] ? [`CELLO_HOME=${celloHome()}`] : []), ...(tools ? [`CELLO_TOOLS=${tools.join(",")}`] : [])];
   const mcpAdd = ["mcp", "add", "cello", "--env", ...mcpEnv, "--command", process.execPath, "--args", mcpEntry()];
   // The tools first: an enabled plugin with no tools reads messages and can never answer them.
-  const steps = [mcpAdd, ["plugins", "enable", "cello"]];
+  // Under agent scope a notification can land in a Desktop chat that a 'hermes serve' backend holds, and only Hermes' plugin
+  // injection can start a turn there. Peer scope never lands in a Desktop chat, so it's turned off again.
+  const injection = ["config", "set", "plugins.entries.cello.allow_gateway_injection", scope === "agent" ? "true" : "false"];
+  const steps = [mcpAdd, ["plugins", "enable", "cello"], injection];
   const byHand = steps.map((step) => `  hermes ${step.join(" ")}`).join("\n");
   const hermes = (args: string[]): Promise<ExecResult> => (options.exec ?? runHermes)("hermes", args, hermesHome);
   for (const step of steps) {
