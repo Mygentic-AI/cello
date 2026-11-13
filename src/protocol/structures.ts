@@ -446,6 +446,49 @@ export interface StatusWitnessFields {
 export const statusWitnessStructure = structure<StatusWitnessFields>("cello-agent-status-witness-v1", { serverId: HASH_BYTES, agentId: HASH_BYTES, seq: "int", prevHash: HASH_BYTES, statementHash: HASH_BYTES, time: "int" });
 export const statusWitnessBytes = (fields: StatusWitnessFields): Uint8Array => statusWitnessStructure.encode(fields);
 
+// ---- Usage facts ----
+
+// The server's count of one agent's conversations, signed by its identity key. The agent carries it to an issuer, which counts how many
+// of the counterparties have other owners, drops the list, and issues the Usage signal. A conversation counts only when both agents wrote.
+// The server knows no owners, so it can't do that last count itself. Approved by Andre, 2026-11-13 (USAGE-SIGNAL-PLAN.md).
+export const USAGE_FACTS_DOMAIN = "cello-usage-facts";
+// About 12,000 counterparties. A server refuses by name rather than send a list that doesn't fit.
+export const USAGE_FACTS_MAX_BYTES = 400_000;
+const MONTHS_PATTERN = /^(\d{4}-(0[1-9]|1[0-2]):[1-9]\d*(,\d{4}-(0[1-9]|1[0-2]):[1-9]\d*)*)?$/;
+
+export interface UsageFactsFields {
+  serverId: Uint8Array;
+  agentId: Uint8Array;
+  asOf: number;
+  // The first counted conversation's first message, in seconds; null when nothing counts yet.
+  firstActive: number | null;
+  conversations: number;
+  messagesSent: number;
+  messagesReceived: number;
+  // The median of messages per counted conversation, rounded to a whole number.
+  medianMessages: number;
+  // Counted conversations per month, by each one's first message: "2026-08:6,2026-09:11", oldest first. Text, so the array stays flat.
+  months: string;
+  // The distinct counterparties' ids, 32 bytes each, concatenated in ascending order.
+  counterparties: Uint8Array;
+}
+
+export const usageFactsStructure = structure<UsageFactsFields>("cello-usage-facts-v1", { serverId: HASH_BYTES, agentId: HASH_BYTES, asOf: "int", firstActive: "intOrNull", conversations: "int", messagesSent: "int", messagesReceived: "int", medianMessages: "int", months: "text", counterparties: "bytes" }, { maxBytes: USAGE_FACTS_MAX_BYTES, check: (u) => {
+  if (u.counterparties.length % HASH_BYTES !== 0) throw new RangeError("usage counterparties must be whole 32-byte ids");
+  for (let at = HASH_BYTES; at < u.counterparties.length; at += HASH_BYTES) {
+    if (compareBytes(u.counterparties.subarray(at - HASH_BYTES, at), u.counterparties.subarray(at, at + HASH_BYTES)) >= 0) throw new RangeError("usage counterparties must be distinct and in ascending order");
+  }
+  if (!MONTHS_PATTERN.test(u.months)) throw new RangeError("usage months must read like 2026-08:6,2026-09:11");
+  if ((u.conversations === 0) !== (u.firstActive === null)) throw new RangeError("usage firstActive is null exactly when no conversation counts");
+  if (u.counterparties.length / HASH_BYTES > u.conversations) throw new RangeError("usage can't name more counterparties than conversations");
+} });
+export const usageFactsBytes = (fields: UsageFactsFields): Uint8Array => usageFactsStructure.encode(fields);
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return (a[i] as number) - (b[i] as number);
+  return a.length - b.length;
+}
+
 export const ChannelVisibility = { public: 1, private: 2 } as const;
 export type ChannelVisibility = (typeof ChannelVisibility)[keyof typeof ChannelVisibility];
 
