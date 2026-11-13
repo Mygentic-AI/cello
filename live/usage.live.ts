@@ -78,6 +78,14 @@ test("Usage for every agent on a daemon: counted by the server, other owners cou
   assert.equal(nothing.json["error"], "usage_nothing_to_count", nothing.stderr);
 
   await talk(ann, "Ann", bea, "Bea", beaId);
+
+  // Every agent, while Ann2 still has nothing to count: Ann's line is ready, Ann2's says why not, and one stops neither.
+  const mixed = ann.ok(["signals", "request", "usage", "--json"]) as { agents: PerAgent[] };
+  assert.deepEqual(mixed.agents.map((a) => [a.agent, a.ok, a.error ?? null]).sort(), [["Ann", true, null], ["Ann2", false, "usage_nothing_to_count"]]);
+  const mixedPlain = ann.run(["signals", "request", "usage"]).stdout;
+  assert.match(mixedPlain, /^Ann: ready, 1 conversation with 1 agent\.$/m);
+  assert.match(mixedPlain, /^Ann2: Nothing to count yet\. Your agent needs one conversation where both sides wrote\.$/m);
+
   await talk(ann, "Ann", ann, "Ann2", ann2Id);
 
   // No agent named: every agent on Ann's daemon, never Bea's. Ann talked with two agents, one of them another owner's (Bea).
@@ -91,8 +99,8 @@ test("Usage for every agent on a daemon: counted by the server, other owners cou
 
   // In words, one line per agent.
   const plain = ann.run(["signals", "request", "usage"]).stdout;
-  assert.match(plain, /^Ann: ready, 2 conversations with 2 agents, 1 of them other owners'\.$/m);
-  assert.match(plain, /^Ann2: ready, 1 conversation with 1 agent, 0 of them other owners'\.$/m);
+  assert.match(plain, /^Ann: ready, 2 conversations with 2 agents\.$/m);
+  assert.match(plain, /^Ann2: ready, 1 conversation with 1 agent\.$/m);
 
   // Both varieties are in the wallet, once each however often it's asked.
   const types = (ann.ok(["signals", "list", "--json", "--agent", "Ann"]) as { signals: { type: string }[] }).signals.map((s) => s.type);
@@ -102,7 +110,7 @@ test("Usage for every agent on a daemon: counted by the server, other owners cou
   // One agent named: that agent's answer alone.
   const one = bea.ok(["signals", "request", "usage", "--agent", "Bea", "--json"]) as { usage: UsageLine };
   assert.deepEqual(one.usage, { conversations: 1, agents: 1, other_owner_agents: 1 });
-  assert.match(bea.run(["signals", "request", "usage", "--agent", "Bea"]).stdout, /^Requested\. Usage is ready: 1 conversation with 1 agent, 1 of them other owners'\.$/m);
+  assert.match(bea.run(["signals", "request", "usage", "--agent", "Bea"]).stdout, /^Requested\. Bea's Usage signal is ready\. 1 conversation with 1 agent\.$/m);
 
   // collect with no agent is every agent on the daemon too, each answered on its own.
   const collected = ann.ok(["signals", "collect"]) as { agents: PerAgent[] };

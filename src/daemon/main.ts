@@ -112,18 +112,21 @@ function named(params: Record<string, unknown>): string {
   return engine.resolveAgent(text(params, "agent"));
 }
 
-// One answer per agent this daemon holds. A refusal is that agent's line, with its code and words, never the whole call's.
+// One answer per agent this daemon holds, all at once, so a slow issuer costs the call one wait rather than one per agent.
+// Every failure is that agent's line, with its code and words, and never the whole call's: one agent can't stop the rest.
 async function eachAgent(work: (agentHex: string) => Promise<unknown>): Promise<unknown> {
-  const agents: unknown[] = [];
-  for (const agentHex of engine.agentHexes()) {
-    const name = engine.agentName(agentHex);
+  const agents = await Promise.all(engine.agentHexes().map(async (agentHex) => {
+    let name = agentHex;
     try {
-      agents.push({ agent: name, agent_id: agentHex, ok: true, ...(await work(agentHex) as object) });
+      name = engine.agentName(agentHex);
+      return { agent: name, agent_id: agentHex, ok: true, ...(await work(agentHex) as object) };
     } catch (err: unknown) {
-      if (!(err instanceof LocalError)) throw err;
-      agents.push({ agent: name, agent_id: agentHex, ok: false, error: err.code, message: err.message });
+      if (err instanceof LocalError) return { agent: name, agent_id: agentHex, ok: false, error: err.code, message: err.message };
+      const message = err instanceof Error ? err.message : String(err);
+      logEvent("daemon.each_agent.failed", { agent: agentHex, message });
+      return { agent: name, agent_id: agentHex, ok: false, error: "internal_error", message: `This agent's request failed inside the daemon: ${message}` };
     }
-  }
+  }));
   return { agents };
 }
 
@@ -296,7 +299,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return params["agent"] === undefined ? eachAgent((agent) => engine.wallet.collect(agent)) : engine.wallet.collect(named(params));
     case "signals_request":
       if (text(params, "kind") !== "usage") throw new LocalError("bad_argument", "The only signal an agent can request is usage: cello signals request usage");
-      return params["agent"] === undefined ? eachAgent((agent) => engine.wallet.requestUsage(agent)) : engine.wallet.requestUsage(named(params));
+      if (params["agent"] === undefined) return eachAgent((agent) => engine.wallet.requestUsage(agent));
+      return { agent: engine.agentName(named(params)), ...(await engine.wallet.requestUsage(named(params))) };
     case "signals_publish":
       return engine.wallet.publish(acting(params), text(params, "hash"));
     case "signals_unpublish":

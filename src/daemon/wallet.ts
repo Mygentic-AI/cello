@@ -3,7 +3,7 @@ import { decodeCbor } from "../protocol/cbor.ts";
 import { toHex } from "../protocol/encode.ts";
 import type { PublicIdentity } from "../protocol/identity.ts";
 import { type IssuerList, RootKeysNotConfigured, type RootKey, recognisedIssuer, verifyIssuerList } from "../protocol/issuer-list.ts";
-import { checkSignal, issuerKeys, readSignedSignal } from "../protocol/signal.ts";
+import { type TrustSignalEnvelope, checkSignal, issuerKeys, readSignedSignal } from "../protocol/signal.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { NO_EXPIRY_NOTE, unknownIssuerNote } from "../guidance.ts";
 import { LocalError } from "./errors.ts";
@@ -51,7 +51,29 @@ export interface WalletHooks {
 
 export interface SignalRefusal { fault: string; message: string }
 export interface Collected { stored: number; held: number; refused: SignalRefusal[] }
-export interface UsageRequested extends Collected { usage: { conversations: number; agents: number; other_owner_agents: number } }
+export interface UsageCounts { conversations: number; agents: number; other_owner_agents: number }
+export interface UsageRequested extends Collected { usage: UsageCounts }
+
+// The counts a person is told, read from the kept Usage signal alone. None kept is a refusal by name, saying what the checks found.
+export function usageCounts(kept: readonly TrustSignalEnvelope[], refused: readonly SignalRefusal[]): UsageCounts {
+  const usage = kept.find((envelope) => envelope.type === "usage");
+  if (!usage) {
+    const why = refused.length > 0 ? ` What came back failed a check: ${refused.map((r) => r.fault).join(", ")}.` : "";
+    throw new LocalError("usage_missing", `The issuer's answer held no Usage signal that passed every check, so none was stored.${why} Run the same command again.`);
+  }
+  let payload: unknown;
+  try {
+    payload = decodeCbor(usage.payload);
+  } catch {
+    payload = null;
+  }
+  const field = (name: string): number => {
+    const value = (payload as Record<string, unknown> | null)?.[name];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new LocalError("usage_unreadable", `The Usage signal was kept, and its ${name} isn't a whole number, so its counts can't be shown. cello signals list shows it.`);
+    return value;
+  };
+  return { conversations: field("conversations"), agents: field("agents"), other_owner_agents: field("other_owner_agents") };
+}
 
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
 const nowSec = (): number => Math.floor(Date.now() / 1000);
@@ -115,8 +137,14 @@ export class Wallet {
 
   // Keeps what passes every check, and names what doesn't. One bad signal doesn't cost the others.
   async #keep(agentHex: string, files: readonly Uint8Array[]): Promise<Collected> {
+    return (await this.#keepChecked(agentHex, files)).collected;
+  }
+
+  // The same, also handing back the envelopes that passed, so a caller reads only what was checked and kept.
+  async #keepChecked(agentHex: string, files: readonly Uint8Array[]): Promise<{ collected: Collected; kept: TrustSignalEnvelope[] }> {
     const agentId = fromHex(agentHex);
     const result: Collected = { stored: 0, held: 0, refused: [] };
+    const kept: TrustSignalEnvelope[] = [];
     for (const file of files) {
       const checked = await checkSignal(file, { subject: agentHex, now: nowSec() });
       if (!checked.ok) {
@@ -126,10 +154,11 @@ export class Wallet {
       }
       if (this.#signals.put(agentId, checked.signal, file)) result.stored += 1;
       result.held += 1;
+      kept.push(checked.signal.envelope);
     }
     // A signal this replaced may have been public, and then it has to come off the server too. A failure here never fails the collect.
     await this.settlePublic(agentHex, true);
-    return result;
+    return { collected: result, kept };
   }
 
   // Takes back from the server every public signal the wallet has replaced, until the server confirms each. A failure is said loudly,
@@ -187,11 +216,9 @@ export class Wallet {
       const client = this.#client();
       await this.#refreshList(client);
       const answer = await client.requestUsage(this.#hooks.keys(agentHex), facts, server);
-      const collected = await this.#keep(agentHex, answer.signals);
-      const usage = answer.signals.map((file) => readSignedSignal(file).envelope).find((envelope) => envelope.type === "usage");
-      if (!usage) throw new LocalError("usage_missing", "The issuer answered without a Usage signal, so nothing new was stored for it. Run the same command again.");
-      const counts = decodeCbor(usage.payload) as { conversations?: unknown; agents?: unknown; other_owner_agents?: unknown };
-      return { ...collected, usage: { conversations: Number(counts.conversations), agents: Number(counts.agents), other_owner_agents: Number(counts.other_owner_agents) } };
+      const { collected, kept } = await this.#keepChecked(agentHex, answer.signals);
+      // Only from a signal that passed every check and was kept: a forged or lapsed one must never be reported as ready.
+      return { ...collected, usage: usageCounts(kept, collected.refused) };
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
       throw this.#plain(err, "request Usage");

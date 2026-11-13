@@ -40,7 +40,6 @@ import {
   bodyBytes,
   refusedList,
   readBodyBytes,
-  USAGE_FACTS_DOMAIN,
 } from "../protocol/structures.ts";
 import {
   LONG_CIPHERTEXT_BYTES,
@@ -65,11 +64,11 @@ import {
   signedRefuse,
   signedSealRequest,
   signedStatusStatement,
-  signedUsageFacts,
   toB64,
 } from "../protocol/wire.ts";
 import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
 import { LocalError, requirePerson } from "./errors.ts";
+import { checkUsageFacts } from "./usage-facts.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
 import { validateMoniker } from "./who-label.ts";
 import { productionRootKeys } from "../protocol/issuer-roots.ts";
@@ -332,16 +331,7 @@ export class Engine {
       usageFacts: async (agentHex) => {
         const answer = await this.#publicSignalCall(agentHex, undefined, "usage.facts", (agent) => ({ agent: toB64(agent.signer.id) })) as { facts?: unknown };
         const server = this.#serverIdentity();
-        let facts: ReturnType<typeof signedUsageFacts.decode>;
-        try {
-          facts = signedUsageFacts.decode(answer.facts, "facts");
-        } catch (err: unknown) {
-          throw new LocalError("usage_unreadable", `The server's count couldn't be read: ${err instanceof Error ? err.message : String(err)}. Nothing was sent to the issuer.`);
-        }
-        if (!(await verifySignature(server, USAGE_FACTS_DOMAIN, facts.bytes, facts.signature))) {
-          throw new LocalError("usage_forged", "The server's count isn't signed by the server this daemon pinned on first contact, so it wasn't sent to the issuer.");
-        }
-        if (toHex(facts.fields.agentId) !== agentHex) throw new LocalError("usage_wrong_agent", "The server sent a count for a different agent, so it wasn't sent to the issuer.");
+        await checkUsageFacts(server, answer.facts, agentHex);
         return { facts: answer.facts, server: identityCodec.encode(server) };
       },
       readPublic: async (agentHex, address) => {

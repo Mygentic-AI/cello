@@ -49,16 +49,17 @@ export interface Operation extends Definition {
 const ANY_AGENT: Param = { name: "agent", kind: "string", description: "One agent's name or agent_id. Left out, every agent on this daemon." };
 
 interface UsageLine { conversations: number; agents: number; other_owner_agents: number }
-type UsageAnswer = { usage: UsageLine } | { agents: ({ agent: string; ok: true; usage: UsageLine } | { agent: string; ok: false; message: string })[] };
+type UsageAnswer = { agent: string; usage: UsageLine } | { agents: ({ agent: string; ok: true; usage: UsageLine } | { agent: string; ok: false; message: string })[] };
+// The approved words: "Requested. Ada's Usage signal is ready. 47 conversations with 19 agents." and "Ada: ready, 47 conversations with 19 agents."
 const usageSentence = (u: UsageLine): string =>
-  `${u.conversations} conversation${u.conversations === 1 ? "" : "s"} with ${u.agents} agent${u.agents === 1 ? "" : "s"}, ${u.other_owner_agents} of them other owners'.`;
+  `${u.conversations} conversation${u.conversations === 1 ? "" : "s"} with ${u.agents} agent${u.agents === 1 ? "" : "s"}.`;
 function usageText(result: UsageAnswer): string {
-  if ("usage" in result) return `Requested. Usage is ready: ${usageSentence(result.usage)}\n`;
+  if ("usage" in result) return `Requested. ${result.agent}'s Usage signal is ready. ${usageSentence(result.usage)}\n`;
   if (result.agents.length === 0) return "There are no agents on this daemon.\n";
   return `${result.agents.map((a) => (a.ok ? `${a.agent}: ready, ${usageSentence(a.usage)}` : `${a.agent}: ${a.message}`)).join("\n")}\n`;
 }
 
-const SIGNAL_HASH: Param ={ name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
+const SIGNAL_HASH: Param = { name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
 
 const SESSION: Param = { name: "session_id", kind: "string", required: true, positional: true, description: "The session id, 32 hex characters" };
 
