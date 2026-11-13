@@ -40,7 +40,7 @@ test("each notice says how to renew that kind of signal, and only signals from o
   const byName = Object.fromEntries(renewalPlan([row("usage", DAY), row("github_id", DAY), row("email", DAY), row("employer", DAY, { issuer_address: "other.example" })], NOW, false, OURS).expiring.map((e) => [e.name, e]));
   assert.match(expiryNotice(byName["Usage"]!), /^This agent's Usage signal expires on \d{4}-\d{2}-\d{2}\. To renew it, run: cello signals request usage$/);
   assert.match(byName["GitHub"]!.renew, /reconnect that account at https:\/\/trust\.celloprotocol\.com/);
-  assert.match(byName["email"]!.renew, /sign in at https:\/\/trust\.celloprotocol\.com and prove it again/);
+  assert.equal(byName["email"]!.renew, "Sign in at https://trust.celloprotocol.com to renew it, then run: cello signals collect");
   assert.equal(byName["employer"]!.renew, "To renew it, ask whoever issued it.");
 });
 
@@ -87,7 +87,7 @@ test("a signal in its last 30 days is told to the agent once, however often the 
   await wallet.renewal(agentHex, now);
   await wallet.renewal(agentHex, now + 7 * 3600);
   assert.equal(notes.length, 1, "once, however often the check runs");
-  assert.match(notes[0] as string, /phone signal expires on .* sign in at https:\/\/trust\.celloprotocol\.com/);
+  assert.match(notes[0] as string, /phone signal expires on .* Sign in at https:\/\/trust\.celloprotocol\.com to renew it/);
   assert.deepEqual(wallet.expiring(agentHex, now).map((e) => e.name), ["phone"]);
 });
 

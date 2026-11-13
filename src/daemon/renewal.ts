@@ -36,7 +36,8 @@ export function howToRenew(type: string, issuerAddress: string, ourIssuer: strin
   if (issuerAddress !== ourIssuer) return "To renew it, ask whoever issued it.";
   if (isUsage(type)) return "To renew it, run: cello signals request usage";
   if (/^(github|x)(_|$)/.test(type)) return `To renew it, reconnect that account at ${TRUST_SITE}, then run: cello signals collect`;
-  return `To renew it, sign in at ${TRUST_SITE} and prove it again, then run: cello signals collect`;
+  // Signing in renews it there (it proves the owner still holds the address), and the agent then collects the new copy.
+  return `Sign in at ${TRUST_SITE} to renew it, then run: cello signals collect`;
 }
 
 export function renewalPlan(rows: readonly RenewalRow[], now: number, autoRenew: boolean, ourIssuer: string): RenewalPlan {
