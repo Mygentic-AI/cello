@@ -479,6 +479,9 @@ export const usageFactsStructure = structure<UsageFactsFields>("cello-usage-fact
     if (compareBytes(u.counterparties.subarray(at - HASH_BYTES, at), u.counterparties.subarray(at, at + HASH_BYTES)) >= 0) throw new RangeError("usage counterparties must be distinct and in ascending order");
   }
   if (!MONTHS_PATTERN.test(u.months)) throw new RangeError("usage months must read like 2026-08:6,2026-09:11");
+  const months = u.months === "" ? [] : u.months.split(",").map((pair) => pair.split(":") as [string, string]);
+  for (let i = 1; i < months.length; i++) if ((months[i - 1] as [string, string])[0] >= (months[i] as [string, string])[0]) throw new RangeError("usage months must be distinct and oldest first");
+  if (months.reduce((sum, [, n]) => sum + Number(n), 0) !== u.conversations) throw new RangeError("usage months must add up to the conversations");
   if ((u.conversations === 0) !== (u.firstActive === null)) throw new RangeError("usage firstActive is null exactly when no conversation counts");
   if (u.counterparties.length / HASH_BYTES > u.conversations) throw new RangeError("usage can't name more counterparties than conversations");
 } });

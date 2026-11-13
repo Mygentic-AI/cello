@@ -35,7 +35,13 @@ test("months must be YYYY-MM:count pairs", () => {
   }
 });
 
+test("months are distinct, oldest first, and add up to the conversations", () => {
+  assert.throws(() => usageFactsStructure.encode(good({ months: "2026-11:1,2026-08:1" })), /oldest first/);
+  assert.throws(() => usageFactsStructure.encode(good({ months: "2026-08:1,2026-08:1" })), /distinct/);
+  assert.throws(() => usageFactsStructure.encode(good({ months: "2026-08:1" })), /add up/);
+});
+
 test("firstActive is null exactly when nothing counts", () => {
   assert.throws(() => usageFactsStructure.encode(good({ firstActive: null })), /firstActive/);
-  assert.throws(() => usageFactsStructure.encode(good({ conversations: 0, counterparties: new Uint8Array() })), /firstActive/);
+  assert.throws(() => usageFactsStructure.encode(good({ conversations: 0, months: "", counterparties: new Uint8Array() })), /firstActive/);
 });
