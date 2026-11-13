@@ -12,6 +12,8 @@ export const PUBLIC_NO = 0;
 export const PUBLIC_YES = 1;
 export const PUBLIC_WITHDRAWING = 2;
 export const CONSENT_ACCEPTED = "accepted";
+// The type the issuer gives every endorsement, whoever wrote it.
+const ENDORSEMENT = "endorsement";
 
 export interface WalletRow {
   agent_id: Uint8Array;
@@ -87,9 +89,11 @@ export class SignalStore {
     // A renewal keeps the person's choice: the signal it replaces says whether it was shown. A new one follows the type's default:
     // identifying signals and Usage's detailed variety are left out, so standard Usage is what's shown unless the person changes it.
     // An issuer that doesn't name what it replaces still replaces its current signal of the same type, so that one's choice carries.
-    const replaced = (supersedes === null ? undefined : this.get(agentId, supersedes))
-      ?? this.list(agentId).find((r) => r.status === "active" && r.type === e.type && r.issuer_pubkey === e.issuer_pubkey && r.subject_kind === e.subject_kind);
-    const shownByDefault = replaced !== undefined && replaced.issuer_pubkey === e.issuer_pubkey
+    // Endorsements are one per author under one issuer key, so only a named supersedes says which one this replaces.
+    const named = supersedes === null ? undefined : this.get(agentId, supersedes);
+    const replaced = (named?.issuer_pubkey === e.issuer_pubkey ? named : undefined)
+      ?? (e.type === ENDORSEMENT ? undefined : this.list(agentId).find((r) => r.status === "active" && r.type === e.type && r.issuer_pubkey === e.issuer_pubkey && r.subject_kind === e.subject_kind));
+    const shownByDefault = replaced !== undefined
       ? replaced.default_present
       : e.type.endsWith("_id") || e.type === "usage_detailed" ? 0 : 1;
     this.#db.run(
@@ -109,10 +113,14 @@ export class SignalStore {
       if (target?.issuer_pubkey === issuerPubkey) this.#db.run("UPDATE signal_wallet SET status = 'superseded' WHERE agent_id = ? AND signal_hash = ?", [agentId, supersedes]);
       else logEvent("signal.supersede.refused", { signal: hash, supersedes, reason: target ? "issuer_mismatch" : "target_not_held" });
     }
-    this.#db.run(
-      "UPDATE signal_wallet SET status = 'superseded' WHERE agent_id = ? AND subject_kind = ? AND type = ? AND signal_hash != ? AND issuer_pubkey = ? AND status = 'active'",
-      [agentId, subjectKind, type, hash, issuerPubkey],
-    );
+    // Any other signal of the same type from the same issuer is an older version, except endorsements: the issuer holds one current
+    // endorsement per author, so a new one from Carol must not retire Bob's. Those are replaced only by name, above.
+    if (type !== ENDORSEMENT) {
+      this.#db.run(
+        "UPDATE signal_wallet SET status = 'superseded' WHERE agent_id = ? AND subject_kind = ? AND type = ? AND signal_hash != ? AND issuer_pubkey = ? AND status = 'active'",
+        [agentId, subjectKind, type, hash, issuerPubkey],
+      );
+    }
     // A replaced signal must not stay public reading as current. The server still holds it, so it's marked for taking back (public = 2).
     this.#db.run("UPDATE signal_wallet SET public = ? WHERE agent_id = ? AND status = 'superseded' AND public = ?", [PUBLIC_WITHDRAWING, agentId, PUBLIC_YES]);
   }
