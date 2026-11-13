@@ -120,6 +120,6 @@ test("Usage for every agent on a daemon: counted by the server, other owners cou
   assert.match(bea.run(["signals", "request", "usage", "--agent", "Bea"]).stdout, /^Requested\. Bea's Usage signal is ready\. 1 conversation with 1 agent\.$/m);
 
   // collect with no agent is every agent on the daemon too, each answered on its own.
-  const collected = ann.ok(["signals", "collect"]) as { agents: PerAgent[] };
+  const collected = ann.ok(["signals", "collect", "--json"]) as { agents: PerAgent[] };
   assert.deepEqual(collected.agents.map((a) => [a.agent, a.ok]).sort(), [["Ann", true], ["Ann2", true]]);
 });

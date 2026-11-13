@@ -49,7 +49,8 @@ export function signalViewText(s: SignalLine): string {
     `subject_kind:    ${s.subject_kind}`,
     `issuer_kind:     ${s.issuer_kind}`,
     `issuer:          ${s.issuer_address} (${s.issuer_standing})`,
-    `issuer_pubkey:   ${s.issuer_pubkey}`,
+    // Both keys in hex run to thousands of characters and bury the rest. The start identifies it; --json carries it whole.
+    `issuer_pubkey:   ${s.issuer_pubkey.slice(0, 16)}… (the whole key: --json)`,
     `schema_version:  ${s.schema_version ?? "—"}`,
     `issued_at:       ${when(s.issued_at)}`,
     `expires_at:      ${when(s.expires_at)}`,

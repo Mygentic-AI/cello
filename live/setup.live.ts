@@ -310,7 +310,7 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
     { type: "copied", subject: other },
     { type: "too_long", expiresAt: now + 400 * 86_400 },
   ]);
-  const collected = await ok(home, ["signals", "collect", "--agent", "Ann"]) as { refused: { fault: string }[] };
+  const collected = await ok(home, ["signals", "collect", "--agent", "Ann", "--json"]) as { refused: { fault: string }[] };
   assert.deepEqual(collected.refused.map((r) => r.fault).sort(), ["expiry_too_long", "forged", "wrong_subject"]);
 
   const held = await listed(home, "Ann");

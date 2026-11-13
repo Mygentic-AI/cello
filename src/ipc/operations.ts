@@ -59,6 +59,20 @@ function usageText(result: UsageAnswer): string {
   return `${result.agents.map((a) => (a.ok ? `${a.agent}: ready, ${usageSentence(a.usage)}` : `${a.agent}: ${a.message}`)).join("\n")}\n`;
 }
 
+interface Collected { stored: number; held: number; refused: { fault: string; message: string }[] }
+type CollectAnswer = Collected | { agents: ((Collected & { agent: string; ok: true }) | { agent: string; ok: false; message: string })[] };
+// "9 signals, all current, nothing new." — what a person needs from a collect, and each refusal by what failed.
+function collectSentence(c: Collected): string {
+  const news = c.stored === 0 ? "nothing new" : `${c.stored} new`;
+  const refused = c.refused.length === 0 ? "" : ` ${c.refused.length} failed a check and ${c.refused.length === 1 ? "was" : "were"} left out: ${c.refused.map((r) => r.fault).join(", ")}.`;
+  return `${c.held} signal${c.held === 1 ? "" : "s"}, all current, ${news}.${refused}`;
+}
+function collectText(result: CollectAnswer): string {
+  if (!("agents" in result)) return `${collectSentence(result)}\n`;
+  if (result.agents.length === 0) return "There are no agents on this daemon.\n";
+  return `${result.agents.map((a) => (a.ok ? `${a.agent}: ${collectSentence(a)}` : `${a.agent}: ${a.message}`)).join("\n")}\n`;
+}
+
 const SIGNAL_HASH: Param = { name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
 
 const SESSION: Param = { name: "session_id", kind: "string", required: true, positional: true, description: "The session id, 32 hex characters" };
@@ -795,6 +809,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     scoped: false,
     acts: false,
     description: "Fetch the signals the issuer has already made, with a request signed by each agent's key, and keep those that pass every check. With no agent named, every agent on this daemon, each answered on its own: one refusing stops none of the rest. A repeat changes nothing. refused names any that failed a check.",
+    plain: (result: CollectAnswer) => collectText(result),
     params: [ANY_AGENT],
   },
   {
