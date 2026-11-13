@@ -9,6 +9,7 @@ import { NO_EXPIRY_NOTE, unknownIssuerNote } from "../guidance.ts";
 import { LocalError } from "./errors.ts";
 import { BadIssuerUrl, IssuerClient, IssuerRefused, IssuerUnreachable, type AgentKeys } from "./issuer-client.ts";
 import { logEvent } from "./log.ts";
+import { type Expiring, expiryNotice, renewalPlan } from "./renewal.ts";
 import { currentText } from "./settings.ts";
 import { CONSENT_ACCEPTED, SignalStore, type WalletRow, ensureSignalSchema } from "./signal-store.ts";
 import type { Store } from "./store.ts";
@@ -78,6 +79,7 @@ export function usageCounts(kept: readonly TrustSignalEnvelope[], refused: reado
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 const SETTLE_RETRY_MS = 60_000;
+const RENEWAL_CHECK_MS = 6 * 3_600_000;
 
 // From a stranger's signal, a type or address is only shown if it's plainly a name, so it can't carry a sentence.
 const plainName = (value: string): string => (/^[A-Za-z0-9_.:-]{1,64}$/.test(value) ? value : "(not a plain name)");
@@ -117,6 +119,7 @@ export class Wallet {
   readonly #store: Store;
   readonly #hooks: WalletHooks;
   readonly #lastSettle = new Map<string, number>();
+  readonly #lastRenewal = new Map<string, number>();
   readonly #warned = new Set<string>();
 
   constructor(store: Store, hooks: WalletHooks) {
@@ -124,6 +127,39 @@ export class Wallet {
     ensureSignalSchema(store);
     this.#signals = new SignalStore(store);
     this.#hooks = hooks;
+  }
+
+  // The signals this agent holds that run out within 30 days, and how to renew each. cello status shows them.
+  expiring(agentHex: string, now = nowSec()): Expiring[] {
+    return renewalPlan(this.#signals.list(fromHex(agentHex)), now, false).expiring;
+  }
+
+  // Called on the daemon's timer, and acting at most every six hours per agent. Tells the agent once about each signal in its last
+  // 30 days. With auto_renew_signals on (the person's choice, off by default), renews what can be renewed without them.
+  async renewal(agentHex: string, now = nowSec()): Promise<void> {
+    if (now * 1000 - (this.#lastRenewal.get(agentHex) ?? 0) < RENEWAL_CHECK_MS) return;
+    this.#lastRenewal.set(agentHex, now * 1000);
+    const plan = renewalPlan(this.#signals.list(fromHex(agentHex)), now, this.#store.getConfig("setting.auto_renew_signals") === "1");
+    for (const e of plan.expiring) {
+      const key = `signal.expiry_noticed.${e.signal_hash}`;
+      if (this.#store.getConfig(key) !== undefined) continue;
+      this.#hooks.notify(fromHex(agentHex), expiryNotice(e));
+      this.#store.setConfig(key, String(now));
+      logEvent("signal.expiry.noticed", { agent: agentHex, signal: e.signal_hash, type: e.type });
+    }
+    const renew = async (what: string, work: () => Promise<unknown>): Promise<void> => {
+      try {
+        await work();
+        logEvent("signal.auto_renewed", { agent: agentHex, what });
+      } catch (err: unknown) {
+        // Said to the agent, and tried again at the next check: a renewal that quietly stops is the thing this setting must not do.
+        const message = err instanceof Error ? err.message : String(err);
+        logEvent("signal.auto_renew_failed", { agent: agentHex, what, message });
+        this.#hooks.notify(fromHex(agentHex), `Renewing this agent's ${what} automatically failed: ${message} It will be tried again in about six hours.`);
+      }
+    };
+    if (plan.requestUsage) await renew("Usage signal", () => this.requestUsage(agentHex));
+    if (plan.collect) await renew("signals", () => this.collect(agentHex));
   }
 
   #client(): IssuerClient {

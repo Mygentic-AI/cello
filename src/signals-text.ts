@@ -1,3 +1,5 @@
+import { RENEW_WINDOW_SECONDS, howToRenew } from "./daemon/renewal.ts";
+
 // How a person reads a wallet at a terminal. Wording and columns from cello-client's trust-signals command: see COPIED.md.
 interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
@@ -22,6 +24,12 @@ export function signalsListText(result: { signals: SignalLine[]; not_shown: numb
   if (signals.some((s) => s.same_operator)) legend.push("  co-own:  'own' = the endorser and the subject are your own agents. It's still shown, but doesn't count toward a counterparty's minimum.");
   if (signals.some((s) => !shown(s))) legend.push("  consent: PENDING = someone issued this about you, and nobody sees it until you accept.  ✗ = can't be shown, whatever 'include' says.");
   if (notShown > 0) legend.push(`  (${notShown} superseded or expired not shown: run with --all to include)`);
+  // In its last 30 days, each current signal says so, with how to renew it.
+  const now = Math.floor(Date.now() / 1000);
+  for (const s of signals) {
+    if (s.status !== "active" || s.expires_at === null || s.expires_at <= now || s.expires_at - now > RENEW_WINDOW_SECONDS) continue;
+    legend.push(`  ${s.type} expires in ${Math.ceil((s.expires_at - now) / 86_400)} day(s). ${howToRenew(s.type)}`);
+  }
   const notes = signals.flatMap((s) => s.notes.map((note) => `\n${s.signal_hash.slice(0, 12)}…:\n${note}`));
   return `${[header, `  ${"─".repeat(126)}`, ...lines, ...legend, ...notes].join("\n")}\n`;
 }

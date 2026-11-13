@@ -413,6 +413,8 @@ export class Engine {
       // A replaced public signal that the server hasn't yet been told to drop. The wallet limits this to one try a minute.
       for (const agent of this.#agents.values()) if (agent.online) this.#background("encryption key", this.#publishKey(agent));
       for (const agent of this.#agents.values()) this.wallet.settlePublic(agent.hex).catch((err: unknown) => logEvent("signal.public.settle_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
+      // Expiry notices and, if the person turned it on, renewal. The wallet acts at most every six hours per agent.
+      for (const agent of this.#agents.values()) if (agent.online) this.wallet.renewal(agent.hex).catch((err: unknown) => logEvent("signal.renewal_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
     }, POSITION_CHECK_MS);
   }
 
@@ -2903,6 +2905,8 @@ export class Engine {
         encryption_key: this.#keys.latest(agent.signer.id)?.published === 1 ? "published" : "not published yet",
         status: this.#stopAt(agent, this.#url)?.status ?? "active",
         unread: this.unreadCount(agent.hex),
+        // Signals with 30 days or less left, each with how to renew it.
+        signals_expiring: this.wallet.expiring(agent.hex).map((e) => ({ type: e.type, expires_at: new Date(e.expires_at * 1000).toISOString(), renew: e.renew })),
         sessions: this.#store.sessionsOf(agent.signer.id).map((s) => ({
           session_id: toHex(s.session_id),
           with: this.#who(agent, s),
