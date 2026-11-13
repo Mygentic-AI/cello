@@ -102,10 +102,17 @@ test("Usage for every agent on a daemon: counted by the server, other owners cou
   assert.match(plain, /^Ann: ready, 2 conversations with 2 agents\.$/m);
   assert.match(plain, /^Ann2: ready, 1 conversation with 1 agent\.$/m);
 
-  // Both varieties are in the wallet, once each however often it's asked.
-  const types = (ann.ok(["signals", "list", "--json", "--agent", "Ann"]) as { signals: { type: string }[] }).signals.map((s) => s.type);
-  assert.equal(types.filter((t) => t === "usage").length, 1);
-  assert.equal(types.filter((t) => t === "usage_detailed").length, 1);
+  // Both varieties are in the wallet, once each however often it's asked. Standard is shown, detailed is left out.
+  interface Held { type: string; signal_hash: string; default_present: boolean }
+  const held = (): Held[] => (ann.ok(["signals", "list", "--json", "--agent", "Ann"]) as { signals: Held[] }).signals;
+  const usageHeld = held().filter((s) => s.type.startsWith("usage"));
+  assert.deepEqual(usageHeld.map((s) => [s.type, s.default_present]).sort(), [["usage", true], ["usage_detailed", false]]);
+  // The person switches to detailed; asking again keeps that choice in the renewed pair.
+  ann.ok(["signals", "disable", usageHeld.find((s) => s.type === "usage")!.signal_hash, "--agent", "Ann"]);
+  ann.ok(["signals", "enable", usageHeld.find((s) => s.type === "usage_detailed")!.signal_hash, "--agent", "Ann"]);
+  ann.ok(["signals", "request", "usage", "--agent", "Ann", "--json"]);
+  const renewed = held().filter((s) => s.type.startsWith("usage"));
+  assert.deepEqual(renewed.map((s) => [s.type, s.default_present]).sort(), [["usage", false], ["usage_detailed", true]], "a renewal keeps the person's choice");
 
   // One agent named: that agent's answer alone.
   const one = bea.ok(["signals", "request", "usage", "--agent", "Bea", "--json"]) as { usage: UsageLine };

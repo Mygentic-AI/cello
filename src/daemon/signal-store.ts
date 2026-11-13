@@ -84,10 +84,18 @@ export class SignalStore {
     if (this.get(agentId, hash)) return false;
     const supersedes = e.supersedes_hash === null ? null : toHex(e.supersedes_hash);
     const consent = e.issuer_kind === "agent" ? "pending" : CONSENT_ACCEPTED;
+    // A renewal keeps the person's choice: the signal it replaces says whether it was shown. A new one follows the type's default:
+    // identifying signals and Usage's detailed variety are left out, so standard Usage is what's shown unless the person changes it.
+    // An issuer that doesn't name what it replaces still replaces its current signal of the same type, so that one's choice carries.
+    const replaced = (supersedes === null ? undefined : this.get(agentId, supersedes))
+      ?? this.list(agentId).find((r) => r.status === "active" && r.type === e.type && r.issuer_pubkey === e.issuer_pubkey && r.subject_kind === e.subject_kind);
+    const shownByDefault = replaced !== undefined && replaced.issuer_pubkey === e.issuer_pubkey
+      ? replaced.default_present
+      : e.type.endsWith("_id") || e.type === "usage_detailed" ? 0 : 1;
     this.#db.run(
       `INSERT INTO signal_wallet (agent_id, signal_hash, file, subject_kind, issuer_kind, issuer_pubkey, issuer_address, type, schema_version, payload, issued_at, expires_at, supersedes_hash, same_operator, status, received_at, default_present, consent_state)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-      [agentId, hash, file, e.subject_kind, e.issuer_kind, e.issuer_pubkey, e.issuer_address, e.type, e.schema_version, e.payload, e.issued_at, e.expires_at, supersedes, e.same_operator ? 1 : 0, Date.now(), e.type.endsWith("_id") ? 0 : 1, consent],
+      [agentId, hash, file, e.subject_kind, e.issuer_kind, e.issuer_pubkey, e.issuer_address, e.type, e.schema_version, e.payload, e.issued_at, e.expires_at, supersedes, e.same_operator ? 1 : 0, Date.now(), shownByDefault, consent],
     );
     logEvent("signal.wallet.stored", { signal: hash, type: e.type, subject_kind: e.subject_kind, issuer_kind: e.issuer_kind });
     if (consent === CONSENT_ACCEPTED) this.#applySupersession(agentId, hash, e.type, e.subject_kind, e.issuer_pubkey, supersedes);
