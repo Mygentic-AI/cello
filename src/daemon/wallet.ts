@@ -10,7 +10,7 @@ import { LocalError } from "./errors.ts";
 import { BadIssuerUrl, IssuerClient, IssuerRefused, IssuerUnreachable, type AgentKeys } from "./issuer-client.ts";
 import { logEvent } from "./log.ts";
 import { type Expiring, expiryNotice, renewalPlan } from "./renewal.ts";
-import { currentText } from "./settings.ts";
+import { currentSetting, currentText } from "./settings.ts";
 import { CONSENT_ACCEPTED, SignalStore, type WalletRow, ensureSignalSchema } from "./signal-store.ts";
 import type { Store } from "./store.ts";
 
@@ -120,6 +120,7 @@ export class Wallet {
   readonly #hooks: WalletHooks;
   readonly #lastSettle = new Map<string, number>();
   readonly #lastRenewal = new Map<string, number>();
+  readonly #renewFailureTold = new Set<string>();
   readonly #warned = new Set<string>();
 
   constructor(store: Store, hooks: WalletHooks) {
@@ -131,35 +132,52 @@ export class Wallet {
 
   // The signals this agent holds that run out within 30 days, and how to renew each. cello status shows them.
   expiring(agentHex: string, now = nowSec()): Expiring[] {
-    return renewalPlan(this.#signals.list(fromHex(agentHex)), now, false).expiring;
+    return renewalPlan(this.#signals.list(fromHex(agentHex)), now, false, this.#ourIssuer()).expiring;
   }
 
-  // Called on the daemon's timer, and acting at most every six hours per agent. Tells the agent once about each signal in its last
-  // 30 days. With auto_renew_signals on (the person's choice, off by default), renews what can be renewed without them.
+  // The issuer this daemon renews at, by the name its signals carry. With no usable address set, none of its signals gets
+  // trust-site advice, and requesting fails by name when tried.
+  #ourIssuer(): string {
+    try {
+      return this.#client().address;
+    } catch {
+      return "";
+    }
+  }
+
+  // Called on the daemon's timer, and acting at most every six hours per agent. With auto_renew_signals on (the person's choice, off
+  // by default), renews Usage first, the only signal that can be renewed without them. Then tells the agent once about each signal
+  // still in its last 30 days, so a notice never asks the agent to renew what was just renewed.
   async renewal(agentHex: string, now = nowSec()): Promise<void> {
     if (now * 1000 - (this.#lastRenewal.get(agentHex) ?? 0) < RENEWAL_CHECK_MS) return;
     this.#lastRenewal.set(agentHex, now * 1000);
-    const plan = renewalPlan(this.#signals.list(fromHex(agentHex)), now, this.#store.getConfig("setting.auto_renew_signals") === "1");
-    for (const e of plan.expiring) {
+    const autoRenew = currentSetting(this.#store, "auto_renew_signals") === 1;
+    const before = renewalPlan(this.#signals.list(fromHex(agentHex)), now, autoRenew, this.#ourIssuer());
+    if (before.requestUsage) {
+      try {
+        await this.requestUsage(agentHex);
+        this.#renewFailureTold.delete(agentHex);
+        logEvent("signal.auto_renewed", { agent: agentHex, what: "usage" });
+      } catch (err: unknown) {
+        // Tried again at every check: a renewal that quietly stops is the thing this setting must not do. The agent is told the first
+        // time, and again only when Usage has three days or less left, so a long outage doesn't ring its doorbell four times a day.
+        const message = (err instanceof Error ? err.message : String(err)).replace(/ ?Check your connection, then run the same command again\./, "");
+        logEvent("signal.auto_renew_failed", { agent: agentHex, what: "usage", message });
+        const usageLeft = before.expiring.find((e) => e.name === "Usage");
+        const urgent = usageLeft !== undefined && usageLeft.expires_at - now <= 3 * 86_400;
+        if (!this.#renewFailureTold.has(agentHex) || urgent) {
+          this.#renewFailureTold.add(agentHex);
+          this.#hooks.notify(fromHex(agentHex), `Renewing this agent's Usage signal automatically failed: ${message} It will be tried again in about six hours, by itself.`);
+        }
+      }
+    }
+    for (const e of renewalPlan(this.#signals.list(fromHex(agentHex)), now, false, this.#ourIssuer()).expiring) {
       const key = `signal.expiry_noticed.${e.signal_hash}`;
       if (this.#store.getConfig(key) !== undefined) continue;
       this.#hooks.notify(fromHex(agentHex), expiryNotice(e));
       this.#store.setConfig(key, String(now));
       logEvent("signal.expiry.noticed", { agent: agentHex, signal: e.signal_hash, type: e.type });
     }
-    const renew = async (what: string, work: () => Promise<unknown>): Promise<void> => {
-      try {
-        await work();
-        logEvent("signal.auto_renewed", { agent: agentHex, what });
-      } catch (err: unknown) {
-        // Said to the agent, and tried again at the next check: a renewal that quietly stops is the thing this setting must not do.
-        const message = err instanceof Error ? err.message : String(err);
-        logEvent("signal.auto_renew_failed", { agent: agentHex, what, message });
-        this.#hooks.notify(fromHex(agentHex), `Renewing this agent's ${what} automatically failed: ${message} It will be tried again in about six hours.`);
-      }
-    };
-    if (plan.requestUsage) await renew("Usage signal", () => this.requestUsage(agentHex));
-    if (plan.collect) await renew("signals", () => this.collect(agentHex));
   }
 
   #client(): IssuerClient {

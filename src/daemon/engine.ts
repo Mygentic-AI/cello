@@ -2906,7 +2906,7 @@ export class Engine {
         status: this.#stopAt(agent, this.#url)?.status ?? "active",
         unread: this.unreadCount(agent.hex),
         // Signals with 30 days or less left, each with how to renew it.
-        signals_expiring: this.wallet.expiring(agent.hex).map((e) => ({ type: e.type, expires_at: new Date(e.expires_at * 1000).toISOString(), renew: e.renew })),
+        signals_expiring: this.wallet.expiring(agent.hex).map((e) => ({ signal: e.name, expires_at: new Date(e.expires_at * 1000).toISOString(), renew: e.renew })),
         sessions: this.#store.sessionsOf(agent.signer.id).map((s) => ({
           session_id: toHex(s.session_id),
           with: this.#who(agent, s),
