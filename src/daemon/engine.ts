@@ -40,6 +40,7 @@ import {
   bodyBytes,
   refusedList,
   readBodyBytes,
+  USAGE_FACTS_DOMAIN,
 } from "../protocol/structures.ts";
 import {
   LONG_CIPHERTEXT_BYTES,
@@ -64,6 +65,7 @@ import {
   signedRefuse,
   signedSealRequest,
   signedStatusStatement,
+  signedUsageFacts,
   toB64,
 } from "../protocol/wire.ts";
 import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
@@ -325,6 +327,23 @@ export class Engine {
       shippedList: SHIPPED_ISSUER_LIST,
       publishToServer: (agentHex, file) => this.#publicSignalCall(agentHex, undefined, "signal.publish", (agent) => ({ agent: toB64(agent.signer.id), signal: toB64(file) })).then(() => undefined),
       unpublishFromServer: (agentHex, signalId) => this.#publicSignalCall(agentHex, undefined, "signal.unpublish", (agent) => ({ agent: toB64(agent.signer.id), signalId: toB64(signalId) })).then(() => undefined),
+      // Checked here before it travels: a server whose count doesn't verify against the keys pinned on first contact is named now,
+      // not left for the issuer to refuse with less to go on.
+      usageFacts: async (agentHex) => {
+        const answer = await this.#publicSignalCall(agentHex, undefined, "usage.facts", (agent) => ({ agent: toB64(agent.signer.id) })) as { facts?: unknown };
+        const server = this.#serverIdentity();
+        let facts: ReturnType<typeof signedUsageFacts.decode>;
+        try {
+          facts = signedUsageFacts.decode(answer.facts, "facts");
+        } catch (err: unknown) {
+          throw new LocalError("usage_unreadable", `The server's count couldn't be read: ${err instanceof Error ? err.message : String(err)}. Nothing was sent to the issuer.`);
+        }
+        if (!(await verifySignature(server, USAGE_FACTS_DOMAIN, facts.bytes, facts.signature))) {
+          throw new LocalError("usage_forged", "The server's count isn't signed by the server this daemon pinned on first contact, so it wasn't sent to the issuer.");
+        }
+        if (toHex(facts.fields.agentId) !== agentHex) throw new LocalError("usage_wrong_agent", "The server sent a count for a different agent, so it wasn't sent to the issuer.");
+        return { facts: answer.facts, server: identityCodec.encode(server) };
+      },
       readPublic: async (agentHex, address) => {
         let parsed: ReturnType<typeof parseAddress>;
         try {
@@ -2784,6 +2803,11 @@ export class Engine {
       unseenPosition ??= unseen;
     }
     return unseenPosition === undefined ? undefined : { replies, unseenPosition };
+  }
+
+  // Every agent this daemon holds, for the commands that act on all of them when none is named.
+  agentHexes(): string[] {
+    return [...this.#agents.keys()];
   }
 
   // These four only read. None moves a read position, so looking never counts as reading.

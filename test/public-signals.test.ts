@@ -46,6 +46,7 @@ function setup(read: () => Uint8Array[], failing = false): { wallet: Wallet; sig
     publishToServer: async (_agent, file) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.published.push(file); },
     unpublishFromServer: async (_agent, id) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.unpublished.push(id); },
     readPublic: async () => ({ target: toHex(ann.id), files: read() }),
+    usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
   };
   const wallet = new Wallet(store, hooks);
   return { wallet, signals: new SignalStore(store), calls, store };
@@ -147,6 +148,7 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
     publishToServer: async (_agent, file) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file); },
     unpublishFromServer: async (_agent, id) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.delete(toHex(id)); },
     readPublic: async () => ({ target: toHex(owner.id), files: [...server.held.values()] }),
+    usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
   };
   return { wallet: new Wallet(store, hooks), signals: new SignalStore(store), store };
 }

@@ -44,10 +44,14 @@ export interface WalletHooks {
   unpublishFromServer(agentHex: string, signalId: Uint8Array): Promise<void>;
   // The signed files a server holds as public for one agent, and the agent's id as it parsed from the address.
   readPublic(agentHex: string, address: string): Promise<{ target: string; files: Uint8Array[] }>;
+  // The server's signed count of this agent's conversations, checked here against the server's pinned keys, and those keys,
+  // both in their wire form for the issuer.
+  usageFacts(agentHex: string): Promise<{ facts: unknown; server: unknown }>;
 }
 
 export interface SignalRefusal { fault: string; message: string }
 export interface Collected { stored: number; held: number; refused: SignalRefusal[] }
+export interface UsageRequested extends Collected { usage: { conversations: number; agents: number; other_owner_agents: number } }
 
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
 const nowSec = (): number => Math.floor(Date.now() / 1000);
@@ -172,6 +176,25 @@ export class Wallet {
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
       throw this.#plain(err, "collect signals");
+    }
+  }
+
+  // `cello signals request usage`: the server counts this agent's conversations and signs it, the agent carries that to the issuer,
+  // and the issuer counts other owners and answers with the agent's signals, the two Usage signals among them.
+  async requestUsage(agentHex: string): Promise<UsageRequested> {
+    const { facts, server } = await this.#hooks.usageFacts(agentHex);
+    try {
+      const client = this.#client();
+      await this.#refreshList(client);
+      const answer = await client.requestUsage(this.#hooks.keys(agentHex), facts, server);
+      const collected = await this.#keep(agentHex, answer.signals);
+      const usage = answer.signals.map((file) => readSignedSignal(file).envelope).find((envelope) => envelope.type === "usage");
+      if (!usage) throw new LocalError("usage_missing", "The issuer answered without a Usage signal, so nothing new was stored for it. Run the same command again.");
+      const counts = decodeCbor(usage.payload) as { conversations?: unknown; agents?: unknown; other_owner_agents?: unknown };
+      return { ...collected, usage: { conversations: Number(counts.conversations), agents: Number(counts.agents), other_owner_agents: Number(counts.other_owner_agents) } };
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "request Usage");
     }
   }
 

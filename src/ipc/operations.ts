@@ -45,7 +45,20 @@ export interface Operation extends Definition {
   method: string;
 }
 
-const SIGNAL_HASH: Param = { name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
+// For a command that acts on every agent on the daemon unless one is named.
+const ANY_AGENT: Param = { name: "agent", kind: "string", description: "One agent's name or agent_id. Left out, every agent on this daemon." };
+
+interface UsageLine { conversations: number; agents: number; other_owner_agents: number }
+type UsageAnswer = { usage: UsageLine } | { agents: ({ agent: string; ok: true; usage: UsageLine } | { agent: string; ok: false; message: string })[] };
+const usageSentence = (u: UsageLine): string =>
+  `${u.conversations} conversation${u.conversations === 1 ? "" : "s"} with ${u.agents} agent${u.agents === 1 ? "" : "s"}, ${u.other_owner_agents} of them other owners'.`;
+function usageText(result: UsageAnswer): string {
+  if ("usage" in result) return `Requested. Usage is ready: ${usageSentence(result.usage)}\n`;
+  if (result.agents.length === 0) return "There are no agents on this daemon.\n";
+  return `${result.agents.map((a) => (a.ok ? `${a.agent}: ready, ${usageSentence(a.usage)}` : `${a.agent}: ${a.message}`)).join("\n")}\n`;
+}
+
+const SIGNAL_HASH: Param ={ name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
 
 const SESSION: Param = { name: "session_id", kind: "string", required: true, positional: true, description: "The session id, 32 hex characters" };
 
@@ -776,11 +789,25 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "signals-collect",
     group: "Signals",
-    summary: "Fetch this agent's current signals from the issuer. Also: cello signals collect.",
-    scoped: true,
+    summary: "Fetch the signals the issuer has already made, for every agent here or one. Also: cello signals collect.",
+    // Not scoped: left out, the agent means every agent on this daemon, not the one chosen with use-agent.
+    scoped: false,
     acts: false,
-    description: "Fetch this agent's current signals from the issuer, with a request signed by its key, and keep those that pass every check. A repeat changes nothing. refused names any that failed a check.",
-    params: [],
+    description: "Fetch the signals the issuer has already made, with a request signed by each agent's key, and keep those that pass every check. With no agent named, every agent on this daemon, each answered on its own: one refusing stops none of the rest. A repeat changes nothing. refused names any that failed a check.",
+    params: [ANY_AGENT],
+  },
+  {
+    command: "signals-request",
+    group: "Signals",
+    summary: "Ask for a signal the agent starts itself: usage. Also: cello signals request usage.",
+    scoped: false,
+    acts: false,
+    description: "Ask for a signal that the agent starts rather than one the issuer already made. The only one is usage: this agent's server counts its conversations where both sides wrote and signs the count, the agent carries it to the issuer, and the issuer counts how many of the other agents have a different owner and issues two signals, usage (standard) and usage_detailed, for 180 days, replacing the last pair. The list of agents talked with is used for that count and isn't kept. Only agents registered on the same server count. With no agent named, every agent on this daemon, each answered on its own. An agent with no conversation yet is told so and gets no signal.",
+    plain: (result: UsageAnswer) => usageText(result),
+    params: [
+      { name: "kind", kind: "string", required: true, positional: true, allowed: ["usage"], description: "Which signal: usage." },
+      ANY_AGENT,
+    ],
   },
   {
     command: "signals-publish",

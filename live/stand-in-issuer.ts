@@ -6,8 +6,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { encodeCbor } from "../src/protocol/cbor.ts";
-import { toHex } from "../src/protocol/encode.ts";
-import { type DualSignature, type PublicIdentity, type Signer, identityId, signerFromSeeds } from "../src/protocol/identity.ts";
+import { equalBytes, toHex } from "../src/protocol/encode.ts";
+import { type DualSignature, type PublicIdentity, type Signer, identityId, signerFromSeeds, verifySignature } from "../src/protocol/identity.ts";
+import { USAGE_FACTS_DOMAIN } from "../src/protocol/structures.ts";
+import { identityCodec, signedUsageFacts } from "../src/protocol/wire.ts";
 import { type TrustSignalEnvelope, MAX_SIGNAL_LIFETIME_SECONDS, SIGNAL_ID_BYTES, SIGNED_SIGNAL_DOMAIN, TRUST_SIGNAL_DOMAIN, checkSignal, issuerPubkeyField, signSignal } from "../src/protocol/signal.ts";
 
 const DAY = 86_400;
@@ -21,7 +23,7 @@ interface RealContract {
   verifyAgentSignature(pub: PublicIdentity, bytes: Uint8Array, signature: DualSignature): Promise<boolean>;
 }
 
-export interface EnvelopeChange { type?: string; expiresAt?: number | null; claim?: string; subjectKind?: "account" | "agent"; subject?: string; address?: string; badSignature?: boolean }
+export interface EnvelopeChange { type?: string; expiresAt?: number | null; claim?: string; payload?: Record<string, unknown>; subjectKind?: "account" | "agent"; subject?: string; address?: string; badSignature?: boolean }
 
 // Fixed, and public here, so a test server can be told to count this issuer before it starts.
 const seed = (name: string): Uint8Array => sha256(new TextEncoder().encode(`cello stand-in issuer: ${name}`));
@@ -71,7 +73,7 @@ export class StandInIssuer {
       issuer_pubkey: issuerPubkeyField(signer.publicIdentity),
       type: change.type ?? "email",
       schema_version: 1,
-      payload: new Uint8Array(encodeCbor({ claim: change.claim ?? EMAIL_CLAIM, verified_at: now })),
+      payload: new Uint8Array(encodeCbor(change.payload ?? { claim: change.claim ?? EMAIL_CLAIM, verified_at: now })),
       issued_at: now,
       same_operator: false,
       expires_at: change.expiresAt === undefined ? now + 180 * DAY : change.expiresAt,
@@ -107,8 +109,9 @@ export class StandInIssuer {
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
     const route = (req.url ?? "").replace("/api/issuer/", "");
-    const action = route === "agents" ? "add_agent" : route;
-    const read = this.#contract.agentRequestFromWire(JSON.parse(raw));
+    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route;
+    const body = JSON.parse(raw) as { usageFacts?: unknown; usageServer?: unknown };
+    const read = this.#contract.agentRequestFromWire(body);
     const checked = await this.#contract.checkAgentRequest(read.bytes, read.signatures, { action, issuerAddress: "127.0.0.1", now: Math.floor(Date.now() / 1000) });
     if (!checked.ok) return refuse(401, checked.fault, checked.message);
     const { fields, agentId } = checked.request;
@@ -130,6 +133,33 @@ export class StandInIssuer {
     if (route === "collect") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");
       return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
+    }
+    // A small copy of the real issuer's Usage checks and counting (cello-issuer src/server/trust/usage.ts), not its wording.
+    if (route === "usage") {
+      if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");
+      let facts: ReturnType<typeof signedUsageFacts.decode>;
+      let server: PublicIdentity;
+      try {
+        facts = signedUsageFacts.decode(body.usageFacts, "usageFacts");
+        server = identityCodec.decode(body.usageServer, "usageServer");
+      } catch (err: unknown) {
+        return refuse(400, "usage_malformed", `The usage count couldn't be read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!equalBytes(facts.fields.serverId, identityId(server))) return refuse(400, "usage_server_mismatch", "The count names a different server from the one that sent its keys.");
+      if (!(await verifySignature(server, USAGE_FACTS_DOMAIN, facts.bytes, facts.signature))) return refuse(403, "usage_forged", "The server's signature on that count doesn't verify.");
+      if (toHex(facts.fields.agentId) !== agentId) return refuse(403, "usage_wrong_agent", "That count is about a different agent.");
+      if (facts.fields.conversations === 0) return refuse(409, "usage_nothing_to_count", "Nothing to count yet. Your agent needs one conversation where both sides wrote.");
+      const owner = this.owners.get(agentId);
+      const ids: string[] = [];
+      for (let at = 0; at < facts.fields.counterparties.length; at += 32) ids.push(toHex(facts.fields.counterparties.subarray(at, at + 32)));
+      const otherOwners = ids.filter((id) => this.owners.has(id) && this.owners.get(id) !== owner).length;
+      const counts = { as_of: facts.fields.asOf, conversations: facts.fields.conversations, agents: ids.length, other_owner_agents: otherOwners, median_messages: facts.fields.medianMessages };
+      const claim = `${counts.conversations} conversations with ${counts.agents} different agents, ${counts.other_owner_agents} of them other owners'.`;
+      const usage = [
+        await this.sign(agentId, { type: "usage", subjectKind: "agent", payload: { claim, ...counts } }),
+        await this.sign(agentId, { type: "usage_detailed", subjectKind: "agent", payload: { claim, ...counts, messages_sent: facts.fields.messagesSent, messages_received: facts.fields.messagesReceived, months: facts.fields.months } }),
+      ].map((file) => Buffer.from(file).toString("base64"));
+      return send(200, { ok: true, agentId, signals: [...(await this.#files(agentId)), ...usage] });
     }
     const holderSignature = read.signatures.holder;
     if (!fields.holder || !fields.holderSignal || !holderSignature) return refuse(400, "holder_required", "This request needs the holder's keys, signal and signature.");

@@ -10,7 +10,7 @@ export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;
 const NONCE_BYTES = 16;
 
-export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse";
+export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse" | "request_usage";
 
 export interface AgentRequestFields {
   action: AgentRequestAction;
@@ -135,6 +135,12 @@ export class IssuerClient {
     return this.#send("agents", "add_agent", agent, { code: null, target: null, holder: holder.identity, holderSignal }, holder.seeds);
   }
 
+  // The server's signed count travels beside the signed request, not inside it: it carries the server's own signature and names
+  // its agent, and the request proves the agent is the one asking. The issuer answers with the agent's signals, Usage among them.
+  requestUsage(agent: AgentKeys, usageFacts: unknown, usageServer: unknown): Promise<IssuerAnswer> {
+    return this.#send("usage", "request_usage", agent, { code: null, target: null, holder: null, holderSignal: null }, undefined, { usageFacts, usageServer });
+  }
+
   // Null when this issuer serves none. A list proves itself by its root signatures, so who hands it over doesn't matter.
   async latestIssuerList(): Promise<Uint8Array | null> {
     try {
@@ -147,7 +153,7 @@ export class IssuerClient {
     }
   }
 
-  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds): Promise<IssuerAnswer> {
+  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds, beside: Record<string, unknown> = {}): Promise<IssuerAnswer> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const bytes = encodeAgentRequest({
       action,
@@ -162,7 +168,7 @@ export class IssuerClient {
     let status: number;
     let text: string;
     try {
-      const response = await this.#fetch(new URL(`/api/issuer/${route}`, this.#base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(wire), redirect: "error", signal: AbortSignal.timeout(ISSUER_WAIT_MS) });
+      const response = await this.#fetch(new URL(`/api/issuer/${route}`, this.#base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...beside, ...wire }), redirect: "error", signal: AbortSignal.timeout(ISSUER_WAIT_MS) });
       status = response.status;
       text = await response.text();
     } catch (err: unknown) {
