@@ -14,16 +14,16 @@ import { CONSENT_ACCEPTED, SignalStore, type WalletRow, ensureSignalSchema } fro
 import type { Store } from "./store.ts";
 
 const CONFIG_ISSUER_LIST = "issuer_list";
-export const STATUS_PAGE = "https://celloprotocol.com/status";
+export const ACCOUNT_SITE = "https://trust.celloprotocol.com";
 export const WAITLIST_PAGE = "https://celloprotocol.com/waitlist";
-export const HOW_TO_GET_A_CODE = `You need a code. It's in the email that said you were admitted. Lost it, or setting up another device? Sign in at ${STATUS_PAGE} and ask for one. Not admitted yet? Join at ${WAITLIST_PAGE}.`;
+export const HOW_TO_GET_A_CODE = `You need a setup code. Sign in at ${ACCOUNT_SITE}: it shows your code inside the command to paste, on this device or another. Not admitted yet? Join at ${WAITLIST_PAGE}.`;
 
 // What a person can do next, for each thing an issuer can refuse. The issuer's own words come first.
 const NEXT_STEP: Record<string, string> = {
   code_required: HOW_TO_GET_A_CODE,
-  code_used: `Each code works once. Ask for a new one at ${STATUS_PAGE}.`,
-  code_expired: `Ask for a new one at ${STATUS_PAGE}.`,
-  code_unknown: `Check it against your email, or ask for a new one at ${STATUS_PAGE}.`,
+  code_used: `Each code works once. Sign in at ${ACCOUNT_SITE} for a new one.`,
+  code_expired: `Sign in at ${ACCOUNT_SITE} for a new one.`,
+  code_unknown: `Check it against the one on ${ACCOUNT_SITE}, or get a new one there.`,
   code_cap: "That limit is set by the issuer, and nothing was used.",
   agent_cap: "This agent wasn't registered. Once the limit is raised, run the same command again.",
   rate_limited: "Nothing was used.",

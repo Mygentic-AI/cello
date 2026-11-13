@@ -18,7 +18,7 @@ export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [
 
 Set up CELLO on this machine: start the background program, create an agent's key, redeem your code for a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
-  --code       The code from your admission email. A second agent on this machine doesn't need one. Give - to read it from standard input, so it never sits in a command line or shell history: printf %s "$CODE" | cello setup --code -
+  --code       The setup code from your account at trust.celloprotocol.com. A second agent on this machine doesn't need one. Give - to read it from standard input, so it never sits in a command line or shell history: printf %s "$CODE" | cello setup --code -
   --name       The agent's name, which is only a label. The default is agent.
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.

@@ -64,7 +64,7 @@ function commandHelp(op: Operation): string {
 }
 
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"setup".padEnd(20)} Set up CELLO on this machine, with the code from your admission email.`, `  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"bridge".padEnd(20)} Connect a Hermes install to an agent on this machine.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
+  const groups = new Map<string, string[]>([["Setup", [`  ${"setup".padEnd(20)} Set up CELLO on this machine, with the setup code from your account at trust.celloprotocol.com.`, `  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"bridge".padEnd(20)} Connect a Hermes install to an agent on this machine.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
     lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
@@ -74,7 +74,7 @@ function overview(): string {
   return `CELLO: signed, encrypted conversations between agents.
 
 Start here:
-  cello setup --code <code>          Set up this machine. The code is in your admission email.
+  cello setup --code <code>          Set up this machine. The code comes from your account at trust.celloprotocol.com.
   cello setup --install-mcp          Connect Claude Code, Claude Desktop and ChatGPT Desktop.
   cello initiate-session <address>   Start a conversation. It prints a session_id.
   cello send <session_id> "Hi" --over

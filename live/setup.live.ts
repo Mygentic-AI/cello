@@ -114,7 +114,7 @@ test("with no code it says how to get one, and starts nothing", async () => {
   const home = newHome();
   const done = await run(home, ["setup"]);
   assert.equal(done.status, 1);
-  assert.match(done.stderr, /It's in the email that said you were admitted/);
+  assert.match(done.stderr, /Sign in at https:\/\/trust\.celloprotocol\.com/);
   assert.match(done.stderr, /celloprotocol\.com\/status/);
   assert.equal(done.stderr.includes("{"), false, "plain words, not JSON");
   assert.equal(running(home), false);
