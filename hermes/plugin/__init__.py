@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import hashlib
+import hmac
 import json
 import logging
 import ntpath
@@ -145,11 +146,20 @@ def _hermes_home() -> Path:
         return Path.home() / ".hermes"
 
 
-def _socket_path(explicit_home: Optional[Any] = None) -> str:
-    """Where the daemon listens. Named exactly as the daemon names it (src/daemon/paths.ts socketPath)."""
+def _cello_home(explicit_home: Optional[Any] = None) -> str:
     raw = str(explicit_home).strip() if explicit_home is not None else ""
-    home = raw or _get_cello_env("CELLO_HOME") or str(Path.home() / ".cello")
-    if sys.platform == "win32":
+    return raw or _get_cello_env("CELLO_HOME") or str(Path.home() / ".cello")
+
+
+def _ipc_key_path(explicit_home: Optional[Any] = None) -> str:
+    """The key the daemon proves itself with on Windows (src/daemon/paths.ts ipcKeyPath)."""
+    return str(Path(_cello_home(explicit_home)) / "daemon.ipc-key")
+
+
+def _socket_path(explicit_home: Optional[Any] = None, platform: Optional[str] = None) -> str:
+    """Where the daemon listens. Named exactly as the daemon names it (src/daemon/paths.ts socketPath)."""
+    home = _cello_home(explicit_home)
+    if (platform or sys.platform) == "win32":
         # Windows refuses a Unix socket in the home folder, so the daemon listens on a named pipe named from it.
         canonical = ntpath.abspath(home).lower().replace("/", "\\")
         return "\\\\.\\pipe\\cello-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12] + "-daemon"
@@ -276,6 +286,7 @@ class CelloAdapter(BasePlatformAdapter):
         self._legacy_delivery_mode: str = _get_cello_env("CELLO_DELIVERY_MODE").lower()
         # Pinned now, because a background reconnect runs outside the profile's scope.
         self._socket: str = _socket_path(extra.get("cello_home"))
+        self._ipc_key_file: str = _ipc_key_path(extra.get("cello_home"))
         self._writer: Optional[asyncio.StreamWriter] = None
         self._read_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -504,6 +515,8 @@ class CelloAdapter(BasePlatformAdapter):
         self._writer = writer
         self._start_wake_worker()
         self._read_task = asyncio.create_task(self._read_loop(reader))
+        if sys.platform == "win32":
+            await self._verify_daemon()
         held = await self._call("subscribe", {"agent": self._agent_name, "caller": self._caller})
         self._agent_id = held.get("agent_id")
         if self._agent_id:
@@ -511,6 +524,20 @@ class CelloAdapter(BasePlatformAdapter):
         if held.get("unread"):
             # Nothing rings again for what arrived while this side was away.
             await self._announce_waiting()
+
+    async def _verify_daemon(self) -> None:
+        """On Windows another account could create the daemon's pipe first. Nothing is sent until it proves it holds
+        this user's key (the same check as src/ipc/handshake.ts)."""
+        try:
+            key = bytes.fromhex(Path(self._ipc_key_file).read_text(encoding="utf-8").strip())
+        except Exception:
+            raise ConnectionError("something is listening at " + self._socket + " but left no key at " + self._ipc_key_file + ", so nothing was sent to it")
+        nonce = os.urandom(32)
+        answer = await self._call("hello", {"nonce": nonce.hex()}, timeout=10.0)
+        expected = hmac.new(key, b"cello-daemon-ipc-v1\0" + nonce, hashlib.sha256).hexdigest()
+        proof = answer.get("proof") if isinstance(answer, dict) else None
+        if not isinstance(proof, str) or not hmac.compare_digest(proof, expected):
+            raise ConnectionError("whatever is listening at " + self._socket + " failed the daemon's check, so nothing was sent to it. Another account may be posing as the daemon")
 
     async def _announce_waiting(self) -> None:
         try:

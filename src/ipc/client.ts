@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
+import { ipcKeyPath } from "../daemon/paths.ts";
+import { HELLO_METHOD, ipcHandshakeRequired, newNonce, proofHolds } from "./handshake.ts";
 import { createInterface } from "node:readline";
 import type { IpcNotification, IpcRequest, IpcResponse } from "./protocol.ts";
 
@@ -32,6 +35,7 @@ export function connectFailure(path: string, err: NodeJS.ErrnoException): Error 
 
 // A wedged daemon mustn't hang a tool forever. It outlasts every wait the daemon has of its own.
 const CALL_TIMEOUT_MS = 90_000;
+const HELLO_TIMEOUT_MS = 10_000;
 
 // The daemon may have saved a call before it stopped, so what a caller should do next depends on the call.
 function afterCutOff(method: string): string {
@@ -86,8 +90,8 @@ export class IpcClient {
     socket.on("error", () => undefined);
   }
 
-  static connect(path: string): Promise<IpcClient> {
-    return new Promise((resolve, reject) => {
+  static async connect(path: string, options: { verify?: boolean; keyFile?: string } = {}): Promise<IpcClient> {
+    const client = await new Promise<IpcClient>((resolve, reject) => {
       const socket = createConnection(path);
       socket.once("connect", () => {
         socket.removeAllListeners("error");
@@ -95,6 +99,30 @@ export class IpcClient {
       });
       socket.once("error", (err: NodeJS.ErrnoException) => reject(connectFailure(path, err)));
     });
+    if (options.verify ?? ipcHandshakeRequired()) await client.#verifyDaemon(path, options.keyFile ?? ipcKeyPath());
+    return client;
+  }
+
+  // Nothing is sent until whoever answers proves it holds this user's key. See handshake.ts for why.
+  async #verifyDaemon(path: string, keyFile: string): Promise<void> {
+    const impostor = (why: string): DaemonRefused => {
+      this.close();
+      return new DaemonRefused("daemon_unverified", `Something is listening at ${path}, but it ${why}, so nothing was sent to it. If the daemon was just upgraded, run cello logout and cello login. If that doesn't fix it, another account on this machine may be posing as the daemon: restart the machine, then run cello login.`);
+    };
+    let key: string;
+    try {
+      key = readFileSync(keyFile, "utf8").trim();
+    } catch {
+      throw impostor(`left no key at ${keyFile}`);
+    }
+    const nonce = newNonce();
+    let answer: unknown;
+    try {
+      answer = await this.call(HELLO_METHOD, { nonce }, HELLO_TIMEOUT_MS);
+    } catch {
+      throw impostor("didn't answer the check");
+    }
+    if (!proofHolds(key, nonce, (answer as { proof?: unknown } | null)?.proof)) throw impostor("failed the check");
   }
 
   call(method: string, params: Record<string, unknown> = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {

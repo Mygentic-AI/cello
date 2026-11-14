@@ -1,7 +1,13 @@
 // Windows refused the daemon's Unix socket for a v1 user (listen EACCES at every path length, admin or not).
 // These pin the Windows endpoints, which this Mac can't exercise live.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { daemonProof, newIpcKey } from "../src/ipc/handshake.ts";
 import { endpointIsFile, oldVersionEndpoints, socketPath } from "../src/daemon/paths.ts";
 import { mergeNpmrc, npmShell } from "../src/screener/screener-state.ts";
 import { claudeDesktopFolder, windowsCommandLine } from "../src/install-mcp.ts";
@@ -41,10 +47,27 @@ test("on Windows the daemon listens on a named pipe, named from the home folder"
 });
 
 test("the pipe name matches the old version's, so setup can see an old daemon still running", () => {
-  // The v1 client's getDaemonIpcEndpoint("C:\\Users\\kevin\\.cello", "win32").
+  // Pinned to what v1's getDaemonIpcEndpoint("C:\\Users\\kevin\\.cello", "win32") returns, so a changed hash fails here.
   const [daemon, gateway] = oldVersionEndpoints("C:\\Users\\kevin\\.cello", "win32");
-  assert.equal(daemon, socketPath("C:\\Users\\kevin\\.cello", "win32"));
-  assert.match(gateway as string, /-gateway$/);
+  assert.equal(daemon, "\\\\.\\pipe\\cello-d1bbb273d6cf-daemon");
+  assert.equal(gateway, "\\\\.\\pipe\\cello-d1bbb273d6cf-gateway");
+  assert.equal(socketPath("C:\\Users\\kevin\\.cello", "win32"), daemon);
+});
+
+test("the Hermes plugin names the same pipe and checks the daemon's proof the same way", () => {
+  const dir = mkdtempSync(join(tmpdir(), "c2w-"));
+  const key = newIpcKey();
+  const nonce = "ab".repeat(32);
+  const keyFile = join(dir, "daemon.ipc-key");
+  writeFileSync(keyFile, `${key}\n`);
+  const here = dirname(fileURLToPath(import.meta.url));
+  const run = spawnSync("python3", [join(here, "hermes-plugin-windows.py"), join(here, "..", "hermes", "plugin", "__init__.py"), "C:\\Users\\kevin\\.cello", key, nonce, keyFile], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const said = JSON.parse(run.stdout) as Record<string, string>;
+  assert.equal(said["pipe"], "\\\\.\\pipe\\cello-d1bbb273d6cf-daemon");
+  assert.equal(said["proof"], daemonProof(key, nonce));
+  assert.equal(said["real"], "accepted");
+  assert.equal(said["squatter"], "refused");
 });
 
 test("elsewhere it's a socket file in the home folder, and only a file is cleared after a crash", () => {

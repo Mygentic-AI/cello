@@ -1,6 +1,7 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { HELLO_METHOD, daemonProof, ipcHandshakeRequired, newIpcKey } from "../ipc/handshake.ts";
 import { createServer, type Socket, createConnection } from "node:net";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
@@ -11,7 +12,7 @@ import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
-import { celloHome, databasePath, endpointIsFile, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
+import { celloHome, databasePath, endpointIsFile, holdsOldVersion, ipcKeyPath, oldVersionMessage, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
 
 const home = celloHome();
@@ -21,6 +22,7 @@ if (holdsOldVersion(home)) {
 }
 mkdirSync(home, { recursive: true, mode: 0o700 });
 const path = socketPath(home);
+const ipcKey = ipcHandshakeRequired() ? newIpcKey() : undefined;
 
 // One daemon per home. A socket file nobody answers on is left over from a crash.
 async function clearStaleSocket(): Promise<void> {
@@ -270,6 +272,10 @@ async function handle(socket: Socket | undefined, method: string, params: Record
   // Channel actions stop with everything else. The server refuses them too, so this only saves the trip and covers what's read from here.
   if (method.startsWith("channel_") && typeof params["agent"] === "string") engine.assertCanAct(engine.resolveAgent(params["agent"]));
   switch (method) {
+    case HELLO_METHOD: {
+      if (!ipcKey) throw new LocalError("not_supported", "this daemon doesn't prove itself on this platform");
+      return { proof: daemonProof(ipcKey, text(params, "nonce")) };
+    }
     case "status": {
       // A fact about this thread, measured here. It's the longest it has been held up since the last time anyone asked.
       const longestStallMs = Math.max(0, Math.round(mainThreadDelay.max / 1e6 - STALL_RESOLUTION_MS));
@@ -552,6 +558,8 @@ const ipc = createServer((socket) => {
   socket.on("error", () => undefined);
 });
 
+// Written before the pipe opens, so a client that reaches this daemon can always read the key it proves itself with.
+if (ipcKey) writeFileSync(ipcKeyPath(home), `${ipcKey}\n`, { mode: 0o600 });
 await new Promise<void>((resolve) => ipc.listen({ path, readableAll: false, writableAll: false }, resolve));
 logEvent("daemon.listening", { pid: process.pid, server: serverUrl });
 await engine.start();

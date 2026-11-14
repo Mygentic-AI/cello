@@ -6,7 +6,51 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
 import { DaemonGone, DaemonRefused, IpcClient, connectFailure } from "../src/ipc/client.ts";
+import { daemonProof, ipcHandshakeRequired, newIpcKey } from "../src/ipc/handshake.ts";
+
+// A fake daemon that answers hello with a proof under `key`, or with garbage, or not at all.
+async function helloServer(answer: (nonce: string) => unknown): Promise<string> {
+  const path = join(mkdtempSync(join(tmpdir(), "c2h-")), "s.sock");
+  const server = createServer((socket) => {
+    createInterface({ input: socket }).on("line", (line) => {
+      const req = JSON.parse(line) as { id: number; method: string; params: { nonce: string } };
+      const result = req.method === "hello" ? answer(req.params.nonce) : { pong: true };
+      if (result !== undefined) socket.write(`${JSON.stringify({ id: req.id, ok: true, result })}\n`);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  server.unref();
+  return path;
+}
+
+test("on Windows a client sends nothing to whoever holds the pipe until it proves it holds this user's key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "c2k-"));
+  const keyFile = join(dir, "daemon.ipc-key");
+  const key = newIpcKey();
+  writeFileSync(keyFile, `${key}\n`);
+
+  const real = await IpcClient.connect(await helloServer((nonce) => ({ proof: daemonProof(key, nonce) })), { verify: true, keyFile });
+  assert.deepEqual(await real.call("status"), { pong: true });
+  real.close();
+
+  const otherKey = newIpcKey();
+  const squatter = await helloServer((nonce) => ({ proof: daemonProof(otherKey, nonce) }));
+  await assert.rejects(IpcClient.connect(squatter, { verify: true, keyFile }), (err: DaemonRefused) => err.code === "daemon_unverified" && /failed the check/.test(err.message));
+
+  // An answer seen once is no use later: the nonce differs every time.
+  let seen: { nonce: string; proof: string } | undefined;
+  const recorder = await helloServer((nonce) => { seen = { nonce, proof: daemonProof(key, nonce) }; return { proof: seen.proof }; });
+  (await IpcClient.connect(recorder, { verify: true, keyFile })).close();
+  const replayer = await helloServer(() => ({ proof: seen?.proof }));
+  await assert.rejects(IpcClient.connect(replayer, { verify: true, keyFile }), (err: DaemonRefused) => err.code === "daemon_unverified");
+
+  await assert.rejects(IpcClient.connect(squatter, { verify: true, keyFile: join(dir, "missing") }), (err: DaemonRefused) => /left no key/.test(err.message));
+  assert.equal(ipcHandshakeRequired("win32"), true);
+  assert.equal(ipcHandshakeRequired("darwin"), false);
+});
 
 test("only nothing listening reads as 'not running'; a blocked or busy endpoint says what it is", () => {
   const err = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
