@@ -436,7 +436,11 @@ async function screenerCommand(args: string[]): Promise<void> {
     const existing = existsSync(npmrc) ? readFileSync(npmrc, "utf8") : "";
     const merged = mergeNpmrc(existing);
     if (merged !== existing) writeFileSync(npmrc, merged);
-    const npm = spawnSync("npm", ["install", "--no-audit", "--no-fund", SCREENER_RUNTIME_MODULE], { stdio: "inherit", cwd: screenerRuntimeDir(), shell: npmShell() });
+    const npmArgs = ["install", "--no-audit", "--no-fund", SCREENER_RUNTIME_MODULE];
+    // Through a shell it's one finished line: an args array with shell: true is deprecated in Node 24. The words are fixed, with no spaces.
+    const npm = npmShell()
+      ? spawnSync(["npm", ...npmArgs].join(" "), { stdio: "inherit", cwd: screenerRuntimeDir(), shell: true })
+      : spawnSync("npm", npmArgs, { stdio: "inherit", cwd: screenerRuntimeDir() });
     if (npm.status !== 0) fail(`${JSON.stringify({ error: "runtime_install_failed", message: `npm install failed with status ${npm.status ?? "none"}, so the model can't run. Try again.` })}\n`, EXIT_REFUSED);
   }
   const after = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
