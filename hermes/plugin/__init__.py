@@ -171,6 +171,8 @@ async def _open_daemon(endpoint: str):
     if sys.platform != "win32":
         return await asyncio.open_unix_connection(endpoint, limit=MAX_LINE_BYTES)
     loop = asyncio.get_running_loop()
+    if not hasattr(loop, "create_pipe_connection"):
+        raise RuntimeError("CELLO reaches its daemon on Windows through a named pipe, which needs asyncio's Proactor event loop, and this process runs " + type(loop).__name__)
     reader = asyncio.StreamReader(limit=MAX_LINE_BYTES, loop=loop)
     protocol = asyncio.StreamReaderProtocol(reader, loop=loop)
     transport, _ = await loop.create_pipe_connection(lambda: protocol, endpoint)
@@ -212,18 +214,39 @@ def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Di
             fcntl.flock(lock, fcntl.LOCK_EX)
         elif msvcrt is not None:
             # Released when the file closes. The lock file stays empty, so byte 0 is always the one locked.
+            # LK_LOCK gives up after about ten seconds, where flock waits. Keep asking, as flock would.
             lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            while True:
+                try:
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
         # Strict: writing over a file that couldn't be read would erase every other binding.
         bindings = _read_bindings_strict(path)
         change(bindings)
         tmp = Path(str(path) + "." + str(os.getpid()) + ".tmp")
         tmp.write_text(json.dumps(bindings), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        _replace_file(tmp, path)
         return bindings
 
 
+def _replace_file(tmp: Path, path: Path) -> None:
+    """os.replace, except that on Windows a reader holding the file open makes it fail for a moment. That reader is the
+    unlocked _read_bindings, which finishes in milliseconds, so a few short retries are enough."""
+    for attempt in range(50):
+        try:
+            os.replace(str(tmp), str(path))
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 49:
+                raise
+            time.sleep(0.02)
+
+
 def check_cello_requirements() -> bool:
+    # On Windows this opens the pipe as a client for a moment, and reads False if every instance happens to be busy.
+    # The gateway asks again later, so a miss only delays the start.
     return os.path.exists(_socket_path())
 
 
@@ -1369,3 +1392,5 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     if sys.platform != "win32":
         _start_handoff_host(ctx)
+    else:
+        logger.warning("[cello] On Windows, CELLO notifications for a Hermes Desktop chat go to the agent's own CELLO chat instead, because handing them between Hermes processes isn't built for Windows yet.")
