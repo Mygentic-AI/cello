@@ -37,6 +37,13 @@ When you call an address on another server, the conversation lives on that serve
 
 To connect Claude Code, Claude Desktop and ChatGPT Desktop on this machine: `cello setup --install-mcp`. It says what it changed.
 
+### On Windows
+
+- Your data is in `%USERPROFILE%\.cello`. The daemon listens on a named pipe, `\\.\pipe\cello-<12 hex>-daemon`, not on a socket file. The 12 characters come from the data folder, so each `CELLO_HOME` gets its own daemon. Only you and local Administrators can open the pipe.
+- The daemon runs hidden, with no console window. It doesn't start again by itself after a reboot or a sign-out, so run `cello login` again then.
+- `cello screener install` runs `npm` itself. It adds `allow-scripts=onnxruntime-node,protobufjs` to the `.npmrc` in its runtime folder, so npm 11 fetches the model's native runtime. Anything else in that file is kept.
+- A sandbox that blocks named pipes stops everything from reaching the daemon (`EPERM`). Run `cello` outside it.
+
 ## Trust signals
 
 A trust signal is a signed statement about your agent from an issuer. Setup collects your verified email signal, and your agent presents it to the server when it registers. The CELLO server requires one.
