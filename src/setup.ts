@@ -1,9 +1,8 @@
 // `cello setup`: from nothing to an agent with its verified email, on a server, with a reply on screen.
 // Each step says what it did, and each failure says what to do next, with JSON behind a flag.
 import { existsSync, renameSync } from "node:fs";
-import { join } from "node:path";
 import { createConnection } from "node:net";
-import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./daemon/paths.ts";
+import { celloHome, databasePath, holdsOldVersion, oldVersionEndpoints, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DEFAULT_SERVER_URL } from "./daemon/settings.ts";
 import { HOW_TO_GET_A_CODE } from "./daemon/wallet.ts";
 import { installMcp } from "./install-mcp.ts";
@@ -94,7 +93,8 @@ async function moveOldVersion(host: SetupHost, say: (line: string) => void): Pro
   if (!holdsOldVersion(home)) return;
   const target = `${home}-old`;
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new SetupFailed("old_version_data", oldVersionMessage(home));
-  if (await answers(join(home, "daemon.sock")) || await answers(join(home, "gateway.sock"))) throw new SetupFailed("old_version_running", `The old version of CELLO is still running from ${home}. Stop it, or restart this machine, then run the same command again. Nothing changed.`);
+  const [oldDaemon, oldGateway] = oldVersionEndpoints(home) as [string, string];
+  if (await answers(oldDaemon) || await answers(oldGateway)) throw new SetupFailed("old_version_running", `The old version of CELLO is still running from ${home}. Stop it, or restart this machine, then run the same command again. Nothing changed.`);
   if (existsSync(target)) throw new SetupFailed("old_version_data", `${home} holds data from the old version, and ${target} already exists, so it can't be moved there. Move one of them yourself, then run the same command again. Nothing changed.`);
   say(`${home} holds data from the old version of CELLO, which this version can't read. Its agents don't carry over.`);
   const answer = (await host.ask(`Move it to ${target}? [y/N] `)).toLowerCase();
