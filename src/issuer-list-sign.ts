@@ -26,7 +26,8 @@ export function commandSigner(root: RootName, command: string): RootSigner {
   return {
     root,
     sign: async (message) => {
-      const run = spawnSync("/bin/sh", ["-c", command], { input: message, timeout: SIGNER_WAIT_MS, encoding: "buffer", stdio: ["pipe", "pipe", "inherit"] });
+      // shell: true is /bin/sh -c elsewhere and cmd.exe on Windows, which has no /bin/sh.
+      const run = spawnSync(command, { shell: true, input: message, timeout: SIGNER_WAIT_MS, encoding: "buffer", stdio: ["pipe", "pipe", "inherit"] });
       if (run.status !== 0) throw new Error(`the signer command failed with status ${run.status ?? "none"}${run.error ? `: ${run.error.message}` : ""}`);
       return hexBytes("the signer command's output", run.stdout.toString("utf8").trim());
     },
