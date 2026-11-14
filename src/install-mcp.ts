@@ -1,6 +1,6 @@
 // cello setup --install-mcp: connects the apps on this machine, and says exactly what it changed. Nothing here leaves the machine.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,22 +16,37 @@ function writeAtomically(path: string, text: string): void {
 }
 
 // Claude Desktop keeps its config in Application Support on a Mac, under %APPDATA% on Windows, and in ~/.config on Linux.
-export function claudeDesktopFolder(home: string, platform: NodeJS.Platform = process.platform, appData = process.env["APPDATA"]): string {
+// The Microsoft Store (MSIX) install on Windows redirects %APPDATA% into its package folder, so that one wins if present.
+export function claudeDesktopFolder(home: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
   if (platform === "darwin") return join(home, "Library", "Application Support", "Claude");
-  if (platform === "win32") return win32.join(appData ?? win32.join(home, "AppData", "Roaming"), "Claude");
+  if (platform === "win32") {
+    const localAppData = env["LOCALAPPDATA"] ?? win32.join(home, "AppData", "Local");
+    const packages = win32.join(localAppData, "Packages");
+    const store = existsSync(packages) ? readdirSync(packages).find((name) => /^Claude_/i.test(name)) : undefined;
+    const storeConfig = store ? win32.join(packages, store, "LocalCache", "Roaming", "Claude") : undefined;
+    if (storeConfig && existsSync(storeConfig)) return storeConfig;
+    return win32.join(env["APPDATA"] ?? win32.join(home, "AppData", "Roaming"), "Claude");
+  }
   return join(home, ".config", "Claude");
 }
 
 // Windows has no sh, so the claude command is found with where. An npm install there is claude.cmd, which Node
-// runs only through a shell, and a shell splits on spaces, so each argument is quoted (a user folder often has one).
+// runs only through a shell. The shell gets one finished line (an args array with shell: true is deprecated in
+// Node 24), with each part quoted, because it splits on spaces and a user folder often has one.
 export function windowsCommandLine(command: string, args: string[]): { file: string; args: string[]; shell: boolean } {
   if (/\.exe$/i.test(command)) return { file: command, args, shell: false };
   const quote = (s: string): string => `"${s.replace(/"/g, '""')}"`;
-  return { file: quote(command), args: args.map(quote), shell: true };
+  return { file: [command, ...args].map(quote).join(" "), args: [], shell: true };
+}
+
+// where lists every match on PATH. An npm install puts an extensionless sh script first, which cmd can't run itself.
+export function pickWindowsClaude(whereOutput: string): string {
+  const found = whereOutput.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return found.find((p) => /\.exe$/i.test(p)) ?? found.find((p) => /\.(cmd|bat)$/i.test(p)) ?? "";
 }
 
 function findClaude(): string {
-  if (process.platform === "win32") return (spawnSync("where", ["claude"], { encoding: "utf8" }).stdout ?? "").split(/\r?\n/)[0]?.trim() ?? "";
+  if (process.platform === "win32") return pickWindowsClaude(spawnSync("where", ["claude"], { encoding: "utf8" }).stdout ?? "");
   return (spawnSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).stdout ?? "").trim();
 }
 

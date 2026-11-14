@@ -10,18 +10,26 @@ import { fileURLToPath } from "node:url";
 import { daemonProof, newIpcKey } from "../src/ipc/handshake.ts";
 import { endpointIsFile, oldVersionEndpoints, socketPath } from "../src/daemon/paths.ts";
 import { mergeNpmrc, npmShell } from "../src/screener/screener-state.ts";
-import { claudeDesktopFolder, windowsCommandLine } from "../src/install-mcp.ts";
+import { claudeDesktopFolder, pickWindowsClaude, windowsCommandLine } from "../src/install-mcp.ts";
 
-test("Claude Desktop's config is found under %APPDATA% on Windows", () => {
-  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", "C:\\Users\\k\\AppData\\Roaming"), "C:\\Users\\k\\AppData\\Roaming\\Claude");
-  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", undefined), "C:\\Users\\k\\AppData\\Roaming\\Claude");
+test("Claude Desktop's config is found under %APPDATA% on Windows, or in the Store install's package folder", () => {
+  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", { APPDATA: "C:\\Users\\k\\AppData\\Roaming" }), "C:\\Users\\k\\AppData\\Roaming\\Claude");
+  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", {}), "C:\\Users\\k\\AppData\\Roaming\\Claude");
+  // The Store install's folder is found by listing a real Windows directory, which this Mac can't make. Unproven here.
   assert.equal(claudeDesktopFolder("/Users/k", "darwin"), "/Users/k/Library/Application Support/Claude");
   assert.equal(claudeDesktopFolder("/home/k", "linux"), "/home/k/.config/Claude");
 });
 
-test("a claude.cmd runs through a shell with every argument quoted, a claude.exe runs directly", () => {
+test("where's list is narrowed to a file Windows can run, .exe first", () => {
+  const npmInstall = "C:\\Users\\k\\AppData\\Roaming\\npm\\claude\r\nC:\\Users\\k\\AppData\\Roaming\\npm\\claude.cmd\r\n";
+  assert.equal(pickWindowsClaude(npmInstall), "C:\\Users\\k\\AppData\\Roaming\\npm\\claude.cmd");
+  assert.equal(pickWindowsClaude(`${npmInstall}C:\\Users\\k\\.local\\bin\\claude.exe\r\n`), "C:\\Users\\k\\.local\\bin\\claude.exe");
+  assert.equal(pickWindowsClaude(""), "");
+});
+
+test("a claude.cmd runs through a shell as one quoted line, a claude.exe runs directly", () => {
   const cmd = windowsCommandLine("C:\\Program Files\\nodejs\\claude.cmd", ["plugin", "marketplace", "add", "C:\\Users\\Kevin H\\cello"]);
-  assert.deepEqual(cmd, { file: "\"C:\\Program Files\\nodejs\\claude.cmd\"", args: ["\"plugin\"", "\"marketplace\"", "\"add\"", "\"C:\\Users\\Kevin H\\cello\""], shell: true });
+  assert.deepEqual(cmd, { file: "\"C:\\Program Files\\nodejs\\claude.cmd\" \"plugin\" \"marketplace\" \"add\" \"C:\\Users\\Kevin H\\cello\"", args: [], shell: true });
   assert.deepEqual(windowsCommandLine("C:\\bin\\claude.exe", ["plugin", "list"]), { file: "C:\\bin\\claude.exe", args: ["plugin", "list"], shell: false });
 });
 
