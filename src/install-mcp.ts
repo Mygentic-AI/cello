@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface McpInstallLine { app: string; outcome: "installed" | "unchanged" | "not_found" | "failed"; detail: string }
@@ -15,12 +15,33 @@ function writeAtomically(path: string, text: string): void {
   renameSync(`${path}.cello-tmp`, path);
 }
 
+// Claude Desktop keeps its config in Application Support on a Mac, under %APPDATA% on Windows, and in ~/.config on Linux.
+export function claudeDesktopFolder(home: string, platform: NodeJS.Platform = process.platform, appData = process.env["APPDATA"]): string {
+  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude");
+  if (platform === "win32") return win32.join(appData ?? win32.join(home, "AppData", "Roaming"), "Claude");
+  return join(home, ".config", "Claude");
+}
+
+// Windows has no sh, so the claude command is found with where. An npm install there is claude.cmd, which Node
+// runs only through a shell, and a shell splits on spaces, so each argument is quoted (a user folder often has one).
+export function windowsCommandLine(command: string, args: string[]): { file: string; args: string[]; shell: boolean } {
+  if (/\.exe$/i.test(command)) return { file: command, args, shell: false };
+  const quote = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+  return { file: quote(command), args: args.map(quote), shell: true };
+}
+
+function findClaude(): string {
+  if (process.platform === "win32") return (spawnSync("where", ["claude"], { encoding: "utf8" }).stdout ?? "").split(/\r?\n/)[0]?.trim() ?? "";
+  return (spawnSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).stdout ?? "").trim();
+}
+
 function claudeCode(packageRoot: string): McpInstallLine {
   const app = "Claude Code";
-  const onPath = spawnSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).stdout.trim();
+  const onPath = findClaude();
   if (!onPath) return { app, outcome: "not_found", detail: "no claude command on this PATH" };
   const claude = (args: string[]): { ok: boolean; said: string } => {
-    const run = spawnSync(onPath, args, { encoding: "utf8", timeout: CLAUDE_WAIT_MS });
+    const line = process.platform === "win32" ? windowsCommandLine(onPath, args) : { file: onPath, args, shell: false };
+    const run = spawnSync(line.file, line.args, { encoding: "utf8", timeout: CLAUDE_WAIT_MS, shell: line.shell });
     return { ok: run.status === 0, said: `${run.stdout ?? ""}${run.stderr ?? ""}`.trim() };
   };
   const listed = claude(["plugin", "list"]);
@@ -34,7 +55,7 @@ function claudeCode(packageRoot: string): McpInstallLine {
 
 function claudeDesktop(home: string, command: string, args: string[]): McpInstallLine {
   const app = "Claude Desktop";
-  const folder = process.platform === "darwin" ? join(home, "Library", "Application Support", "Claude") : join(home, ".config", "Claude");
+  const folder = claudeDesktopFolder(home);
   if (!existsSync(folder)) return { app, outcome: "not_found", detail: `no ${folder}` };
   const path = join(folder, "claude_desktop_config.json");
   let config: { mcpServers?: Record<string, unknown> } & Record<string, unknown> = {};

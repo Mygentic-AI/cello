@@ -4,6 +4,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { endpointIsFile, oldVersionEndpoints, socketPath } from "../src/daemon/paths.ts";
 import { mergeNpmrc, npmShell } from "../src/screener/screener-state.ts";
+import { claudeDesktopFolder, windowsCommandLine } from "../src/install-mcp.ts";
+
+test("Claude Desktop's config is found under %APPDATA% on Windows", () => {
+  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", "C:\\Users\\k\\AppData\\Roaming"), "C:\\Users\\k\\AppData\\Roaming\\Claude");
+  assert.equal(claudeDesktopFolder("C:\\Users\\k", "win32", undefined), "C:\\Users\\k\\AppData\\Roaming\\Claude");
+  assert.equal(claudeDesktopFolder("/Users/k", "darwin"), "/Users/k/Library/Application Support/Claude");
+  assert.equal(claudeDesktopFolder("/home/k", "linux"), "/home/k/.config/Claude");
+});
+
+test("a claude.cmd runs through a shell with every argument quoted, a claude.exe runs directly", () => {
+  const cmd = windowsCommandLine("C:\\Program Files\\nodejs\\claude.cmd", ["plugin", "marketplace", "add", "C:\\Users\\Kevin H\\cello"]);
+  assert.deepEqual(cmd, { file: "\"C:\\Program Files\\nodejs\\claude.cmd\"", args: ["\"plugin\"", "\"marketplace\"", "\"add\"", "\"C:\\Users\\Kevin H\\cello\""], shell: true });
+  assert.deepEqual(windowsCommandLine("C:\\bin\\claude.exe", ["plugin", "list"]), { file: "C:\\bin\\claude.exe", args: ["plugin", "list"], shell: false });
+});
 
 test("the screener install runs npm through a shell on Windows only", () => {
   assert.equal(npmShell("win32"), true);
