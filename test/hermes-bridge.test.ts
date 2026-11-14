@@ -1,6 +1,6 @@
 // What a forgotten flag or a failed step does to an install. A live run wouldn't show these, because the public path needs the model.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -50,6 +50,17 @@ test("a public agent stays public when the installer runs again without the flag
 });
 
 const landingIn = (home: string): unknown => JSON.parse(readFileSync(join(home, "cello", "landing-session.json"), "utf8")).session_id;
+
+test("a public agent stays public after Hermes on Windows rewrites .env with CRLF line endings", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
+  assert.equal((await installBridge(options(home, recorder().exec, { public: true, allowInitiate: true }))).ok, true);
+  const envPath = join(home, ".env");
+  writeFileSync(envPath, readFileSync(envPath, "utf8").replace(/\n/g, "\r\n"));
+  const again = recorder();
+  assert.equal((await installBridge(options(home, again.exec))).ok, true);
+  assert.match(readFileSync(envPath, "utf8"), /CELLO_PUBLIC=1/);
+  assert.doesNotMatch(toolsOf(again.calls) ?? "", /cello_create_agent/, "strangers don't get the full tool set");
+});
 
 test("an agent moves its own notifications to the session it's in, and back, and nothing else", async () => {
   const home = mkdtempSync(join(tmpdir(), "cello-bt-"));

@@ -56,7 +56,7 @@ const daemonEntry = (): string => fileURLToPath(new URL(`./daemon/main${extname(
 
 function withEnv(existing: string, set: Record<string, string>, drop: string[]): string {
   const keyOf = (line: string): string => line.split("=", 1)[0] as string;
-  const lines = existing.split("\n").filter((line) => !drop.includes(keyOf(line)));
+  const lines = existing.split(/\r?\n/).filter((line) => !drop.includes(keyOf(line)));
   while (lines.at(-1) === "") lines.pop();
   for (const [key, value] of Object.entries(set)) {
     const at = lines.findIndex((line) => keyOf(line) === key);
@@ -89,10 +89,10 @@ export function setLanding(options: { agent: string; hermesHome?: string; landin
   const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
   const envPath = join(hermesHome, ".env");
   if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A person sets it up first with cello bridge hermes.` };
-  const bridged = readFileSync(envPath, "utf8").split("\n").find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
+  const bridged = readFileSync(envPath, "utf8").split(/\r?\n/).find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
   // An agent moves its own notifications, never another profile's.
   if (bridged !== options.agent.trim()) return { ok: false, output: `${hermesHome} is bridged to ${bridged ?? "no agent"}, not ${options.agent}. Nothing changed.` };
-  if (readFileSync(envPath, "utf8").split("\n").includes("CELLO_SESSION_SCOPE=peer")) return { ok: false, output: "This agent gives each caller their own session, so there's no one landing session to move. Nothing changed." };
+  if (readFileSync(envPath, "utf8").split(/\r?\n/).includes("CELLO_SESSION_SCOPE=peer")) return { ok: false, output: "This agent gives each caller their own session, so there's no one landing session to move. Nothing changed." };
   const { landing, error } = resolveLanding(options.landingSession);
   if (error) return { ok: false, output: error };
   const file = landingFileOf(hermesHome);
@@ -111,10 +111,10 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   const envPath = join(hermesHome, ".env");
   const hermesEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
   // This has to be re-run after every upgrade, and forgetting a flag then mustn't open a public agent to strangers. Only --not-public ends it.
-  const wasPublic = hermesEnv.split("\n").includes("CELLO_PUBLIC=1");
+  const wasPublic = hermesEnv.split(/\r?\n/).includes("CELLO_PUBLIC=1");
   if (options.public && options.notPublic) return refuse("--public and --not-public can't go together.");
   const isPublic = options.public || (wasPublic && !options.notPublic);
-  const allowInitiate = options.allowInitiate || (isPublic && !options.notPublic && hermesEnv.split("\n").includes("CELLO_ALLOW_INITIATE=1"));
+  const allowInitiate = options.allowInitiate || (isPublic && !options.notPublic && hermesEnv.split(/\r?\n/).includes("CELLO_ALLOW_INITIATE=1"));
   const scope = options.sessionScope ?? (isPublic ? "peer" : "agent");
   if (!(SESSION_SCOPES as readonly string[]).includes(scope)) return refuse(`--session-scope must be one of ${SESSION_SCOPES.join(", ")}, not '${scope}'.`);
   if (isPublic && scope !== "peer") return refuse("A public agent needs --session-scope peer, or callers would share one conversation.");
