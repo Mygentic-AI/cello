@@ -245,7 +245,9 @@ async function startDaemon(server: string | undefined): Promise<IpcClient> {
   const entry = daemonEntry();
   mkdirSync(celloHome(), { recursive: true, mode: 0o700 });
   const logFile = openSync(logPath(), "a", 0o600);
-  const child = spawn(process.execPath, server ? [entry, server] : [entry], { detached: true, stdio: ["ignore", logFile, logFile] });
+  // On Windows a detached child gets its own console window, which would sit open for as long as the daemon runs,
+  // and closing it would kill the daemon. windowsHide keeps it out of sight; elsewhere it does nothing.
+  const child = spawn(process.execPath, server ? [entry, server] : [entry], { detached: true, windowsHide: true, stdio: ["ignore", logFile, logFile] });
   closeSync(logFile);
   const client = await waitForDaemon(child);
   child.unref();
