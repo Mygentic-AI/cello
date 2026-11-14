@@ -11,7 +11,7 @@ import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
-import { celloHome, databasePath, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
+import { celloHome, databasePath, endpointIsFile, holdsOldVersion, oldVersionMessage, socketPath } from "./paths.ts";
 import { Store } from "./store.ts";
 
 const home = celloHome();
@@ -24,14 +24,14 @@ const path = socketPath(home);
 
 // One daemon per home. A socket file nobody answers on is left over from a crash.
 async function clearStaleSocket(): Promise<void> {
-  if (!existsSync(path)) return;
+  if (endpointIsFile() && !existsSync(path)) return;
   const answered = await new Promise<boolean>((resolve) => {
     const probe = createConnection(path);
     probe.once("connect", () => { probe.destroy(); resolve(true); });
     probe.once("error", () => resolve(false));
   });
   if (answered) throw new Error(`a daemon is already running on ${path}`);
-  unlinkSync(path);
+  if (endpointIsFile()) unlinkSync(path);
 }
 
 // Identity and state never live on a connection. Every call names its agent and its caller.

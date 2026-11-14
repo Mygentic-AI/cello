@@ -1,14 +1,35 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
 export function celloHome(): string {
   return process.env["CELLO_HOME"] ?? join(homedir(), ".cello");
 }
 
-export function socketPath(home = celloHome()): string {
+// Windows refuses a Unix socket in the home folder (listen EACCES at any path length, admin or not), so there the
+// daemon listens on a named pipe. The pipe's name comes from the home folder, so two homes get two daemons.
+// A pipe made by Node takes the default DACL of the user who made it: that user and local Administrators only.
+export function socketPath(home = celloHome(), platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return windowsPipe(home, "daemon");
   return join(home, "daemon.sock");
 }
+
+// The old version used the same naming, with a second pipe for its gateway. Setup probes both to see if it's running.
+export function windowsPipe(home: string, name: "daemon" | "gateway"): string {
+  const canonical = win32.resolve(home).toLowerCase().replace(/\//g, "\\");
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+  return `\\\\.\\pipe\\cello-${hash}-${name}`;
+}
+
+// Where the old version listened: a socket file on macOS and Linux, a named pipe on Windows.
+export function oldVersionEndpoints(home = celloHome(), platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32") return [windowsPipe(home, "daemon"), windowsPipe(home, "gateway")];
+  return [join(home, "daemon.sock"), join(home, "gateway.sock")];
+}
+
+// A named pipe vanishes with the process that made it. Only a socket file can be left behind by a crash.
+export const endpointIsFile = (platform: NodeJS.Platform = process.platform): boolean => platform !== "win32";
 
 export function databasePath(home = celloHome()): string {
   return join(home, "cello.db");
