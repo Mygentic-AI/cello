@@ -3,6 +3,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { endpointIsFile, oldVersionEndpoints, socketPath } from "../src/daemon/paths.ts";
+import { mergeNpmrc, npmShell } from "../src/screener/screener-state.ts";
+
+test("the screener install runs npm through a shell on Windows only", () => {
+  assert.equal(npmShell("win32"), true);
+  assert.equal(npmShell("darwin"), false);
+});
+
+test("the screener's .npmrc setting is merged into what's there, never written over it", () => {
+  assert.equal(mergeNpmrc(""), "allow-scripts=onnxruntime-node,protobufjs\n");
+  assert.equal(mergeNpmrc("registry=https://r.example\n"), "registry=https://r.example\nallow-scripts=onnxruntime-node,protobufjs\n");
+  assert.equal(mergeNpmrc("registry=x"), "registry=x\nallow-scripts=onnxruntime-node,protobufjs\n");
+  assert.equal(mergeNpmrc("allow-scripts=sharp\r\nregistry=x\r\n"), "allow-scripts=sharp,onnxruntime-node,protobufjs\r\nregistry=x\r\n");
+  const done = "a=1\nallow-scripts=protobufjs, onnxruntime-node\n";
+  assert.equal(mergeNpmrc(done), done, "a file that already has both is left byte for byte");
+});
 
 test("on Windows the daemon listens on a named pipe, named from the home folder", () => {
   const pipe = socketPath("C:\\Users\\kevin\\.cello", "win32");

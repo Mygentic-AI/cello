@@ -16,6 +16,24 @@ export function screenerRuntimeDir(): string {
   return join(celloHome(), "screener-runtime");
 }
 
+// npm 11 skips install scripts it hasn't been told to allow, and without onnxruntime-node's the native runtime
+// is never fetched. The setting is added to whatever .npmrc is there, never written over it.
+const NEEDS_SCRIPTS = ["onnxruntime-node", "protobufjs"];
+export function mergeNpmrc(existing: string): string {
+  const lines = existing.split(/\r?\n/);
+  const at = lines.findIndex((line) => /^\s*allow-scripts\s*=/.test(line));
+  if (at === -1) return `${existing}${existing === "" || existing.endsWith("\n") ? "" : "\n"}allow-scripts=${NEEDS_SCRIPTS.join(",")}\n`;
+  const have = (lines[at] as string).split("=").slice(1).join("=").split(",").map((s) => s.trim()).filter(Boolean);
+  const missing = NEEDS_SCRIPTS.filter((name) => !have.includes(name));
+  if (missing.length === 0) return existing;
+  lines[at] = `allow-scripts=${[...have, ...missing].join(",")}`;
+  return lines.join(existing.includes("\r\n") ? "\r\n" : "\n");
+}
+
+// On Windows npm is npm.cmd, which Node can't spawn by name (ENOENT) or directly (EINVAL). Only a shell runs it.
+// The arguments are fixed words with no spaces, so the shell has nothing to misread.
+export const npmShell = (platform: NodeJS.Platform = process.platform): boolean => platform === "win32";
+
 export function resolveScreenerRuntime(): string | null {
   try {
     const require = createRequire(join(screenerRuntimeDir(), "resolver.cjs"));

@@ -17,7 +17,7 @@ import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-
 import { RootKeysNotConfigured } from "./protocol/issuer-list.ts";
 import { productionRootKeys } from "./protocol/issuer-roots.ts";
 import { installModel } from "./screener/model-installer.ts";
-import { SCREENER_RUNTIME_MODULE, describeScreenerState, runtimeAvailable, screenerModelDir, screenerRuntimeDir, screenerState } from "./screener/screener-state.ts";
+import { SCREENER_RUNTIME_MODULE, describeScreenerState, mergeNpmrc, npmShell, runtimeAvailable, screenerModelDir, screenerRuntimeDir, screenerState } from "./screener/screener-state.ts";
 
 const DOWNLOAD_MB = 241;
 const DISK_MB = 618;
@@ -430,8 +430,11 @@ async function screenerCommand(args: string[]): Promise<void> {
     process.stdout.write(`Installing the runtime into ${screenerRuntimeDir()}\n`);
     mkdirSync(screenerRuntimeDir(), { recursive: true });
     // Its own folder, because Node's ESM resolver doesn't look in npm's global root. The native model runtime needs its install script.
-    writeFileSync(join(screenerRuntimeDir(), ".npmrc"), "allow-scripts=onnxruntime-node,protobufjs\n");
-    const npm = spawnSync("npm", ["install", "--no-audit", "--no-fund", SCREENER_RUNTIME_MODULE], { stdio: "inherit", cwd: screenerRuntimeDir() });
+    const npmrc = join(screenerRuntimeDir(), ".npmrc");
+    const existing = existsSync(npmrc) ? readFileSync(npmrc, "utf8") : "";
+    const merged = mergeNpmrc(existing);
+    if (merged !== existing) writeFileSync(npmrc, merged);
+    const npm = spawnSync("npm", ["install", "--no-audit", "--no-fund", SCREENER_RUNTIME_MODULE], { stdio: "inherit", cwd: screenerRuntimeDir(), shell: npmShell() });
     if (npm.status !== 0) fail(`${JSON.stringify({ error: "runtime_install_failed", message: `npm install failed with status ${npm.status ?? "none"}, so the model can't run. Try again.` })}\n`, EXIT_REFUSED);
   }
   const after = await screenerState({ dir, runtimePresent: await runtimeAvailable() });
