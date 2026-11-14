@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import json
 import logging
+import ntpath
 import os
 import re
 import socketserver
@@ -29,8 +31,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     import fcntl
-except ImportError:  # Windows, where this platform never starts (check_cello_requirements).
+except ImportError:  # Windows, which locks with msvcrt instead.
     fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -139,10 +145,26 @@ def _hermes_home() -> Path:
         return Path.home() / ".hermes"
 
 
-def _socket_path(explicit_home: Optional[Any] = None) -> Path:
+def _socket_path(explicit_home: Optional[Any] = None) -> str:
+    """Where the daemon listens. Named exactly as the daemon names it (src/daemon/paths.ts socketPath)."""
     raw = str(explicit_home).strip() if explicit_home is not None else ""
     home = raw or _get_cello_env("CELLO_HOME") or str(Path.home() / ".cello")
-    return Path(home) / "daemon.sock"
+    if sys.platform == "win32":
+        # Windows refuses a Unix socket in the home folder, so the daemon listens on a named pipe named from it.
+        canonical = ntpath.abspath(home).lower().replace("/", "\\")
+        return "\\\\.\\pipe\\cello-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12] + "-daemon"
+    return str(Path(home) / "daemon.sock")
+
+
+async def _open_daemon(endpoint: str):
+    """A line stream to the daemon: a Unix socket, or on Windows a named pipe through the proactor loop."""
+    if sys.platform != "win32":
+        return await asyncio.open_unix_connection(endpoint, limit=MAX_LINE_BYTES)
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader(limit=MAX_LINE_BYTES, loop=loop)
+    protocol = asyncio.StreamReaderProtocol(reader, loop=loop)
+    transport, _ = await loop.create_pipe_connection(lambda: protocol, endpoint)
+    return reader, asyncio.StreamWriter(transport, protocol, reader, loop)
 
 
 def _bindings_file(home: Path) -> Path:
@@ -178,6 +200,10 @@ def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Di
     with open(str(path) + ".lock", "a", encoding="utf-8") as lock:
         if fcntl is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
+        elif msvcrt is not None:
+            # Released when the file closes. The lock file stays empty, so byte 0 is always the one locked.
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         # Strict: writing over a file that couldn't be read would erase every other binding.
         bindings = _read_bindings_strict(path)
         change(bindings)
@@ -188,7 +214,7 @@ def _update_bindings(path: Path, change: Callable[[Dict[str, str]], None]) -> Di
 
 
 def check_cello_requirements() -> bool:
-    return sys.platform != "win32" and _socket_path().exists()
+    return os.path.exists(_socket_path())
 
 
 def _has_content_field(value: Any) -> bool:
@@ -249,7 +275,7 @@ class CelloAdapter(BasePlatformAdapter):
         # Kept from v1's installs. This bridge only does explicit, so any other value must stop it rather than be ignored.
         self._legacy_delivery_mode: str = _get_cello_env("CELLO_DELIVERY_MODE").lower()
         # Pinned now, because a background reconnect runs outside the profile's scope.
-        self._socket: Path = _socket_path(extra.get("cello_home"))
+        self._socket: str = _socket_path(extra.get("cello_home"))
         self._writer: Optional[asyncio.StreamWriter] = None
         self._read_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -474,7 +500,7 @@ class CelloAdapter(BasePlatformAdapter):
         logger.info("[cello] Disconnected")
 
     async def _establish(self) -> None:
-        reader, writer = await asyncio.open_unix_connection(str(self._socket), limit=MAX_LINE_BYTES)
+        reader, writer = await _open_daemon(self._socket)
         self._writer = writer
         self._start_wake_worker()
         self._read_task = asyncio.create_task(self._read_loop(reader))
