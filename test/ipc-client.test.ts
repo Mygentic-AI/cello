@@ -6,7 +6,18 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DaemonGone, IpcClient } from "../src/ipc/client.ts";
+import { DaemonGone, DaemonRefused, IpcClient, connectFailure } from "../src/ipc/client.ts";
+
+test("only nothing listening reads as 'not running'; a blocked or busy endpoint says what it is", () => {
+  const err = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
+  assert.ok(connectFailure("p", err("ENOENT")) instanceof DaemonGone);
+  assert.ok(connectFailure("p", err("ECONNREFUSED")) instanceof DaemonGone);
+  const blocked = connectFailure("\\\\.\\pipe\\cello-x-daemon", err("EPERM"));
+  assert.ok(blocked instanceof DaemonRefused && !(blocked instanceof DaemonGone));
+  assert.equal((blocked as DaemonRefused).code, "daemon_unreachable");
+  assert.match(blocked.message, /EPERM.*sandbox/);
+  assert.match(connectFailure("p", err("ETIMEDOUT")).message, /ETIMEDOUT/);
+});
 
 test("a call cut off in flight says it may still take effect, and a call never made doesn't", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "c2i-")), "s.sock");

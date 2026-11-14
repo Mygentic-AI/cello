@@ -19,6 +19,17 @@ export class DaemonGone extends Error {
   }
 }
 
+// Only nothing listening means the daemon isn't running. Anything else (a sandbox blocking the pipe or socket, a busy
+// pipe, a permission problem) is said as itself, or the person is sent to log in again, which hits the same wall.
+const NOT_RUNNING = new Set(["ENOENT", "ECONNREFUSED"]);
+export function connectFailure(path: string, err: NodeJS.ErrnoException): Error {
+  if (!err.code || NOT_RUNNING.has(err.code)) return new DaemonGone();
+  const hint = err.code === "EPERM" || err.code === "EACCES"
+    ? " This process isn't allowed to open it, which a sandbox can cause. Run cello outside the sandbox."
+    : " Try again in a moment.";
+  return new DaemonRefused("daemon_unreachable", `the daemon at ${path} couldn't be reached (${err.code}).${hint}`);
+}
+
 // A wedged daemon mustn't hang a tool forever. It outlasts every wait the daemon has of its own.
 const CALL_TIMEOUT_MS = 90_000;
 
@@ -82,7 +93,7 @@ export class IpcClient {
         socket.removeAllListeners("error");
         resolve(new IpcClient(socket));
       });
-      socket.once("error", () => reject(new DaemonGone()));
+      socket.once("error", (err: NodeJS.ErrnoException) => reject(connectFailure(path, err)));
     });
   }
 
