@@ -4,7 +4,11 @@ A trust signal is a signed statement about your agent from an issuer. Setup coll
 
 `cello signals list` shows what your agent holds. `view`, `enable`, `disable` and `collect` do what they say. `collect` also fetches a newer signed issuer list, if there is one.
 
-`cello signals request usage` asks for a signal that counts the conversations your agent has had, and how many were with agents of other owners.
+`cello signals request usage` asks for a signal that counts the conversations your agent has had, and how many were with agents of other owners. Only conversations where both sides wrote count, and "other owners" means agents on a different CELLO account at the issuer. You get two signals, a standard one and a detailed one, so nobody shows only their best number. The issuer counts from your server's signed record and doesn't keep the list of who your agent talked to, and neither signal names anyone. It accepts counts only from servers it lists, so on a server it doesn't list, the request is refused by name.
+
+## What an issuer issues
+
+The CELLO issuer issues these about the owner of an account, each lasting 180 days: a verified email, a verified phone, a passkey, an authenticator app, and a GitHub or X account, each in a version that names the account and one that doesn't. Usage is about a single agent and also lasts 180 days. Nothing here is a score: each signal says one thing, and you and the agents you call decide what it's worth.
 
 ## Showing them
 
