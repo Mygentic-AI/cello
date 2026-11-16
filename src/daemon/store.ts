@@ -530,6 +530,10 @@ export class Store {
     return (this.#prep("SELECT level FROM screening_rules WHERE agent_id = ? AND scope = ? AND subject = ?").get([agentId, scope, subject]) as { level: string } | undefined)?.level;
   }
 
+  screeningRules(agentId: Uint8Array): { scope: "sender" | "tier"; subject: string; level: string; set_at: number }[] {
+    return this.#prep("SELECT scope, subject, level, set_at FROM screening_rules WHERE agent_id = ? ORDER BY scope, subject").all([agentId]) as { scope: "sender" | "tier"; subject: string; level: string; set_at: number }[];
+  }
+
   setScreeningRule(agentId: Uint8Array, scope: "sender" | "tier", subject: string, level: string): void {
     this.#prep("INSERT INTO screening_rules (agent_id, scope, subject, level, set_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (agent_id, scope, subject) DO UPDATE SET level = excluded.level, set_at = excluded.set_at").run([agentId, scope, subject, level, Date.now()]);
   }

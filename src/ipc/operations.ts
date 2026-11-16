@@ -250,6 +250,15 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     ],
   },
   {
+    command: "screening-rules",
+    group: "Guards",
+    summary: "The screening rules this agent has, by sender and by tier.",
+    scoped: true,
+    acts: false,
+    description: "The screening rules this agent has: how much of what one sender, or one tier, writes to it gets screened. With no rule, everything is screened in full. A rule for one sender outranks a rule for its tier. Only a person at a terminal can weaken one, with screening.",
+    params: [],
+  },
+  {
     command: "screening-log",
     group: "Guards",
     summary: "See what the guards did: what was stopped, who was refused, what changed.",

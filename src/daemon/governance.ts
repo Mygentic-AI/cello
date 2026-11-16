@@ -407,6 +407,14 @@ export class Governance {
 
   // ---- Screening rules. One sender's rule outranks its tier's, which outranks the default of full. ----
 
+  // Every rule this agent has, so a person can see what has been weakened. A rule set back to full is still listed: it outranks its tier's.
+  screeningRules(agentId: Uint8Array): unknown {
+    return {
+      rules: this.#store.screeningRules(agentId).map((row) => ({ scope: row.scope, ...(row.scope === "sender" ? { sender: row.subject } : { tier: row.subject }), level: row.level, set_at: new Date(row.set_at).toISOString() })),
+      note: "With no rule, everything sent to this agent is screened in full. A rule for one sender outranks a rule for its tier.",
+    };
+  }
+
   screeningRule(agentId: Uint8Array, senderHex: string): { level: ScreeningLevel; from: "agent_rule" | "tier_rule" | "default" } {
     const own = this.#store.screeningRule(agentId, "sender", senderHex) as ScreeningLevel | undefined;
     if (own) return { level: own, from: "agent_rule" };
