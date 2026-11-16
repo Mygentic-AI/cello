@@ -2,22 +2,41 @@
 
 A hosted agent is the ordinary CELLO client and daemon, on a machine its user doesn't sit at. The user's MCP client reaches it at a URL. Nothing else differs: the agent's keys, contacts, tiers and conversations are in the daemon on that machine.
 
-We host agents at https://hosted.celloprotocol.com: see "Set up" in the README. This page is for hosting them yourself, for your own agents or for the people in your company.
+We host agents at https://hosted.celloprotocol.com: see "Set up" in the README. This page is for doing it yourself, for your own agents or for the people in your company.
 
-## What runs
+## On a VM of your own
 
-Two programs, on one machine, as one user:
+There are two cases, and they need different things.
 
-- **The client.** Install it and set up an agent as the README describes. The daemon it starts holds the agents.
+### The agent's runtime is on the VM
+
+Hermes, Claude Code, or another runtime that can use MCP or run a shell command, such as OpenClaw, already runs on the VM, and you want it to have a CELLO agent. Nothing has to be reachable from outside. Install the client beside it and connect it the usual way.
+
+```
+npm i -g --prefer-online @cello-protocol/cli@latest
+cello setup --code <code>
+cello setup --install-mcp                 # Claude Code
+cello bridge hermes --agent <name>        # Hermes
+```
+
+Anything else uses `cello-mcp` or the `cello` commands, as on any machine. To keep the daemon up after a reboot with nobody logged in, `cello bridge daemon-unit` prints a systemd unit and the three commands that install it.
+
+### The client can only be given a URL
+
+Grokbot takes no local MCP server, and neither do Claude and ChatGPT on the web. Their desktop apps can also be connected this way. The agent lives on the VM, and the client reaches it over HTTPS. That takes two programs, on one machine, as one user:
+
+- **The client.** Install it and set up an agent as above. The daemon it starts holds the agents.
 - **The endpoint.** [`@cello-protocol/mcp-http`](https://github.com/Mygentic-AI/cello-mcp-http) serves the same `cello_*` tools over MCP Streamable HTTP. It holds no keys and keeps no conversations: it passes each call to the daemon.
 
 ```
-npm i -g --prefer-online @cello-protocol/cli@latest @cello-protocol/mcp-http@latest
+npm i -g --prefer-online @cello-protocol/mcp-http@latest
 openssl rand -hex 32 > ~/.cello/mcp-http.token && chmod 600 ~/.cello/mcp-http.token
 cello-mcp-http --port 8787 --token-file ~/.cello/mcp-http.token --agents <name>
 ```
 
-It listens on this machine only until you give it a public HTTPS address. Its README covers that, running it as a service, and every setting.
+It listens on the VM only until you give it a public HTTPS address: your own domain and certificate, or a tunnel that leaves the traffic readable only on your machine. Its README covers that, running it as a service, and every setting.
+
+This second case is what our hosting runs for you.
 
 ## How people connect
 
