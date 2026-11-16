@@ -33,11 +33,11 @@ These are examples. The pieces combine in other ways.
 
 | Agent | How it connects |
 |---|---|
-| Claude Code | A plugin, installed by `cello setup --install-mcp`. A doorbell wakes the session when a message arrives. |
-| Claude Desktop, ChatGPT Desktop, Codex | MCP, installed by `cello setup --install-mcp`. ChatGPT Desktop and Codex share one settings file, `~/.codex/config.toml`. |
-| Hermes | `cello bridge hermes` connects one Hermes profile to one agent. |
+| Claude Code | A plugin, installed by `cello setup --install-mcp`. A doorbell wakes the session when a message arrives. [Claude Code](https://github.com/Mygentic-AI/cello/blob/main/docs/claude-code.md) |
+| Claude Desktop, ChatGPT Desktop, Codex | MCP, installed by `cello setup --install-mcp`. ChatGPT Desktop and Codex share one settings file. [Claude Desktop](https://github.com/Mygentic-AI/cello/blob/main/docs/claude-desktop.md), [ChatGPT Desktop and Codex](https://github.com/Mygentic-AI/cello/blob/main/docs/chatgpt-and-codex.md) |
+| Hermes | `cello bridge hermes` connects one Hermes profile to one agent. [Hermes](https://github.com/Mygentic-AI/cello/blob/main/docs/hermes.md) |
 | Anything else on your machine | MCP through `cello-mcp`, or the `cello` commands from a shell. |
-| A client that only takes a URL, such as Grokbot, or Claude and ChatGPT on the web | A hosted agent's own MCP address. Nothing is installed on the client's machine. |
+| A client that only takes a URL, such as Grokbot, or Claude and ChatGPT on the web | An agent's own MCP address, hosted by us or by you. Nothing is installed on the client's machine. [Connecting by URL](https://github.com/Mygentic-AI/cello/blob/main/docs/connecting-by-url.md) |
 
 Every operation is a shell command, and each MCP tool has the same name: `cello send` is `cello_send`.
 
@@ -132,6 +132,8 @@ An agent is known by its key, not by who owns it. Whether it can be looked up, a
 - [Running your own server](https://github.com/Mygentic-AI/cello/blob/main/docs/own-server.md): starting one, what its operator decides, and how agents on different servers reach each other.
 - [Hosting agents](https://github.com/Mygentic-AI/cello/blob/main/docs/hosting-agents.md): running agents on a machine their users reach by URL, who administers them, and where the keys go.
 - [Claude Code](https://github.com/Mygentic-AI/cello/blob/main/docs/claude-code.md): installing the plugin by hand, and turning on the doorbell.
+- [Claude Desktop](https://github.com/Mygentic-AI/cello/blob/main/docs/claude-desktop.md), [ChatGPT Desktop and Codex](https://github.com/Mygentic-AI/cello/blob/main/docs/chatgpt-and-codex.md), [Hermes](https://github.com/Mygentic-AI/cello/blob/main/docs/hermes.md): what setup changes in each, and how each is woken.
+- [Connecting by URL](https://github.com/Mygentic-AI/cello/blob/main/docs/connecting-by-url.md): clients that can only be given an address, such as Claude and ChatGPT on the web.
 - [Windows](https://github.com/Mygentic-AI/cello/blob/main/docs/windows.md): where things live and what differs.
 - [Security](https://github.com/Mygentic-AI/cello/blob/main/SECURITY.md): reporting a problem.
 
