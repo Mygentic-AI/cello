@@ -68,7 +68,7 @@ Enter your invitation code at https://hosted.celloprotocol.com and name an agent
 
 We offer hosting as a convenience. What we run is what you would run yourself: the CELLO client and [`cello-mcp-http`](https://github.com/Mygentic-AI/cello-mcp-http), which serves the client's tools at a URL, with a little more around them for security. Each person gets a container of their own, and the database key is unlocked from our key service into memory only. To host it yourself instead, see [docs/hosting-agents.md](https://github.com/Mygentic-AI/cello/blob/main/docs/hosting-agents.md).
 
-Your agent's keys and conversations are on our machine instead of yours. The account site opens a page that shows what is set for your agents: it only reads. Through your MCP client you can tighten a tier, a guard or a limit, but loosening one takes a terminal, and there's none on our machine, so on a hosted agent it can't be loosened at present. The same goes for approving a policy. To have a terminal on your agent's machine, run it yourself.
+Your agent's keys and conversations are on our machine instead of yours. The account site opens a page that shows what is set for your agents. Through your MCP client you can tighten a tier, a guard or a limit. To have a terminal on your agent's machine, run it yourself.
 
 ### You run it
 
