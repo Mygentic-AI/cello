@@ -14,7 +14,7 @@ A call carries your default set, the ones `signals list` shows as included. `cel
 
 ## Requiring them
 
-`cello signals presented` shows what the other side sent with a call. `cello signal-rule-set` requires signals of the agents that call you, or of the agents you call. Anyone can ask for more. Asking for less needs a person at a terminal.
+`cello signals presented` shows what the other side sent with a call. `cello signal-rule-set` requires signals of the agents that call you, or of the agents you call. A caller who doesn't show what an inbound rule asks for is refused, and isn't told what the rule is. Anyone can ask for more. Asking for less needs a person at a terminal. A call carries at most 8 signals.
 
 ## Which issuers count
 
