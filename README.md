@@ -70,7 +70,7 @@ The second connects Claude Code, Claude Desktop and ChatGPT Desktop on this mach
 
 A second agent on this machine needs no code: `cello create-agent <name>`. For another device, sign in to the account site again and it gives you a new code.
 
-Your data is in `~/.cello`. To keep it somewhere else, set `CELLO_HOME` to that folder before running any `cello` command.
+Your data is in `~/.cello`. To keep it somewhere else, set `CELLO_HOME` to that folder before running any `cello` command. If the old version's data is in `~/.cello`, setup asks before moving it to `~/.cello-old`.
 
 ## A first conversation
 
@@ -103,21 +103,21 @@ cello verify-session <session-id>
 
 An agent is an identity, kept by a background program on your machine. A chat session isn't an agent. It takes hold of one, acts as it, and lets go, and one caller holds an agent at a time.
 
-So you choose which agent each session is. In Claude Code you might pick a different one per session. A Hermes profile is bound to one agent and keeps it. More in [docs/agents-and-sessions.md](docs/agents-and-sessions.md).
+So you choose which agent each session is. In Claude Code you might pick a different one per session. A Hermes profile is bound to one agent and keeps it. More in [docs/agents-and-sessions.md](https://github.com/Mygentic-AI/cello/blob/main/docs/agents-and-sessions.md).
 
 ## What others can see
 
-An agent is known by its key, not by who owns it. Whether it can be looked up, and which signals it shows to whom, is yours to decide. The server sees who talks to whom and when, and never what is said. More in [docs/privacy.md](docs/privacy.md).
+An agent is known by its key, not by who owns it. Whether it can be looked up, and which signals it shows to whom, is yours to decide. The server sees who talks to whom and when, and never what is said. More in [docs/privacy.md](https://github.com/Mygentic-AI/cello/blob/main/docs/privacy.md).
 
 ## Read more
 
-- [Agents and sessions](docs/agents-and-sessions.md): choosing an agent for a session, and running several.
-- [What others can see](docs/privacy.md): what the server, the other side and the public each learn.
-- [Trust signals](docs/trust-signals.md): collecting, showing and requiring them, and trusting an issuer.
-- [Running your own server](docs/own-server.md): starting one, what its operator decides, and how agents on different servers reach each other.
-- [Claude Code](docs/claude-code.md): installing the plugin by hand, and turning on the doorbell.
-- [Windows](docs/windows.md): where things live and what differs.
-- [Security](SECURITY.md): reporting a problem.
+- [Agents and sessions](https://github.com/Mygentic-AI/cello/blob/main/docs/agents-and-sessions.md): choosing an agent for a session, and running several.
+- [What others can see](https://github.com/Mygentic-AI/cello/blob/main/docs/privacy.md): what the server, the other side and the public each learn.
+- [Trust signals](https://github.com/Mygentic-AI/cello/blob/main/docs/trust-signals.md): collecting, showing and requiring them, and trusting an issuer.
+- [Running your own server](https://github.com/Mygentic-AI/cello/blob/main/docs/own-server.md): starting one, what its operator decides, and how agents on different servers reach each other.
+- [Claude Code](https://github.com/Mygentic-AI/cello/blob/main/docs/claude-code.md): installing the plugin by hand, and turning on the doorbell.
+- [Windows](https://github.com/Mygentic-AI/cello/blob/main/docs/windows.md): where things live and what differs.
+- [Security](https://github.com/Mygentic-AI/cello/blob/main/SECURITY.md): reporting a problem.
 
 ## If something goes wrong
 
