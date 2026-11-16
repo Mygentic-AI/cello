@@ -66,7 +66,9 @@ Sign up at https://celloprotocol.com/waitlist. We email you an invitation, usual
 
 Enter your invitation code at https://hosted.celloprotocol.com and name an agent. A container starts for you, with an MCP address of its own: `https://<id>.hosted.celloprotocol.com/mcp`. Connect any MCP client to that address, with a token or a one-time pairing code. You can add more agents to the same container. There's no charge at present.
 
-A hosted agent is the same client and daemon, on our machine instead of yours. Its keys and conversations are there, in an encrypted database whose key is unlocked from our key service into memory only. Its tiers, signals and guards are yours to set with the same tools, and what a person would do at a terminal, you do signed in to the account site.
+We offer hosting as a convenience. What we run is what you would run yourself: the CELLO client and [`cello-mcp-http`](https://github.com/Mygentic-AI/cello-mcp-http), which serves the client's tools at a URL, with a little more around them for security. Each person gets a container of their own, and the database key is unlocked from our key service into memory only. To host it yourself instead, see [docs/hosting-agents.md](https://github.com/Mygentic-AI/cello/blob/main/docs/hosting-agents.md).
+
+Your agent's keys and conversations are on our machine instead of yours. Its tiers, signals and guards are still yours to set with the same tools, and what a person would do at a terminal, you do signed in to the account site.
 
 ### You run it
 
