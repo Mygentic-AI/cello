@@ -118,7 +118,8 @@ export function choiceIndex(data: unknown): number | undefined {
 // The newest thing sent to the bot, alone. Offset -1 asks for just that: without it Telegram gives the oldest hundred, and
 // "last" would be wrong on a bot with a backlog. It also makes Telegram forget everything older.
 export async function newestUpdate(at: TelegramEndpoint, token: string): Promise<TelegramUpdate | undefined> {
-  const updates = await call(at, token, "getUpdates", { offset: -1, timeout: 0, allowed_updates: ["message"] }) as TelegramUpdate[];
+  // The same kinds the reader asks for: Telegram keeps whatever the last call named, so naming fewer here would switch taps off.
+  const updates = await call(at, token, "getUpdates", { offset: -1, timeout: 0, allowed_updates: ["message", "callback_query"] }) as TelegramUpdate[];
   return updates.at(-1);
 }
 
@@ -143,7 +144,8 @@ export async function answerTap(at: TelegramEndpoint, token: string, tapId: stri
   await call(at, token, "answerCallbackQuery", { callback_query_id: tapId, text });
 }
 
-// Rewrites a message with its buttons gone, so a choice that's been made can't be made again.
-export async function settleMessage(at: TelegramEndpoint, token: string, chatId: string, messageId: number, text: string): Promise<void> {
-  await call(at, token, "editMessageText", { chat_id: chatId, message_id: messageId, text });
+// Takes the buttons off a message, so a choice that's been made can't be made again. The words are left alone: rewriting
+// them can fail on a long message, and Telegram doesn't always give an old message's text back.
+export async function clearButtons(at: TelegramEndpoint, token: string, chatId: string, messageId: number): Promise<void> {
+  await call(at, token, "editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
 }

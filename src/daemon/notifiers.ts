@@ -1,10 +1,11 @@
 // How an agent reaches its human operator when they aren't at the session: a notifier is one route to the person, such as a
 // Telegram chat. The agent decides when to use one and what leaves the machine: a fixed line, or its own words.
 // Anyone can set one up, agents included, because setting up a bot is hard enough already.
+import { randomBytes } from "node:crypto";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
-import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, newestUpdate, sendText, settleMessage, updatesFrom } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendText, updatesFrom } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -26,7 +27,12 @@ CREATE TABLE IF NOT EXISTS notifications (
   -- The notifier's own id for it. For Telegram: the bot's id, the chat's number and the message's, with colons. All three,
   -- because each bot numbers its messages from one, so two bots in one person's chat share numbers.
   remote_id  TEXT NOT NULL,
-  sent_at    INTEGER NOT NULL
+  sent_at    INTEGER NOT NULL,
+  -- The choices offered as buttons, as JSON, and which was tapped. asked is the same on every row one notify call wrote,
+  -- so a question shown on two notifiers is still answered once.
+  choices    TEXT,
+  chosen     INTEGER,
+  asked      TEXT
 );
 CREATE INDEX IF NOT EXISTS notifications_remote ON notifications (remote_id);
 `;
@@ -98,10 +104,11 @@ export class Notifiers {
     this.#store = store;
     this.#host = host;
     store.exec(SCHEMA);
-    // Added after the table first shipped: the choices offered with a notification, and which one was tapped.
+    // For a database from 0.0.317 to 0.0.319, whose table was made before choices existed.
     const columns = (store.prepare("PRAGMA table_info(notifications)").all() as { name: string }[]).map((column) => column.name);
     if (!columns.includes("choices")) store.exec("ALTER TABLE notifications ADD COLUMN choices TEXT");
     if (!columns.includes("chosen")) store.exec("ALTER TABLE notifications ADD COLUMN chosen INTEGER");
+    if (!columns.includes("asked")) store.exec("ALTER TABLE notifications ADD COLUMN asked TEXT");
   }
 
   // Starts listening for the operator's replies on every bot a notifier uses.
@@ -196,7 +203,24 @@ export class Notifiers {
     }
   }
 
-  // One thing sent to the bot. Only the exact bot and chat a notifier holds may speak as the operator, and only a private chat.
+  // Takes the buttons off every message one notify call sent, on every notifier, and says in each chat what was decided.
+  // One question is answered once, wherever it was shown.
+  async #settleAsked(asked: string, tappedId: number, line: string, elsewhere: string): Promise<void> {
+    const rows = this.#store.prepare("SELECT id, agent_id, notifier, remote_id FROM notifications WHERE asked = ?").all(asked) as { id: number; agent_id: Uint8Array; notifier: string; remote_id: string }[];
+    const holders = this.#holders();
+    for (const row of rows) {
+      const holder = holders.find((h) => h.name === row.notifier && h.agentHex === Buffer.from(row.agent_id).toString("hex"));
+      const messageId = Number(row.remote_id.split(":").at(-1));
+      if (!holder || !Number.isInteger(messageId)) continue;
+      try {
+        await clearButtons(this.#telegram, holder.token, holder.chat, messageId);
+        await sendText(this.#telegram, holder.token, holder.chat, row.id === tappedId ? line : elsewhere);
+      } catch (err: unknown) {
+        logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
   // A button was tapped. It answers one notification, so it goes to the agent and session that sent it, with no guessing.
   // The same gate as a typed reply: only the exact bot and private chat a notifier holds.
   async #onTap(botId: string, token: string, update: TelegramUpdate): Promise<void> {
@@ -216,17 +240,23 @@ export class Notifiers {
       logEvent("notifier.reply_ignored", { bot: botId, reason: "a tap from a chat no notifier holds" });
       return;
     }
-    const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, chosen FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${under.message_id}`) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; chosen: number | null } | undefined;
+    const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${under.message_id}`) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; asked: string | null } | undefined;
     const holder = sent && holders.find((h) => h.name === sent.notifier && h.agentHex === Buffer.from(sent.agent_id).toString("hex"));
     const choices = sent?.choices ? JSON.parse(sent.choices) as string[] : [];
-    const index = choiceIndex(tap.data);
-    const label = index === undefined ? undefined : choices[index];
-    if (!sent || !holder || label === undefined) {
+    if (!sent || !holder || sent.asked === null || choices.length === 0) {
       await settle("This is no longer waiting for an answer.");
       return;
     }
-    if (sent.chosen !== null) {
-      await settle(`Already answered: ${choices[sent.chosen] ?? "another choice"}.`);
+    const index = choiceIndex(tap.data);
+    const label = index === undefined ? undefined : choices[index];
+    if (label === undefined) {
+      await settle("That isn't one of the choices.");
+      return;
+    }
+    // One question may have gone out on several notifiers. It's answered once, whichever chat the tap came from.
+    const answered = this.#store.prepare("SELECT chosen FROM notifications WHERE asked = ? AND chosen IS NOT NULL LIMIT 1").get(sent.asked) as { chosen: number } | undefined;
+    if (answered) {
+      await settle(`Already answered: ${choices[answered.chosen] ?? "another choice"}.`);
       return;
     }
     const outcome = this.#host.fromOperator(holder.agentHex, sent.session_id, label, holder.name, `telegram:${botId}:${update.update_id}`);
@@ -235,18 +265,14 @@ export class Notifiers {
       return;
     }
     // Marked before anything is said back, so a second tap in the same moment finds it answered.
-    this.#store.prepare("UPDATE notifications SET chosen = ? WHERE id = ? AND chosen IS NULL").run(index, sent.id);
-    if (outcome === "already") return;
+    this.#store.prepare("UPDATE notifications SET chosen = ? WHERE asked = ? AND chosen IS NULL").run(index, sent.asked);
     const name = this.#host.agentName(holder.agentHex);
+    // "already" is this same tap fetched again after a restart: the agent has it, and the buttons may still be showing.
     await settle(`Passed to ${name}.`);
-    // The buttons go and the choice stays in the message, so the chat shows what was decided.
-    try {
-      await settleMessage(this.#telegram, token, chat, under.message_id, `${under.text ?? ""}\n\nYou chose: ${label}`.trim());
-    } catch (err: unknown) {
-      logEvent("notifier.answer_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
-    }
+    await this.#settleAsked(sent.asked, sent.id, `You chose: ${label}. Passed to ${name}.`, `Answered on another of ${name}'s notifiers: ${label}.`);
   }
 
+  // One thing sent to the bot. Only the exact bot and chat a notifier holds may speak as the operator, and only a private chat.
   async #onUpdate(botId: string, token: string, update: TelegramUpdate): Promise<void> {
     if (update.callback_query) {
       await this.#onTap(botId, token, update);
@@ -437,10 +463,12 @@ export class Notifiers {
   async #sendAll(agentHex: string, rows: NotifierRow[], text: string, kind: string, sessionId: Uint8Array | null, record: boolean, choices: readonly string[] = []): Promise<unknown> {
     const reached: string[] = [];
     const failed: { notifier: string; message: string }[] = [];
+    // The same on every notifier this one call reaches, so a question with choices is answered once across all of them.
+    const asked = choices.length > 0 ? randomBytes(12).toString("hex") : null;
     for (const row of rows) {
       try {
         const remoteId = await this.#deliver(row, text, choices);
-        if (record) this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at, choices) VALUES (?, ?, ?, ?, ?, ?, ?)").run(idOf(agentHex), row.name, sessionId, kind, remoteId, Date.now(), choices.length > 0 ? JSON.stringify(choices) : null);
+        if (record) this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at, choices, asked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(idOf(agentHex), row.name, sessionId, kind, remoteId, Date.now(), asked ? JSON.stringify(choices) : null, asked);
         reached.push(row.name);
       } catch (err: unknown) {
         if (!(err instanceof TelegramError)) throw err;
@@ -483,6 +511,8 @@ export class Notifiers {
     const offered = params["choices"];
     if (offered !== undefined) {
       if (typeof offered !== "string") throw new LocalError("bad_argument", "choices must be text: the choices with | between them");
+      // A line break inside one would shift every choice after it when they're screened together, a line each.
+      if (/[\r\n]/.test(offered)) throw new LocalError("bad_argument", "a choice can't hold a line break. Put each on one line, with | between them.");
       choices = offered.split("|").map((choice) => choice.trim()).filter((choice) => choice.length > 0);
       if (choices.length < 2 || choices.length > MAX_CHOICES) throw new LocalError("bad_argument", `choices takes 2 to ${MAX_CHOICES} choices with | between them, such as "Agree|Disagree". This has ${choices.length}.`);
       const long = choices.find((choice) => choice.length > MAX_CHOICE_CHARS);
@@ -491,7 +521,9 @@ export class Notifiers {
       const screened = await this.#host.screenOutbound(agentHex, choices.join("\n"), params, `cello notify --choices ... --allow-flagged --agent ${agentHex}`);
       const after = screened.text.split("\n");
       if (after.length !== choices.length || after.some((choice) => choice.trim().length === 0)) throw new LocalError("blocked_by_screening", "Nobody was told: the outbound screen changed the choices so they no longer line up. Reword them.");
-      choices = after;
+      choices = after.map((choice) => choice.trim());
+      // Two different choices can come out of the screen as the same words, and then a tap wouldn't say which was meant.
+      if (new Set(choices).size !== choices.length) throw new LocalError("blocked_by_screening", "Nobody was told: after the outbound screen replaced part of them, two of the choices read the same. Reword them so each differs without what was replaced.");
       report = { ...report, ...screened.report };
     }
     const answer = await this.#sendAll(agentHex, rows, text, kind, sessionHex === undefined ? null : new Uint8Array(Buffer.from(sessionHex, "hex")), true, choices);

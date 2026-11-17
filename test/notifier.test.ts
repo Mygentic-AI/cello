@@ -20,7 +20,7 @@ const NAMES: Record<string, string> = { [AGENT]: "Ann", [AGENT2]: "Bea" };
 interface Sent { token: string; chat_id: string; text: string; message_id: number; buttons: { text: string; callback_data: string }[] }
 // What Telegram was told to show after a tap, and the messages it was told to rewrite.
 let tapAnswers: string[] = [];
-let edits: { message_id: number; text: string; buttons: boolean }[] = [];
+let edits: { message_id: number; chat_id: string; buttons: number }[] = [];
 interface Update { update_id: number; message: Record<string, unknown> }
 const sent: Sent[] = [];
 // What the stand-in does next: a chat id it refuses. The chat "hang" is never answered.
@@ -71,7 +71,12 @@ function telegram(): Promise<string> {
         return;
       }
       if (match[2] === "answerCallbackQuery") { tapAnswers.push(String((body as { text?: string }).text)); res.end(JSON.stringify({ ok: true, result: true })); return; }
-      if (match[2] === "editMessageText") { edits.push({ message_id: Number((body as { message_id?: number }).message_id), text: body.text ?? "", buttons: "reply_markup" in body }); res.end(JSON.stringify({ ok: true, result: {} })); return; }
+      if (match[2] === "editMessageReplyMarkup") {
+        const edit = body as { message_id?: number; chat_id?: string; reply_markup?: { inline_keyboard?: unknown[] } };
+        edits.push({ message_id: Number(edit.message_id), chat_id: String(edit.chat_id), buttons: edit.reply_markup?.inline_keyboard?.length ?? -1 });
+        res.end(JSON.stringify({ ok: true, result: {} }));
+        return;
+      }
       if (body.chat_id === "hang") return;
       if (match[2] === "sendMessage" && silentOnce > 0) { silentOnce -= 1; return; }
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: chat not found" })); return; }
@@ -109,7 +114,7 @@ function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds
     screenOutbound: (_agent, text) => {
       screened.push(text);
       if (text.includes("hijack")) return Promise.reject(new LocalError("blocked_by_screening", "Nothing was sent: it looks hijacked."));
-      const out = text.replace("sk-live-abc", "[REDACTED]");
+      const out = text.replace("sk-live-abc", "[REDACTED]").replace("joinlines\n", "joinlines ");
       return Promise.resolve({ text: out, report: out === text ? {} : { redacted: ["secret"], message: "Parts of your message were replaced before sending." } });
     },
     reachable: (agent) => held.has(agent),
@@ -426,9 +431,10 @@ test("choices become buttons, and a tap comes back as that choice, for the agent
   taps(55, question.message_id, question.buttons[1]?.callback_data as string);
   await until("the tapped choice", () => handed.length === 1);
   assert.deepEqual(handed[0], { agent: AGENT, session: annSession, text: "Disagree", via: "telegram" });
-  await until("the message to be settled", () => edits.length === 1);
+  await until("the chat to be told", () => sent.some((s) => s.text === "You chose: Disagree. Passed to Ann."));
   assert.deepEqual(tapAnswers, ["Passed to Ann."]);
-  assert.deepEqual(edits[0], { message_id: question.message_id, text: `${question.text}\n\nYou chose: Disagree`, buttons: false });
+  // The buttons come off and the question's own words are left alone.
+  assert.deepEqual(edits, [{ message_id: question.message_id, chat_id: "55", buttons: 0 }]);
 
   // A second tap, on another button, changes nothing and says what was already chosen.
   taps(55, question.message_id, question.buttons[0]?.callback_data as string);
@@ -436,6 +442,65 @@ test("choices become buttons, and a tap comes back as that choice, for the agent
   assert.equal(tapAnswers[1], "Already answered: Disagree.");
   assert.equal(handed.length, 1);
   assert.equal(edits.length, 1);
+});
+
+test("a database made before choices existed gains them at start, and keeps what it held", async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notifier-old-")), "cello.db"));
+  store.insertAgent(new Uint8Array(Buffer.from(AGENT, "hex")), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(2));
+  // The table as 0.0.317 to 0.0.319 made it.
+  store.exec("CREATE TABLE notifications (id INTEGER PRIMARY KEY, agent_id BLOB NOT NULL REFERENCES agents(agent_id), notifier TEXT NOT NULL, session_id BLOB, kind TEXT NOT NULL, remote_id TEXT NOT NULL, sent_at INTEGER NOT NULL)");
+  store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at) VALUES (?, 'telegram', NULL, 'message', '123456:55:9', 1)").run(new Uint8Array(Buffer.from(AGENT, "hex")));
+  setup();
+  const notifiers = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, new Set());
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.notify(AGENT, { text: "Proceed?", choices: "Yes|No" });
+  const rows = store.prepare("SELECT remote_id, choices, chosen, asked FROM notifications ORDER BY id").all() as { remote_id: string; choices: string | null; chosen: number | null; asked: string | null }[];
+  assert.deepEqual([rows[0]?.remote_id, rows[0]?.choices, rows[0]?.chosen, rows[0]?.asked], ["123456:55:9", null, null, null]);
+  assert.equal(rows[1]?.choices, "[\"Yes\",\"No\"]");
+  // A tap on the old message, which offered nothing, is told so and hands the agent nothing.
+  taps(55, 9, "choice:0");
+  await until("the old message's tap to be answered", () => tapAnswers.length === 1);
+  assert.equal(tapAnswers[0], "This is no longer waiting for an answer.");
+  assert.deepEqual(handed, []);
+});
+
+test("a question shown on two notifiers is answered once, and the other chat loses its buttons and is told", async () => {
+  const { notifiers } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" });
+  await notifiers.notify(AGENT, { text: "Send the contract?", choices: "Yes|No" });
+  const [home, work] = sent.slice(-2) as [Sent, Sent];
+  assert.deepEqual([home.chat_id, work.chat_id], ["55", "77"]);
+
+  taps(77, work.message_id, "choice:0");
+  await until("both chats to be settled", () => edits.length === 2);
+  assert.deepEqual(handed.map((h) => [h.text, h.via]), [["Yes", "work"]]);
+  assert.deepEqual(edits.map((e) => [e.chat_id, e.message_id, e.buttons]).sort(), [["55", home.message_id, 0], ["77", work.message_id, 0]]);
+  await until("each chat to be told", () => sent.some((s) => s.chat_id === "77" && s.text === "You chose: Yes. Passed to Ann.") && sent.some((s) => s.chat_id === "55" && s.text === "Answered on another of Ann's notifiers: Yes."));
+
+  // The other chat's buttons may still be on a screen that hasn't refreshed. Tapping the other answer there does nothing.
+  taps(55, home.message_id, "choice:1");
+  await until("the late tap to be answered", () => tapAnswers.length === 2);
+  assert.equal(tapAnswers[1], "Already answered: Yes.");
+  assert.equal(handed.length, 1, "one question, one answer, whichever chat it was shown in");
+});
+
+test("the same tap fetched again after a restart hands the agent nothing new and still takes the buttons off", async () => {
+  const { notifiers, store, seen } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.notify(AGENT, { text: "Proceed?", choices: "Yes|No" });
+  const question = sent.at(-1) as Sent;
+  taps(55, question.message_id, "choice:0");
+  await until("the tap", () => handed.length === 1 && edits.length === 1);
+  notifiers.stop();
+  // The daemon died after handing the reply over and before saving its place, so the tap is read again.
+  store.setConfig("notifier.telegram.next_update.123456", "0");
+  store.prepare("UPDATE notifications SET chosen = NULL").run();
+  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen);
+  again.start();
+  await until("the buttons to be taken off again", () => edits.length === 2);
+  await settle();
+  assert.equal(handed.length, 1, "the agent must not get the same choice twice");
 });
 
 test("a tap counts only from the notifier's own private chat, on a message that offered that choice", async () => {
@@ -454,7 +519,8 @@ test("a tap counts only from the notifier's own private chat, on a message that 
   taps(55, 123456, "choice:0");
   await until("the four taps from the right chat to be answered", () => tapAnswers.length === 4);
   await settle();
-  assert.deepEqual(tapAnswers, Array<string>(4).fill("This is no longer waiting for an answer."));
+  // The question is still waiting, so a made-up choice is told that, not that it's over.
+  assert.deepEqual(tapAnswers, ["That isn't one of the choices.", "That isn't one of the choices.", "This is no longer waiting for an answer.", "This is no longer waiting for an answer."]);
   assert.deepEqual(handed, [], "a stranger, a group, a made-up choice and a message with no choices hand the agent nothing");
   assert.equal(edits.length, 0);
 
@@ -474,6 +540,11 @@ test("choices are checked and screened like the text: too few, too long, repeate
   await assert.rejects(notifiers.notify(AGENT, { choices: `Yes|${"x".repeat(41)}` }), refusal("too_long"));
   await assert.rejects(notifiers.notify(AGENT, { choices: "Yes|hijack" }), refusal("blocked_by_screening"));
   await assert.rejects(notifiers.notify(AGENT, { choices: 7 }), refusal("bad_argument"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Yes|No\nmaybe" }), refusal("bad_argument"));
+  // A screen that turns two lines into one would put the wrong words on a button, so nothing goes.
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Yes|joinlines|No" }), (err: unknown) => refusal("blocked_by_screening")(err) && /no longer line up/.test((err as Error).message));
+  // Two different choices that read the same once the screen has replaced part of them.
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Share sk-live-abc|Share [REDACTED]" }), (err: unknown) => refusal("blocked_by_screening")(err) && /read the same/.test((err as Error).message));
   assert.equal(sent.length, before);
 
   const redacted = await notifiers.notify(AGENT, { choices: "Share sk-live-abc|Keep it" }) as { choices: string[]; redacted?: string[] };

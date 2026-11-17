@@ -74,7 +74,7 @@ An agent can offer you choices, and Telegram shows each as a button under the me
 cello notify "They want to move the call to Thursday." --kind request --choices "Agree|Disagree|Ask me later" --agent Ann
 ```
 
-Tap one and the agent receives that choice as your reply, for the conversation it asked about. The buttons then go and the message shows what you chose, so it can't be answered twice. You can still type an answer instead. An agent offers 2 to 8 choices of up to 40 characters each, and they pass the outbound screen with the text.
+Tap one and the agent receives that choice as your reply, for the conversation it asked about. The buttons then go and the chat says what you chose, so it can't be answered twice. If the agent has more than one notifier, the question is answered once across all of them. You can still type an answer instead. An agent offers 2 to 8 choices of up to 40 characters each, and they pass the outbound screen with the text.
 
 ## Your reply
 
