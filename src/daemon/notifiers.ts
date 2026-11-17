@@ -107,6 +107,7 @@ export class Notifiers {
       if (chatId === undefined) {
         // No chat id given: use the chat that wrote to the bot last, and say whose it is so a wrong one shows.
         const chat = await latestChat(apiUrl, token);
+        if (chat && "group" in chat) throw new LocalError("no_chat_yet", `Nothing was saved. The last message to @${bot} came from the group "${chat.group}", and a group is only used when you name it. Send @${bot} a message from your own chat and run this again, or give the group's id with chat_id.`);
         if (!chat) throw new LocalError("no_chat_yet", `Nothing was saved. Nobody has written to @${bot} yet, so there's no chat to send to. Open Telegram, send @${bot} any message, and run this again. Or give the chat id with chat_id.`);
         chatId = chat.id;
         chatWho = chat.who;

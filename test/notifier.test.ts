@@ -32,7 +32,12 @@ function telegram(): Promise<string> {
       res.setHeader("Content-Type", "application/json");
       if (!match || match[1] !== TOKEN) { res.statusCode = 401; res.end(JSON.stringify({ ok: false, description: "Unauthorized" })); return; }
       if (match[2] === "getMe") { res.end(JSON.stringify({ ok: true, result: { username: "andre_cello_bot" } })); return; }
-      if (match[2] === "getUpdates") { res.end(JSON.stringify({ ok: true, result: wrote.map((id, i) => ({ update_id: i, message: { message_id: i, chat: { id, first_name: `person-${id}` } } })) })); return; }
+      if (match[2] === "getUpdates") {
+        // As Telegram does: the oldest two unless asked for the newest alone. A negative id is a group.
+        const all = wrote.map((id, i) => ({ update_id: i, message: { message_id: i, chat: id < 0 ? { id, type: "group", title: `group${id}` } : { id, type: "private", first_name: `person-${id}` } } }));
+        res.end(JSON.stringify({ ok: true, result: (body as { offset?: number }).offset === -1 ? all.slice(-1) : all.slice(0, 2) }));
+        return;
+      }
       if (body.chat_id === "hang") return;
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, description: "Bad Request: chat not found" })); return; }
       sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "" });
@@ -89,7 +94,10 @@ test("with no chat id, the chat that wrote to the bot last is used and named, an
   const { notifiers } = setup();
   await assert.rejects(notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN }), refusal("no_chat_yet"));
   assert.deepEqual((notifiers.list(AGENT) as { notifiers: unknown[] }).notifiers, []);
-  wrote = [11, 22];
+  wrote = [11, 22, -9];
+  await assert.rejects(notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN }), (err: unknown) => refusal("no_chat_yet")(err) && (err as Error).message.includes("group-9"));
+  assert.equal(sent.length, 0, "a group is never written to unless it was named");
+  wrote = [11, 33, 44, 22];
   const added = await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN }) as { chat_id: string; chat_with: string };
   assert.equal(added.chat_id, "22");
   assert.equal(added.chat_with, "person-22");

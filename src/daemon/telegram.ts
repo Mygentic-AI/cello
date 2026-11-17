@@ -38,11 +38,14 @@ export async function botUsername(at: TelegramEndpoint, token: string): Promise<
 }
 
 // The chat that wrote to the bot most recently, so a person doesn't have to find their own chat id. Asks without waiting.
-export async function latestChat(at: TelegramEndpoint, token: string): Promise<{ id: string; who: string } | undefined> {
-  const updates = await call(at, token, "getUpdates", { timeout: 0, allowed_updates: ["message"] }) as { message?: { chat?: { id?: number | string; username?: string; first_name?: string; title?: string } } }[];
-  const chat = [...updates].reverse().find((u) => u.message?.chat?.id !== undefined)?.message?.chat;
+// Offset -1 asks for the newest update alone: without it Telegram gives the oldest hundred, and "last" would be wrong on a
+// bot with a backlog. Only a person's own chat counts, so a group the bot sits in is never picked by accident.
+export async function latestChat(at: TelegramEndpoint, token: string): Promise<{ id: string; who: string } | { group: string } | undefined> {
+  const updates = await call(at, token, "getUpdates", { offset: -1, timeout: 0, allowed_updates: ["message"] }) as { message?: { chat?: { id?: number | string; type?: string; username?: string; first_name?: string; title?: string } } }[];
+  const chat = updates.at(-1)?.message?.chat;
   if (chat?.id === undefined) return undefined;
-  return { id: String(chat.id), who: chat.username ? `@${chat.username}` : chat.first_name ?? chat.title ?? String(chat.id) };
+  if (chat.type !== "private") return { group: chat.title ?? String(chat.id) };
+  return { id: String(chat.id), who: chat.username ? `@${chat.username}` : chat.first_name ?? String(chat.id) };
 }
 
 // Answers only once Telegram has accepted the message, with the id Telegram gave it.
