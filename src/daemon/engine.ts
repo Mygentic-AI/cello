@@ -2291,7 +2291,7 @@ export class Engine {
     // Not withdrawn means they had refused it before the withdrawal reached the server. They saw the call, so say so, and leave the
     // session as it is: their signed refusal is on its way, and taking it in closes the session and tells the agent why.
     if (answer.withdrawn !== true) {
-      return { closed: true, state: "closed", withdrawn: false, message: "The agent you called had already refused this call, so it was seen and nothing was withdrawn. Their refusal arrives as a notice." };
+      return { closed: false, state: local.state, withdrawn: false, message: "The agent you called had already refused this call, so it was seen and nothing was withdrawn. Their refusal arrives as a notice." };
     }
     this.#store.updateSession(agent.signer.id, local.session_id, { state: "closed", own_closed: 1, fault: "withdrawn", x25519_secret: null, mlkem_seed: null });
     logEvent("session.withdrawn", { agent: agent.hex, session: sessionHex });
