@@ -4,7 +4,7 @@
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
-import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, botIdOf, botUsername, newestUpdate, sendText, updatesFrom } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, newestUpdate, sendText, settleMessage, updatesFrom } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -37,6 +37,8 @@ type Kind = (typeof NOTIFY_KINDS)[number];
 
 // Telegram's own limit for one message.
 const TELEGRAM_MAX_CHARS = 4096;
+const MAX_CHOICES = 8;
+const MAX_CHOICE_CHARS = 40;
 const NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 
 // The fixed lines. They say that something is waiting and nothing about what.
@@ -96,6 +98,10 @@ export class Notifiers {
     this.#store = store;
     this.#host = host;
     store.exec(SCHEMA);
+    // Added after the table first shipped: the choices offered with a notification, and which one was tapped.
+    const columns = (store.prepare("PRAGMA table_info(notifications)").all() as { name: string }[]).map((column) => column.name);
+    if (!columns.includes("choices")) store.exec("ALTER TABLE notifications ADD COLUMN choices TEXT");
+    if (!columns.includes("chosen")) store.exec("ALTER TABLE notifications ADD COLUMN chosen INTEGER");
   }
 
   // Starts listening for the operator's replies on every bot a notifier uses.
@@ -191,7 +197,61 @@ export class Notifiers {
   }
 
   // One thing sent to the bot. Only the exact bot and chat a notifier holds may speak as the operator, and only a private chat.
+  // A button was tapped. It answers one notification, so it goes to the agent and session that sent it, with no guessing.
+  // The same gate as a typed reply: only the exact bot and private chat a notifier holds.
+  async #onTap(botId: string, token: string, update: TelegramUpdate): Promise<void> {
+    const tap = update.callback_query;
+    const under = tap?.message;
+    if (typeof tap?.id !== "string" || under?.chat?.id === undefined || typeof under.message_id !== "number") return;
+    const chat = String(under.chat.id);
+    const holders = this.#holders().filter((h) => h.botId === botId && h.chat === chat);
+    const settle = async (line: string): Promise<void> => {
+      try {
+        await answerTap(this.#telegram, token, tap.id as string, line);
+      } catch (err: unknown) {
+        logEvent("notifier.answer_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
+      }
+    };
+    if (holders.length === 0 || under.chat.type !== "private") {
+      logEvent("notifier.reply_ignored", { bot: botId, reason: "a tap from a chat no notifier holds" });
+      return;
+    }
+    const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, chosen FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${under.message_id}`) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; chosen: number | null } | undefined;
+    const holder = sent && holders.find((h) => h.name === sent.notifier && h.agentHex === Buffer.from(sent.agent_id).toString("hex"));
+    const choices = sent?.choices ? JSON.parse(sent.choices) as string[] : [];
+    const index = choiceIndex(tap.data);
+    const label = index === undefined ? undefined : choices[index];
+    if (!sent || !holder || label === undefined) {
+      await settle("This is no longer waiting for an answer.");
+      return;
+    }
+    if (sent.chosen !== null) {
+      await settle(`Already answered: ${choices[sent.chosen] ?? "another choice"}.`);
+      return;
+    }
+    const outcome = this.#host.fromOperator(holder.agentHex, sent.session_id, label, holder.name, `telegram:${botId}:${update.update_id}`);
+    if (outcome === "no_agent") {
+      await settle("The agent this was for is no longer on this machine.");
+      return;
+    }
+    // Marked before anything is said back, so a second tap in the same moment finds it answered.
+    this.#store.prepare("UPDATE notifications SET chosen = ? WHERE id = ? AND chosen IS NULL").run(index, sent.id);
+    if (outcome === "already") return;
+    const name = this.#host.agentName(holder.agentHex);
+    await settle(`Passed to ${name}.`);
+    // The buttons go and the choice stays in the message, so the chat shows what was decided.
+    try {
+      await settleMessage(this.#telegram, token, chat, under.message_id, `${under.text ?? ""}\n\nYou chose: ${label}`.trim());
+    } catch (err: unknown) {
+      logEvent("notifier.answer_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async #onUpdate(botId: string, token: string, update: TelegramUpdate): Promise<void> {
+    if (update.callback_query) {
+      await this.#onTap(botId, token, update);
+      return;
+    }
     const message = update.message;
     if (message?.chat?.id === undefined) return;
     const chat = String(message.chat.id);
@@ -264,9 +324,9 @@ export class Notifiers {
   }
 
   // One send through one notifier. Returns the notifier's own id for what it sent.
-  async #deliver(row: NotifierRow, text: string): Promise<string> {
+  async #deliver(row: NotifierRow, text: string, choices: readonly string[] = []): Promise<string> {
     const config = JSON.parse(row.config) as TelegramConfig;
-    const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, text);
+    const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, text, choices);
     return `${botIdOf(config.bot_token)}:${sent.chatId}:${sent.messageId}`;
   }
 
@@ -374,13 +434,13 @@ export class Notifiers {
   }
 
   // Sends to every chosen notifier. It answers sent only if at least one accepted it, and names each that didn't.
-  async #sendAll(agentHex: string, rows: NotifierRow[], text: string, kind: string, sessionId: Uint8Array | null, record: boolean): Promise<unknown> {
+  async #sendAll(agentHex: string, rows: NotifierRow[], text: string, kind: string, sessionId: Uint8Array | null, record: boolean, choices: readonly string[] = []): Promise<unknown> {
     const reached: string[] = [];
     const failed: { notifier: string; message: string }[] = [];
     for (const row of rows) {
       try {
-        const remoteId = await this.#deliver(row, text);
-        if (record) this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at) VALUES (?, ?, ?, ?, ?, ?)").run(idOf(agentHex), row.name, sessionId, kind, remoteId, Date.now());
+        const remoteId = await this.#deliver(row, text, choices);
+        if (record) this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at, choices) VALUES (?, ?, ?, ?, ?, ?, ?)").run(idOf(agentHex), row.name, sessionId, kind, remoteId, Date.now(), choices.length > 0 ? JSON.stringify(choices) : null);
         reached.push(row.name);
       } catch (err: unknown) {
         if (!(err instanceof TelegramError)) throw err;
@@ -417,8 +477,25 @@ export class Notifiers {
       report = screened.report;
       if (text.length > TELEGRAM_MAX_CHARS) throw new LocalError("too_long", `Nobody was told: with its first line this is ${text.length} characters, and one Telegram message holds ${TELEGRAM_MAX_CHARS}. Shorten it, or leave the text out to send the fixed line.`);
     }
-    const answer = await this.#sendAll(agentHex, rows, text, kind, sessionHex === undefined ? null : new Uint8Array(Buffer.from(sessionHex, "hex")), true);
-    logEvent("notifier.sent", { agent: agentHex, kind, with_text: given !== undefined && given.length > 0 });
-    return { ...(answer as object), kind, included_text: given !== undefined && given.length > 0, ...report };
+    // Choices the person answers with one tap. They are the agent's words too, so they pass the same screen, together, and
+    // if the screen changes how many lines there are, nothing is sent: a button must mean what the agent meant by it.
+    let choices: string[] = [];
+    const offered = params["choices"];
+    if (offered !== undefined) {
+      if (typeof offered !== "string") throw new LocalError("bad_argument", "choices must be text: the choices with | between them");
+      choices = offered.split("|").map((choice) => choice.trim()).filter((choice) => choice.length > 0);
+      if (choices.length < 2 || choices.length > MAX_CHOICES) throw new LocalError("bad_argument", `choices takes 2 to ${MAX_CHOICES} choices with | between them, such as "Agree|Disagree". This has ${choices.length}.`);
+      const long = choices.find((choice) => choice.length > MAX_CHOICE_CHARS);
+      if (long !== undefined) throw new LocalError("too_long", `A choice holds ${MAX_CHOICE_CHARS} characters, so it fits on a button, and "${long.slice(0, 30)}..." is ${long.length}. Put the detail in the text and keep the choice short.`);
+      if (new Set(choices).size !== choices.length) throw new LocalError("bad_argument", "two of the choices are the same, so the answer wouldn't say which was meant");
+      const screened = await this.#host.screenOutbound(agentHex, choices.join("\n"), params, `cello notify --choices ... --allow-flagged --agent ${agentHex}`);
+      const after = screened.text.split("\n");
+      if (after.length !== choices.length || after.some((choice) => choice.trim().length === 0)) throw new LocalError("blocked_by_screening", "Nobody was told: the outbound screen changed the choices so they no longer line up. Reword them.");
+      choices = after;
+      report = { ...report, ...screened.report };
+    }
+    const answer = await this.#sendAll(agentHex, rows, text, kind, sessionHex === undefined ? null : new Uint8Array(Buffer.from(sessionHex, "hex")), true, choices);
+    logEvent("notifier.sent", { agent: agentHex, kind, with_text: given !== undefined && given.length > 0, choices: choices.length });
+    return { ...(answer as object), kind, included_text: given !== undefined && given.length > 0, ...(choices.length > 0 ? { choices } : {}), ...report };
   }
 }

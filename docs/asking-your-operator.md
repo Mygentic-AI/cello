@@ -66,6 +66,16 @@ The first sends a fixed line: "Your agent Ann has a request waiting for you." It
 
 If you'd rather nothing about a conversation left your machine, tell the agent to notify you without contents.
 
+### Answering with one tap
+
+An agent can offer you choices, and Telegram shows each as a button under the message:
+
+```
+cello notify "They want to move the call to Thursday." --kind request --choices "Agree|Disagree|Ask me later" --agent Ann
+```
+
+Tap one and the agent receives that choice as your reply, for the conversation it asked about. The buttons then go and the message shows what you chose, so it can't be answered twice. You can still type an answer instead. An agent offers 2 to 8 choices of up to 40 characters each, and they pass the outbound screen with the text.
+
 ## Your reply
 
 Type your answer in the bot's chat. The agent receives it under `from_your_operator`, apart from its messages. Nothing another party sends can appear there, which is what lets the agent treat it as an instruction.

@@ -969,6 +969,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [
       { name: "text", kind: "string", positional: true, description: "What to tell them. Leave out to send the fixed line and nothing else. On the command line, - reads it from standard input." },
       { name: "kind", kind: "string", allowed: ["message", "request"], description: "message: something to read. request: you need an answer. Left out: message." },
+      { name: "choices", kind: "string", description: "Answers your operator can give with one tap, 2 to 8 of them with | between, such as \"Agree|Disagree|Ask me later\". Each is at most 40 characters and is shown as a button. The one they tap comes back under from_your_operator as its exact words, for this session. They can still type an answer instead. The choices leave this machine with the message, so they pass the outbound screen too." },
       { name: "session_id", kind: "string", description: "The session this is about, 32 hex characters, so an answer can be matched to it." },
       { name: "notifier", kind: "string", description: "Only this notifier. Left out: every notifier the agent has." },
       { name: "allow_flagged", kind: "boolean", description: "Send a value a guard held. Needs a person at a terminal, unless the autonomous_override guard is on." },

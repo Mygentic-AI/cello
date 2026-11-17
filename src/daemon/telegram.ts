@@ -104,6 +104,15 @@ export interface TelegramChat { id?: number | string; type?: string; username?: 
 export interface TelegramUpdate {
   update_id: number;
   message?: { message_id?: number; text?: string; chat?: TelegramChat; reply_to_message?: { message_id?: number } };
+  // A button was tapped. data is what the button carried, and message is the one the buttons were under.
+  callback_query?: { id?: string; data?: string; message?: { message_id?: number; text?: string; chat?: TelegramChat } };
+}
+
+// What a button carries back when it's tapped: its place in the list. Telegram allows 64 bytes, so never the words.
+const choiceData = (index: number): string => `choice:${index}`;
+export function choiceIndex(data: unknown): number | undefined {
+  const match = typeof data === "string" ? /^choice:(\d+)$/.exec(data) : null;
+  return match ? Number(match[1]) : undefined;
 }
 
 // The newest thing sent to the bot, alone. Offset -1 asks for just that: without it Telegram gives the oldest hundred, and
@@ -116,13 +125,25 @@ export async function newestUpdate(at: TelegramEndpoint, token: string): Promise
 // Everything sent to the bot from this update on, waiting up to pollSeconds for the first. Stopping it ends the wait at once.
 export async function updatesFrom(at: TelegramEndpoint, token: string, offset: number, stop: AbortSignal): Promise<TelegramUpdate[]> {
   // One try: the reader calls again by itself, with a growing wait.
-  return await call(at, token, "getUpdates", { offset, timeout: at.pollSeconds, allowed_updates: ["message"] }, at.pollSeconds * 1000 + at.timeoutMs, stop, 1) as TelegramUpdate[];
+  return await call(at, token, "getUpdates", { offset, timeout: at.pollSeconds, allowed_updates: ["message", "callback_query"] }, at.pollSeconds * 1000 + at.timeoutMs, stop, 1) as TelegramUpdate[];
 }
 
 // Answers only once Telegram has accepted the message, with the ids Telegram gave: the chat's own number, which is what a
 // reply will carry even if the chat was named as @something, and the message's.
-export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string): Promise<{ chatId: string; messageId: number }> {
-  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text }) as { message_id?: number; chat?: { id?: number | string } };
+// With choices, each becomes a button under the message, one to a row so a long one is never cut short.
+export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string, choices: readonly string[] = []): Promise<{ chatId: string; messageId: number }> {
+  const buttons = choices.length === 0 ? {} : { reply_markup: { inline_keyboard: choices.map((label, index) => [{ text: label, callback_data: choiceData(index) }]) } };
+  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text, ...buttons }) as { message_id?: number; chat?: { id?: number | string } };
   if (typeof sent?.message_id !== "number" || sent.chat?.id === undefined) throw new TelegramError("Telegram accepted the message but didn't say where it went.");
   return { chatId: String(sent.chat.id), messageId: sent.message_id };
+}
+
+// Stops the tapped button's spinner, with a short line Telegram shows the person.
+export async function answerTap(at: TelegramEndpoint, token: string, tapId: string, text: string): Promise<void> {
+  await call(at, token, "answerCallbackQuery", { callback_query_id: tapId, text });
+}
+
+// Rewrites a message with its buttons gone, so a choice that's been made can't be made again.
+export async function settleMessage(at: TelegramEndpoint, token: string, chatId: string, messageId: number, text: string): Promise<void> {
+  await call(at, token, "editMessageText", { chat_id: chatId, message_id: messageId, text });
 }

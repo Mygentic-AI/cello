@@ -17,7 +17,10 @@ const AGENT = "07".repeat(32);
 const AGENT2 = "08".repeat(32);
 const NAMES: Record<string, string> = { [AGENT]: "Ann", [AGENT2]: "Bea" };
 
-interface Sent { token: string; chat_id: string; text: string; message_id: number }
+interface Sent { token: string; chat_id: string; text: string; message_id: number; buttons: { text: string; callback_data: string }[] }
+// What Telegram was told to show after a tap, and the messages it was told to rewrite.
+let tapAnswers: string[] = [];
+let edits: { message_id: number; text: string; buttons: boolean }[] = [];
 interface Update { update_id: number; message: Record<string, unknown> }
 const sent: Sent[] = [];
 // What the stand-in does next: a chat id it refuses. The chat "hang" is never answered.
@@ -36,6 +39,14 @@ const servers: Server[] = [];
 function says(chat: number, text?: string, replyTo?: number): void {
   const from = chat < 0 ? { id: chat, type: "group", title: `group${chat}` } : { id: chat, type: "private", first_name: `person-${chat}` };
   inbox.push({ update_id: nextUpdate, message: { message_id: 900 + nextUpdate, chat: from, ...(text === undefined ? {} : { text }), ...(replyTo === undefined ? {} : { reply_to_message: { message_id: replyTo } }) } });
+  nextUpdate += 1;
+}
+
+// Someone taps a button under one of the bot's messages. data is what that button carried.
+function taps(chat: number, messageId: number, data: string): void {
+  const from = chat < 0 ? { id: chat, type: "group", title: `group${chat}` } : { id: chat, type: "private", first_name: `person-${chat}` };
+  const under = sent.find((s) => s.message_id === messageId);
+  inbox.push({ update_id: nextUpdate, callback_query: { id: `tap-${nextUpdate}`, data, message: { message_id: messageId, text: under?.text ?? "", chat: from } } } as unknown as Update);
   nextUpdate += 1;
 }
 
@@ -59,11 +70,14 @@ function telegram(): Promise<string> {
         else setTimeout(() => res.end(JSON.stringify({ ok: true, result: [] })), 20);
         return;
       }
+      if (match[2] === "answerCallbackQuery") { tapAnswers.push(String((body as { text?: string }).text)); res.end(JSON.stringify({ ok: true, result: true })); return; }
+      if (match[2] === "editMessageText") { edits.push({ message_id: Number((body as { message_id?: number }).message_id), text: body.text ?? "", buttons: "reply_markup" in body }); res.end(JSON.stringify({ ok: true, result: {} })); return; }
       if (body.chat_id === "hang") return;
       if (match[2] === "sendMessage" && silentOnce > 0) { silentOnce -= 1; return; }
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: chat not found" })); return; }
       const messageId = 41 + sent.length;
-      sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "", message_id: messageId });
+      const keyboard = (body as { reply_markup?: { inline_keyboard?: { text: string; callback_data: string }[][] } }).reply_markup?.inline_keyboard ?? [];
+      sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "", message_id: messageId, buttons: keyboard.flat() });
       // Telegram answers with the chat's number, whatever name it was given.
       res.end(JSON.stringify({ ok: true, result: { message_id: messageId, chat: { id: body.chat_id === "@andre" ? 55 : Number(body.chat_id) } } }));
     });
@@ -126,6 +140,8 @@ function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = 
   refuseReading = null;
   readerCalls = 0;
   handed = [];
+  tapAnswers = [];
+  edits = [];
   told = [];
   held = new Set([AGENT, AGENT2]);
   gone = new Set();
@@ -392,6 +408,79 @@ test("a refused token or a second reader stops the reading and tells the agent w
     assert.equal(readerCalls, calls, "a refused reader stops asking");
     assert.equal(told.length, 1, "and says so once");
   }
+});
+
+test("choices become buttons, and a tap comes back as that choice, for the agent and session that asked, once", async () => {
+  const { notifiers } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  const annSession = "a1".repeat(16);
+  const asked = await notifiers.notify(AGENT, { kind: "request", text: "Move the call to Thursday?", choices: " Agree | Disagree|Ask me later ", session_id: annSession }) as { choices: string[] };
+  assert.deepEqual(asked.choices, ["Agree", "Disagree", "Ask me later"]);
+  const question = sent.at(-1) as Sent;
+  assert.deepEqual(question.buttons.map((b) => b.text), ["Agree", "Disagree", "Ask me later"]);
+  assert.ok(question.buttons.every((b) => Buffer.byteLength(b.callback_data) <= 64 && !b.callback_data.includes("Agree")), "a button carries its place, never its words: Telegram allows 64 bytes");
+  // Bea writes after, so a plain typed message would now go to her. A tap still goes to Ann, who asked.
+  await notifiers.notify(AGENT2, {});
+
+  taps(55, question.message_id, question.buttons[1]?.callback_data as string);
+  await until("the tapped choice", () => handed.length === 1);
+  assert.deepEqual(handed[0], { agent: AGENT, session: annSession, text: "Disagree", via: "telegram" });
+  await until("the message to be settled", () => edits.length === 1);
+  assert.deepEqual(tapAnswers, ["Passed to Ann."]);
+  assert.deepEqual(edits[0], { message_id: question.message_id, text: `${question.text}\n\nYou chose: Disagree`, buttons: false });
+
+  // A second tap, on another button, changes nothing and says what was already chosen.
+  taps(55, question.message_id, question.buttons[0]?.callback_data as string);
+  await until("the second tap to be answered", () => tapAnswers.length === 2);
+  assert.equal(tapAnswers[1], "Already answered: Disagree.");
+  assert.equal(handed.length, 1);
+  assert.equal(edits.length, 1);
+});
+
+test("a tap counts only from the notifier's own private chat, on a message that offered that choice", async () => {
+  const { notifiers } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.notify(AGENT, { text: "Send the contract?", choices: "Yes|No" });
+  const question = sent.at(-1) as Sent;
+  await notifiers.notify(AGENT, { text: "no buttons on this one" });
+  const plain = sent.at(-1) as Sent;
+
+  taps(99, question.message_id, "choice:0");
+  taps(-9, question.message_id, "choice:0");
+  taps(55, question.message_id, "choice:7");
+  taps(55, question.message_id, "something else");
+  taps(55, plain.message_id, "choice:0");
+  taps(55, 123456, "choice:0");
+  await until("the four taps from the right chat to be answered", () => tapAnswers.length === 4);
+  await settle();
+  assert.deepEqual(tapAnswers, Array<string>(4).fill("This is no longer waiting for an answer."));
+  assert.deepEqual(handed, [], "a stranger, a group, a made-up choice and a message with no choices hand the agent nothing");
+  assert.equal(edits.length, 0);
+
+  // After all that, the real choice still works.
+  taps(55, question.message_id, "choice:1");
+  await until("the real tap", () => handed.length === 1);
+  assert.equal((handed as Handed[])[0]?.text, "No");
+});
+
+test("choices are checked and screened like the text: too few, too long, repeated or changed by the screen sends nothing", async () => {
+  const { notifiers } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  const before = sent.length;
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Only one" }), refusal("bad_argument"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: "a|b|c|d|e|f|g|h|i" }), refusal("bad_argument"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Yes|Yes" }), refusal("bad_argument"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: `Yes|${"x".repeat(41)}` }), refusal("too_long"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: "Yes|hijack" }), refusal("blocked_by_screening"));
+  await assert.rejects(notifiers.notify(AGENT, { choices: 7 }), refusal("bad_argument"));
+  assert.equal(sent.length, before);
+
+  const redacted = await notifiers.notify(AGENT, { choices: "Share sk-live-abc|Keep it" }) as { choices: string[]; redacted?: string[] };
+  assert.deepEqual(redacted.choices, ["Share [REDACTED]", "Keep it"]);
+  assert.deepEqual(redacted.redacted, ["secret"], "the agent is told a button doesn't say what it wrote");
+  assert.deepEqual(sent.at(-1)?.buttons.map((b) => b.text), ["Share [REDACTED]", "Keep it"]);
+  assert.equal(sent.at(-1)?.text, "Your agent Ann has a message waiting for you.", "choices with no text still send the fixed line");
 });
 
 test("a removed agent's reply is refused in Telegram, never dropped, and forgetting it deletes its token and stops its bot", async () => {
