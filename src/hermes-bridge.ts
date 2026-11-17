@@ -16,6 +16,11 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9+/=_.:@-]{1,120}$/;
 // All a public agent's model can reach. It talks to strangers, so it can't change settings or make agents.
 export const PUBLIC_TOOLS = ["cello_receive", "cello_send", "cello_sessions", "cello_inbox", "cello_close_session", "cello_contacts", "cello_channel_read", "cello_channels", "cello_status"];
 const SKILLS = ["cello-bridge-setup", "cello-policy"];
+// The plugin's skills that read the same on Hermes, copied from the plugin folder so there is one copy of each. Not the receptionist:
+// the bridge wakes a Hermes agent. Not setup: Hermes's own is cello-bridge-setup. A public agent gets none of them, because its
+// model can't reach the tools they teach, and a stranger's text shouldn't find instructions for changing settings beside it.
+const SHARED_SKILLS = ["cello-reach", "cello-channels", "cello-signals", "cello-operator"];
+const pluginSkillDir = (): string => fileURLToPath(new URL("../plugins/cello/skills/", import.meta.url));
 // What v1's install wrote, which this one no longer reads.
 const RETIRED_ENV = ["CELLO_DELIVERY_MODE", "CELLO_DIR"];
 
@@ -161,6 +166,16 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     const dir = join(hermesHome, "skills", skill);
     mkdirSync(dir, { recursive: true });
     copyFileSync(join(assetDir(), "skills", skill, "SKILL.md"), join(dir, "SKILL.md"));
+    out.push(`Skill: ${dir}`);
+  }
+  for (const skill of SHARED_SKILLS) {
+    const dir = join(hermesHome, "skills", skill);
+    if (isPublic) {
+      rmSync(dir, { recursive: true, force: true });
+      continue;
+    }
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(join(pluginSkillDir(), skill, "SKILL.md"), join(dir, "SKILL.md"));
     out.push(`Skill: ${dir}`);
   }
   if (envNeedsWriting) writeFileSync(envPath, wanted, { mode: 0o600 });

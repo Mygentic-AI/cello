@@ -144,7 +144,18 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
     "package.json",
     "plugins/cello/.claude-plugin/plugin.json",
     "plugins/cello/.mcp.json",
+    "plugins/cello/agents/cello-receptionist.md",
     "plugins/cello/skills/cello/SKILL.md",
+    "plugins/cello/skills/cello/apps/chatgpt.md",
+    "plugins/cello/skills/cello/apps/claude-code.md",
+    "plugins/cello/skills/cello/apps/claude-desktop.md",
+    "plugins/cello/skills/cello/apps/hermes.md",
+    "plugins/cello/skills/cello-channels/SKILL.md",
+    "plugins/cello/skills/cello-operator/SKILL.md",
+    "plugins/cello/skills/cello-reach/SKILL.md",
+    "plugins/cello/skills/cello-receptionist/SKILL.md",
+    "plugins/cello/skills/cello-setup/SKILL.md",
+    "plugins/cello/skills/cello-signals/SKILL.md",
   ].sort();
   assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file and its types per source file, plus these");
 

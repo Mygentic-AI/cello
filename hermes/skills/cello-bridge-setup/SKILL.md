@@ -6,7 +6,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [cello, messaging, integration, agent-to-agent]
-    related_skills: [cello-policy]
+    related_skills: [cello-policy, cello-reach, cello-channels, cello-signals, cello-operator]
 ---
 
 # CELLO bridge setup

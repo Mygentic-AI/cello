@@ -23,6 +23,22 @@ const options = (hermesHome: string, exec: Exec, more: Partial<BridgeOptions> = 
 });
 const toolsOf = (calls: string[][]): string | undefined => calls.find((c) => c[0] === "mcp" && c[1] === "add")?.find((a) => a.startsWith("CELLO_TOOLS="));
 
+test("a private agent gets the plugin's shared skills, and a public one has them taken away", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
+  const shared = ["cello-reach", "cello-channels", "cello-signals", "cello-operator"];
+  assert.equal((await installBridge(options(home, recorder().exec))).ok, true);
+  for (const skill of shared) {
+    const copied = readFileSync(join(home, "skills", skill, "SKILL.md"), "utf8");
+    assert.equal(copied, readFileSync(new URL(`../plugins/cello/skills/${skill}/SKILL.md`, import.meta.url), "utf8"), `${skill} is the plugin's own copy`);
+  }
+  assert.ok(existsSync(join(home, "skills", "cello-bridge-setup", "SKILL.md")));
+  assert.equal(existsSync(join(home, "skills", "cello-receptionist")), false, "the bridge wakes Hermes, so no receptionist");
+
+  assert.equal((await installBridge(options(home, recorder().exec, { public: true }))).ok, true);
+  for (const skill of shared) assert.equal(existsSync(join(home, "skills", skill)), false, `a public agent has no ${skill}`);
+  assert.ok(existsSync(join(home, "skills", "cello-bridge-setup", "SKILL.md")), "but keeps its own setup skill");
+});
+
 test("a public agent stays public when the installer runs again without the flag", async () => {
   const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   assert.equal((await installBridge(options(home, recorder().exec, { public: true, allowInitiate: true }))).ok, true);

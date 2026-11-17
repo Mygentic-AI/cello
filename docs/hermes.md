@@ -9,7 +9,7 @@ hermes gateway restart
 
 It does these things in the Hermes home (`~/.hermes`, or the folder you give with `--hermes-home`):
 
-- copies the CELLO plugin and two skills into it;
+- copies the CELLO plugin and its skills into it: setup and policies, and four on who can reach the agent, channels, trust signals, and reaching you. A public agent gets only the first two;
 - writes the agent's name and settings into its `.env`;
 - runs `hermes mcp add`, `hermes plugins enable cello` and one `hermes config set`, then checks that `hermes mcp list` shows `cello`.
 
