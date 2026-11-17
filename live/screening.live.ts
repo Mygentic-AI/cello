@@ -309,7 +309,8 @@ print(out)
 function atTerminal(m: Machine, args: string[], answer: string): { out: string } {
   const run = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: m.home, ...m.env } });
   assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
-  return { out: run.stdout };
+  // Output is indented since 22d70b6. The checks match "key":value, so the space after each key's colon is taken out.
+  return { out: run.stdout.replace(/":\s+/g, "\":") };
 }
 
 test("only a person at a terminal can weaken screening, and the state shows", async () => {

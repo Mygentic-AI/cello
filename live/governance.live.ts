@@ -54,7 +54,8 @@ class Machine {
   person(args: string[]): string {
     const run = spawnSync("python3", ["-c", TERMINAL, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: { ...process.env, CELLO_HOME: this.home } });
     assert.equal(run.status, 0, `the terminal didn't run: ${run.stderr}`);
-    return run.stdout;
+    // Output is indented since 22d70b6. The checks below match "key":value, so the space after each key's colon is taken out.
+    return run.stdout.replace(/":\s+/g, "\":");
   }
 }
 
