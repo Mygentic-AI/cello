@@ -60,7 +60,16 @@ function claudeCode(packageRoot: string): McpInstallLine {
     return { ok: run.status === 0, said: `${run.stdout ?? ""}${run.stderr ?? ""}`.trim() };
   };
   const listed = claude(["plugin", "list"]);
-  if (listed.ok && /cello@cello-protocol/.test(listed.said)) return { app, outcome: "unchanged", detail: "the plugin cello@cello-protocol is already installed. If it came from the old version, remove it with: claude plugin uninstall cello@cello-protocol" };
+  // Already installed: Claude Code keeps its own copy of the plugin, made at install, and only replaces it when the version in
+  // plugin.json changes and it's asked to. So refresh the marketplace from this package, then update. Without this an upgrade
+  // left the old skills in place for good.
+  if (listed.ok && /cello@cello-protocol/.test(listed.said)) {
+    const refreshed = claude(["plugin", "marketplace", "update", "cello-protocol"]);
+    if (!refreshed.ok) return { app, outcome: "failed", detail: `the plugin is installed, but refreshing its marketplace failed: ${refreshed.said}. If it came from the old version, remove it with: claude plugin uninstall cello@cello-protocol, then run this again` };
+    const updated = claude(["plugin", "update", "cello@cello-protocol"]);
+    if (!updated.ok) return { app, outcome: "failed", detail: `the plugin is installed, but updating it failed: ${updated.said}` };
+    return { app, outcome: "unchanged", detail: `the plugin cello@cello-protocol is installed and now matches this version (${updated.said.split("\n").at(-1) ?? "updated"}). Restart Claude Code, or run /mcp, to load it` };
+  }
   const market = claude(["plugin", "marketplace", "add", packageRoot]);
   if (!market.ok) return { app, outcome: "failed", detail: `adding the marketplace failed: ${market.said}` };
   const plugin = claude(["plugin", "install", "cello@cello-protocol"]);

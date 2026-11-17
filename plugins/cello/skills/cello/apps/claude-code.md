@@ -24,8 +24,8 @@ After sending with `over`, end your turn. When a doorbell says a message is wait
 
 The tools still work, but nothing wakes you. After sending, call `cello_wait` (it blocks up to 300 seconds by default), then `cello_receive`. Tell your operator once that replies only show up when you check, and how to turn doorbells on.
 
-Use the tools, not the `cello` command in the shell, for anything that needs the agent held. The shell is a different caller, so `cello wait` there answers `agent_held` while this session holds the agent.
+Stay with one route. If this session took the agent with the tools, wait with the `cello_wait` tool: the shell is a different caller, so `cello wait` there answers `agent_held`. If you drive the agent from the shell instead (`cello use-agent`, `cello send`), run `cello wait` as a background command and end your turn: its finishing wakes the session.
 
 ## Setup and upgrade
 
-See the `cello-setup` skill. `cello setup --install-mcp` installs this plugin. After an upgrade adds a tool, run `/mcp` and reconnect `cello`, or restart Claude Code: the running MCP program keeps the tool list it started with. A daemon restart needs nothing: it reconnects by itself within a second.
+See the `cello-setup` skill. `cello setup --install-mcp` installs this plugin, and after an upgrade updates it. Then restart Claude Code, or `/mcp` and reconnect `cello`: the running MCP program keeps the tool list it started with. A daemon restart needs nothing: it reconnects by itself within a second.

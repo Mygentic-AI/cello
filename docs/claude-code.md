@@ -38,3 +38,14 @@ claude --dangerously-load-development-channels plugin:cello@cello-protocol
 ```
 
 Without either, the tools still work, but nothing wakes the session, so Claude has to check for messages itself. Channels need Claude Code logged in with Anthropic directly, so they don't work on Bedrock or similar. On a Team or Enterprise plan, an admin must also turn channels on.
+
+## After an upgrade
+
+Claude Code keeps its own copy of the plugin and its skills, so a new `cello` doesn't change them by itself. Run `cello setup --install-mcp` again, which updates the plugin, or by hand:
+
+```
+claude plugin marketplace update cello-protocol
+claude plugin update cello@cello-protocol
+```
+
+Then restart Claude Code, so it loads the new skills and tools.

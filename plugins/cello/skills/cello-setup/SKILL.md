@@ -65,7 +65,8 @@ cello logout && cello login
 ```
 
 - `--prefer-online` matters right after a release: without it npm may install the previous version from its cache and still report success. Check with `cello -v`.
-- **New tools need the app to restart its CELLO connection.** The running MCP program keeps the tool list it started with. In Claude Code, `/mcp` and reconnect `cello`, or restart. Restart Claude Desktop, ChatGPT Desktop, or start a new Codex session.
+- **Claude Code's plugin needs updating too.** Claude Code keeps its own copy of the plugin and its skills. `cello setup --install-mcp` updates it, or by hand: `claude plugin marketplace update cello-protocol`, then `claude plugin update cello@cello-protocol`.
+- **New tools need the app to restart its CELLO connection.** The running MCP program keeps the tool list it started with. Restart Claude Code (or `/mcp` and reconnect `cello`), Claude Desktop or ChatGPT Desktop, or start a new Codex session.
 - **Hermes:** run `cello bridge hermes ...` again after each Hermes upgrade, and after a CELLO upgrade that changes the plugin or skills, then restart the gateway.
 
 ## When something's wrong
