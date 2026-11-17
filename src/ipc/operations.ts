@@ -804,7 +804,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "signals-collect",
     group: "Signals",
-    summary: "Fetch the signals the issuer has already made, for every agent here or one. Also: cello signals collect.",
+    summary: "Fetch the signals the issuer has already made, for one agent or all. Also: cello signals collect.",
     // Not scoped: left out, the agent means every agent on this daemon, not the one chosen with use-agent.
     scoped: false,
     acts: false,
