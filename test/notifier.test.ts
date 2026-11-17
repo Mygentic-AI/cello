@@ -28,6 +28,8 @@ let nextUpdate = 1;
 // Set to 401 or 409 to make Telegram refuse a reader, as it does for a replaced token or a second reader.
 let refuseReading: number | null = null;
 let readerCalls = 0;
+// How many sends the stand-in leaves unanswered before it answers again.
+let silentOnce = 0;
 const servers: Server[] = [];
 
 // A negative chat id is a group. No text stands for a voice note or a photo.
@@ -58,6 +60,7 @@ function telegram(): Promise<string> {
         return;
       }
       if (body.chat_id === "hang") return;
+      if (match[2] === "sendMessage" && silentOnce > 0) { silentOnce -= 1; return; }
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: chat not found" })); return; }
       const messageId = 41 + sent.length;
       sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "", message_id: messageId });
@@ -189,17 +192,23 @@ test("the bot token is never shown: not in the answer, the list, or a refusal", 
 
 test("Telegram out of reach or silent is a named refusal within the time limit, and the token stays out of it", async () => {
   const unreachable = setup({ apiUrl: `http://127.0.0.1:1/${TOKEN}`, timeoutMs: 5_000, pollSeconds: 0 });
-  await assert.rejects(unreachable.notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), (err: unknown) => refusal("notifier_check_failed")(err) && /couldn't be reached/.test((err as Error).message));
+  await assert.rejects(unreachable.notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), (err: unknown) => refusal("notifier_check_failed")(err) && /couldn't be reached, in 3 tries: ECONNREFUSED/.test((err as Error).message), "the refusal names the system's own reason, which an empty one once hid");
 
-  // An address that can't be parsed makes fetch quote the whole address, token included, in its own error.
+  // An address that can't be parsed must not be quoted back, since the token is part of it.
   const unparsable = setup({ apiUrl: "http://bad host", timeoutMs: 5_000, pollSeconds: 0 });
   await assert.rejects(unparsable.notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), refusal("notifier_check_failed"));
 
   const { notifiers } = setup({ apiUrl, timeoutMs: 200, pollSeconds: 0 });
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   const started = Date.now();
-  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /didn't answer within 0.2 seconds/.test((err as Error).message));
+  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /didn't answer within 0.2 seconds, in 3 tries/.test((err as Error).message));
   assert.ok(Date.now() - started < 3_000, "a silent Telegram must not hold the call open");
+
+  // Telegram sometimes ignores one new connection and answers the next. One silent try must not fail the call.
+  silentOnce = 1;
+  const afterSilence = await notifiers.notify(AGENT, {}) as { sent: boolean };
+  assert.equal(afterSilence.sent, true);
+  assert.equal(silentOnce, 0, "the first try was the silent one");
 });
 
 test("notify with no notifier refuses by name, and never claims anyone was told", async () => {

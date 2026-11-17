@@ -1,8 +1,11 @@
 // Telegram's Bot API: the calls a notifier needs. Every call has a time limit, and a refusal carries Telegram's own words.
 // The bot token is part of the address, so nothing here ever puts an address in an error.
+import { type RequestOptions, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+
 // Where Telegram is, how long one call may take, and how long a wait for new messages is held open. Only a test changes these.
 export interface TelegramEndpoint { apiUrl: string; timeoutMs: number; pollSeconds: number }
-export const TELEGRAM: TelegramEndpoint = { apiUrl: "https://api.telegram.org", timeoutMs: 15_000, pollSeconds: 25 };
+export const TELEGRAM: TelegramEndpoint = { apiUrl: "https://api.telegram.org", timeoutMs: 6_000, pollSeconds: 25 };
 
 export class TelegramError extends Error {
   // Telegram's own error number, when it gave one: 401 is a token it doesn't know, 409 is another reader on the same bot.
@@ -13,33 +16,76 @@ export class TelegramError extends Error {
   }
 }
 
-async function call(at: TelegramEndpoint, token: string, method: string, body: Record<string, unknown>, limitMs = at.timeoutMs, stop?: AbortSignal): Promise<unknown> {
-  let response: Response | undefined;
-  // A dropped connection is tried once more, because a person not being told matters more than their being told twice.
-  // A timeout isn't: the limit is the promise.
+class TimedOut extends Error {}
+
+// Why a connection failed, in the system's own codes. Telegram has an IPv4 and an IPv6 address, and a failure to reach it
+// is one error per address with an empty message of its own, so each address's code is listed.
+function reason(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const each = (err as Error & { errors?: unknown[] }).errors;
+  if (Array.isArray(each) && each.length > 0) return each.map((e) => { const one = e as { code?: string; address?: string; message?: string }; return `${one.code ?? one.message ?? "failed"}${one.address ? ` at ${one.address}` : ""}`; }).join(", ");
+  const code = (err as Error & { code?: string }).code;
+  return [code, err.message].filter((part) => typeof part === "string" && part.length > 0).join(": ") || err.name;
+}
+
+// One POST. Not fetch, for one reason: fetch gives each of a host's addresses a quarter of a second to connect before it
+// moves to the next, and can't be told otherwise. On a slow link, or a machine with no IPv6 route, that fails a call Telegram
+// would have answered. Here each address gets the call's whole limit.
+function post(url: URL, body: string, limitMs: number, stop: AbortSignal | undefined): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const send = url.protocol === "http:" ? httpRequest : httpsRequest;
+    // The connection option is passed through to the socket. The request's own types don't list it.
+    const options: RequestOptions & { autoSelectFamilyAttemptTimeout: number } = { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }, autoSelectFamilyAttemptTimeout: limitMs };
+    const request = send(url, options, (response) => {
+      const parts: Buffer[] = [];
+      response.on("data", (part: Buffer) => { parts.push(part); });
+      response.on("end", () => { done(); resolve({ status: response.statusCode ?? 0, text: Buffer.concat(parts).toString("utf8") }); });
+      response.on("error", (err) => { done(); reject(err); });
+    });
+    const timer = setTimeout(() => { request.destroy(new TimedOut()); }, limitMs);
+    const stopped = (): void => { request.destroy(new Error("stopped")); };
+    function done(): void {
+      clearTimeout(timer);
+      stop?.removeEventListener("abort", stopped);
+    }
+    stop?.addEventListener("abort", stopped);
+    request.on("error", (err) => { done(); reject(err); });
+    request.end(body);
+  });
+}
+
+// How many times one call is tried. Telegram sometimes doesn't answer a new connection at all: measured on 17 November from
+// two networks, one try in six sat silent for its whole limit while the next was answered in under a second. So a silent
+// try is given up on quickly and made again. A person not being told matters more than their being told twice.
+const TRIES = 3;
+
+async function call(at: TelegramEndpoint, token: string, method: string, body: Record<string, unknown>, limitMs = at.timeoutMs, stop?: AbortSignal, tries = TRIES): Promise<unknown> {
+  let url: URL;
+  try {
+    url = new URL(`${at.apiUrl}/bot${token}/${method}`);
+  } catch {
+    throw new TelegramError("Telegram couldn't be reached: its address isn't one.");
+  }
+  let response: { status: number; text: string } | undefined;
   for (let attempt = 1; response === undefined; attempt++) {
     try {
-      response = await fetch(`${at.apiUrl}/bot${token}/${method}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: stop ? AbortSignal.any([AbortSignal.timeout(limitMs), stop]) : AbortSignal.timeout(limitMs),
-      });
+      response = await post(url, JSON.stringify(body), limitMs, stop);
     } catch (err: unknown) {
       if (stop?.aborted) throw new TelegramError("Stopped.");
-      if (err instanceof Error && err.name === "TimeoutError") throw new TelegramError(`Telegram didn't answer within ${limitMs / 1000} seconds.`);
-      if (attempt < 2) continue;
-      const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : err instanceof Error ? err.message : String(err);
-      throw new TelegramError(`Telegram couldn't be reached, twice: ${cause.replaceAll(token, "<bot token>")}.`);
+      if (attempt < tries) continue;
+      const times = tries === 1 ? "" : `, in ${tries} tries`;
+      if (err instanceof TimedOut) throw new TelegramError(`Telegram didn't answer within ${limitMs / 1000} seconds${times}.`);
+      throw new TelegramError(`Telegram couldn't be reached${times}: ${reason(err).replaceAll(token, "<bot token>")}.`);
     }
   }
   let answer: { ok?: boolean; description?: string; error_code?: number; result?: unknown };
   try {
-    answer = await response.json() as typeof answer;
+    answer = JSON.parse(response.text) as typeof answer;
   } catch {
     // No number: a page from a proxy or a hotel network isn't Telegram refusing the token.
     throw new TelegramError(`Telegram answered with something unreadable (HTTP ${response.status}).`);
   }
+  if (answer === null || typeof answer !== "object") throw new TelegramError(`Telegram answered with something unreadable (HTTP ${response.status}).`);
   if (answer.ok !== true) throw new TelegramError(`Telegram refused: ${answer.description ?? `HTTP ${response.status}`}.`, answer.error_code);
   return answer.result;
 }
@@ -69,7 +115,8 @@ export async function newestUpdate(at: TelegramEndpoint, token: string): Promise
 
 // Everything sent to the bot from this update on, waiting up to pollSeconds for the first. Stopping it ends the wait at once.
 export async function updatesFrom(at: TelegramEndpoint, token: string, offset: number, stop: AbortSignal): Promise<TelegramUpdate[]> {
-  return await call(at, token, "getUpdates", { offset, timeout: at.pollSeconds, allowed_updates: ["message"] }, at.pollSeconds * 1000 + at.timeoutMs, stop) as TelegramUpdate[];
+  // One try: the reader calls again by itself, with a growing wait.
+  return await call(at, token, "getUpdates", { offset, timeout: at.pollSeconds, allowed_updates: ["message"] }, at.pollSeconds * 1000 + at.timeoutMs, stop, 1) as TelegramUpdate[];
 }
 
 // Answers only once Telegram has accepted the message, with the ids Telegram gave: the chat's own number, which is what a
