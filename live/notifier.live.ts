@@ -66,6 +66,22 @@ test("an agent's own shell sets up a notifier and reaches its operator, and the 
   const worded = ok(["notify", "This came through the real daemon and the cello command.", "--agent", "Nell"], "nell-shell");
   assert.deepEqual([worded["sent"], worded["included_text"]], [true, true]);
 
+  // With CELLO_BOT_REPLY=1 a person answers in Telegram, and it has to arrive as the operator's words, apart from messages.
+  if (process.env["CELLO_BOT_REPLY"]) {
+    ok(["notify", "Live test: reply to this in Telegram within 3 minutes, with any words.", "--kind", "request", "--agent", "Nell"], "nell-shell");
+    let reply: { text: string; via: string } | undefined;
+    for (let i = 0; i < 90 && !reply; i++) {
+      const read = ok(["receive", "--agent", "Nell"], "nell-shell");
+      assert.deepEqual(read["messages"], [], "the operator's reply is never among the messages");
+      reply = (read["from_your_operator"] as { replies: { text: string; via: string }[] } | undefined)?.replies[0];
+      if (!reply) spawnSync("sleep", ["2"]);
+    }
+    assert.ok(reply, "no reply arrived from Telegram in 3 minutes");
+    assert.equal(reply.via, "telegram");
+    process.stderr.write(`The operator's reply arrived: ${JSON.stringify(reply.text)}\n`);
+    assert.equal(ok(["receive", "--agent", "Nell"], "nell-shell")["from_your_operator"], undefined, "a read clears it");
+  }
+
   // Nothing the daemon logged holds the token.
   assert.ok(!readFileSync(join(home, "daemon.log"), "utf8").includes(token as string), "the bot token is in daemon.log");
 
