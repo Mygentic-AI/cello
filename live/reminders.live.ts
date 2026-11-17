@@ -102,4 +102,24 @@ test("a Reminder set from another agent's shell rides on the call's answer and o
   assert.deepEqual((ok(["reminder-list", "--agent", "Rae"]) as { reminders: unknown[] }).reminders, []);
   const missing = cello(["reminder-remove", "999", "--agent", "Rae"], "sol-shell");
   assert.equal(missing.json["error"], "no_such_reminder");
+
+  // The locks start open. An agent's shell can turn one on, since that only tightens, and then nothing it runs can
+  // change Rae's Reminders or turn the lock back off: both take a person.
+  const refused = (args: string[]): void => {
+    const run = cello(args, "sol-shell");
+    assert.deepEqual([run.status === 0, run.json["error"]], [false, "person_required"], `cello ${args.join(" ")} should take a person: ${run.stdout}${run.stderr}`);
+  };
+  const kept = ok(["reminder-set", "set while open", "--agent", "Rae"], "sol-shell") as { reminder: number };
+  ok(["settings-set", "reminders.anyone_can_change", "false", "--agent", "Rae"], "sol-shell");
+  refused(["reminder-set", "set while locked", "--agent", "Rae"]);
+  refused(["reminder-remove", String(kept.reminder), "--agent", "Rae"]);
+  refused(["settings-set", "reminders.anyone_can_change", "true", "--agent", "Rae"]);
+  assert.equal((ok(["reminder-list", "--agent", "Rae"], "sol-shell") as { reminders: unknown[] }).reminders.length, 1, "a locked agent's Reminders can still be read, and none changed");
+  // One agent's lock is its own: Sol's Reminders are still open.
+  ok(["reminder-set", "Sol is not locked", "--agent", "Sol"], "sol-shell");
+
+  // The same for notifiers, refused before anything is asked of Telegram.
+  ok(["settings-set", "notifiers.anyone_can_change", "false", "--agent", "Rae"], "sol-shell");
+  refused(["notifier-add", "telegram", "--bot-token", "1:not-a-real-token", "--agent", "Rae"]);
+  refused(["settings-set", "notifiers.anyone_can_change", "true", "--agent", "Rae"]);
 });

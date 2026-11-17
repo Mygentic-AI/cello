@@ -55,6 +55,10 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "limits.stranger_pool": { default: "50", kind: "number", min: 1, max: 100_000, loosensWhen: "higher", description: "Open sessions all strangers together can have with this agent." },
   "limits.quiet_minutes": { default: "120", kind: "number", min: 1, max: 5_256_000, loosensWhen: "lower", description: "A session stops counting toward its caller's limit after this long with nothing new. It stays open." },
   "limits.cap_alarm_minutes": { default: "10", kind: "number", min: 0, max: 100_000, description: "The shortest gap between two notices that one caller keeps hitting a limit." },
+  // The two locks, and both start open: a Reminder or a notifier is meant to be set by just telling an agent. Turning one
+  // off is tightening, which anyone can do, and turning it back on is loosening, which takes a person.
+  "reminders.anyone_can_change": { default: "true", kind: "switch", description: "Whether anyone, an agent included, can set or remove this agent's Reminders. Off, it takes a person at a terminal. Turning it off needs no person, and turning it back on does." },
+  "notifiers.anyone_can_change": { default: "true", kind: "switch", description: "Whether anyone, an agent included, can add or remove this agent's notifiers. Off, it takes a person at a terminal. Turning it off needs no person, and turning it back on does. Sending through a notifier is never locked." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },

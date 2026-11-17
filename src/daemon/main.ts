@@ -10,6 +10,7 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, ONCE_WRITTEN, type Signal } from "./engine.ts";
 import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
+import { requirePerson as requirePersonFor } from "./errors.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
@@ -136,6 +137,12 @@ async function eachAgent(work: (agentHex: string) => Promise<unknown>): Promise<
 
 function requirePerson(params: Record<string, unknown>): void {
   if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
+}
+
+// Reminders and notifiers are open to anyone unless their agent's lock is on. Then a change takes a person, as governance does.
+function unlessLocked(agent: string, key: string, params: Record<string, unknown>, what: string, command: string): void {
+  if (engine.governance.reach.setting(new Uint8Array(Buffer.from(agent, "hex")), key) === "true") return;
+  requirePersonFor(params, `${what} The lock is the setting ${key}.`, command);
 }
 
 function stopListening(socket: Socket): void {
@@ -453,23 +460,35 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     case "moniker":
       return governed(method, params);
     // Reaching the person. None of these acts as the agent in a conversation, so none takes the hold.
-    case "notifier_add":
-      return notifiers.add(named(params), params);
+    case "notifier_add": {
+      const agent = named(params);
+      unlessLocked(agent, "notifiers.anyone_can_change", params, `This adds a notifier for ${agent}, and that agent's notifiers are locked.`, `cello notifier-add ${text(params, "type")} --bot-token <token> --agent ${agent}`);
+      return notifiers.add(agent, params);
+    }
     case "notifier_list":
       return notifiers.list(named(params));
-    case "notifier_remove":
-      return notifiers.remove(named(params), text(params, "name"));
+    case "notifier_remove": {
+      const agent = named(params);
+      unlessLocked(agent, "notifiers.anyone_can_change", params, `This removes a notifier from ${agent}, and that agent's notifiers are locked.`, `cello notifier-remove ${text(params, "name")} --agent ${agent}`);
+      return notifiers.remove(agent, text(params, "name"));
+    }
     case "notifier_test":
       return notifiers.test(named(params), optionalText(params, "name"));
     case "notify":
       return notifiers.notify(named(params), params);
     // Reminders aren't governance: anyone sets one, an agent included, for itself or for another of the owner's agents.
-    case "reminder_set":
-      return engine.reminders.set(named(params), params);
+    case "reminder_set": {
+      const agent = named(params);
+      unlessLocked(agent, "reminders.anyone_can_change", params, `This sets a Reminder for ${agent}, and that agent's Reminders are locked.`, `cello reminder-set ${JSON.stringify(params["text"] ?? "")} --agent ${agent}, with the same options`);
+      return engine.reminders.set(agent, params);
+    }
     case "reminder_list":
       return engine.reminders.list(named(params));
-    case "reminder_remove":
-      return engine.reminders.remove(named(params), params["reminder"]);
+    case "reminder_remove": {
+      const agent = named(params);
+      unlessLocked(agent, "reminders.anyone_can_change", params, `This removes a Reminder from ${agent}, and that agent's Reminders are locked.`, `cello reminder-remove ${String(params["reminder"])} --agent ${agent}`);
+      return engine.reminders.remove(agent, params["reminder"]);
+    }
     case "channel_create":
       return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);
     case "channel_join":
