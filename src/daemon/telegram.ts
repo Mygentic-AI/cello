@@ -7,18 +7,23 @@ export const TELEGRAM: TelegramEndpoint = { apiUrl: "https://api.telegram.org", 
 export class TelegramError extends Error {}
 
 async function call(at: TelegramEndpoint, token: string, method: string, body: Record<string, unknown>): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(`${at.apiUrl}/bot${token}/${method}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(at.timeoutMs),
-    });
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === "TimeoutError") throw new TelegramError(`Telegram didn't answer within ${at.timeoutMs / 1000} seconds.`);
-    const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : err instanceof Error ? err.message : String(err);
-    throw new TelegramError(`Telegram couldn't be reached: ${cause.replaceAll(token, "<bot token>")}.`);
+  let response: Response | undefined;
+  // A dropped connection is tried once more, because a person not being told matters more than their being told twice.
+  // A timeout isn't: the limit is the promise.
+  for (let attempt = 1; response === undefined; attempt++) {
+    try {
+      response = await fetch(`${at.apiUrl}/bot${token}/${method}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(at.timeoutMs),
+      });
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "TimeoutError") throw new TelegramError(`Telegram didn't answer within ${at.timeoutMs / 1000} seconds.`);
+      if (attempt < 2) continue;
+      const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : err instanceof Error ? err.message : String(err);
+      throw new TelegramError(`Telegram couldn't be reached, twice: ${cause.replaceAll(token, "<bot token>")}.`);
+    }
   }
   let answer: { ok?: boolean; description?: string; result?: unknown };
   try {
