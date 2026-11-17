@@ -2,7 +2,7 @@
 // Nobody holds an agent here unless the test says so, because that's the condition all of this turns on.
 import { REAL_CLI, cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -259,6 +259,55 @@ test("an offline daemon can't greet: the caller is told so, and the greeting com
   assert.deepEqual((a.ok(["greetings", "--agent", "Kit"]) as { greetings: unknown[] }).greetings, []);
   b.login();
   assert.equal((await greetingOf(a, "Kit", answer["session_id"] as string)).text, "Dispatched.");
+});
+
+test("a call nobody answered: a send says to wait, closing withdraws it, and the agent called never sees it", async () => {
+  const b = machine();
+  const bId = idOf(b, "Uma");
+  const a = machine();
+  idOf(a, "Vic");
+  b.logout();
+  const first = a.ok(["initiate-session", bId, "--agent", "Vic"]);
+  assert.equal(first["state"], "waiting");
+  assert.match(first["message"] as string, /To take the call back, close the session/);
+  const session = first["session_id"] as string;
+  const early = spawnSync(process.execPath, [cliFor(["send"]), "send", session, "too soon", "--over", "--agent", "Vic"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: a.home, CELLO_CALLER: "cli" } });
+  assert.equal(early.status, 1);
+  assert.match(early.stderr, /hasn't answered this call yet, so nothing was sent/);
+  const closed = a.ok(["close-session", session, "--agent", "Vic"]);
+  assert.equal(closed["withdrawn"], true);
+  assert.equal(view(a, "Vic", session)?.state, "closed");
+  assert.deepEqual(a.ok(["close-session", session, "--agent", "Vic"]), { closed: true, state: "closed" }, "closing again changes nothing");
+
+  // The agent called comes back. A second call shows it has caught up with the server, and the withdrawn one is nowhere.
+  b.login();
+  const second = call(a, "Vic", bId);
+  await until("Uma to hold the second call", () => view(b, "Uma", second));
+  assert.equal(view(b, "Uma", session), undefined, "a withdrawn call is never shown to the agent called");
+  assert.equal(sql(`SELECT withdrawn FROM sessions WHERE encode(session_id, 'hex') = '${session}'`), "t");
+
+  // An answered call closes as any session does.
+  assert.notEqual(a.ok(["close-session", second, "--agent", "Vic"])["withdrawn"], true);
+});
+
+test("a call that connects later rings the caller, and wait returns", async () => {
+  const b = machine();
+  const bId = idOf(b, "Wes");
+  const a = machine();
+  idOf(a, "Xan");
+  b.logout();
+  const session = a.ok(["initiate-session", bId, "--agent", "Xan"])["session_id"] as string;
+  const waiter = spawn(process.execPath, [cliPath, "wait", "--agent", "Xan", "--timeout-seconds", "60"], { env: { ...process.env, CELLO_HOME: a.home, CELLO_CALLER: "cli" } });
+  let out = "";
+  waiter.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+  const exited = new Promise<number | null>((resolve) => waiter.on("exit", resolve));
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  b.login();
+  assert.equal(await exited, 0);
+  const event = JSON.parse(out) as { event: string; session_id: string };
+  assert.equal(event.event, "session_started");
+  assert.equal(event.session_id, session);
+  assert.equal(a.ok(["send", session, "now it's open", "--over", "--agent", "Xan"])["sent"], true);
 });
 
 test("a greeting the agent called didn't sign, or signed for another call, is thrown away", async () => {

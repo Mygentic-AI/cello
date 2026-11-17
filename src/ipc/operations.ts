@@ -478,7 +478,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Close your side of a session.",
     scoped: true,
     acts: true,
-    description: "Close your side of a session. The other side is told, and the signed record stays on both machines.",
+    description: "Close your side of a session. The other side is told, and the signed record stays on both machines. A call nobody has answered yet is withdrawn instead: the agent called is never shown it, even if their daemon comes back later.",
     params: [SESSION],
   },
   {

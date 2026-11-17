@@ -2263,10 +2263,29 @@ export class Engine {
     return this.#lane(agentHex, sessionHex, () => this.#closeInLane(agent, sessionHex));
   }
 
+  // Closing a call nobody has answered takes it back. The server drops it, so the agent called never sees the call or the
+  // signals sealed in it, even if their daemon comes back later. Nothing was said, so there is nothing to seal.
+  async #withdraw(agent: AgentContext, local: SessionRow): Promise<unknown> {
+    const sessionHex = toHex(local.session_id);
+    try {
+      await this.#call(() => this.#routeFor(agent, local).link.call("session.withdraw", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id) }));
+    } catch (err: unknown) {
+      if (err instanceof LocalError && err.code === "wrong_session_state") {
+        throw new LocalError("session_not_active", "The other side answered just as you withdrew, so the call is connecting and nothing was withdrawn. Close it again once it has connected, to close it like any session.");
+      }
+      throw err;
+    }
+    this.#store.updateSession(agent.signer.id, local.session_id, { state: "closed", own_closed: 1, fault: "withdrawn", x25519_secret: null, mlkem_seed: null });
+    logEvent("session.withdrawn", { agent: agent.hex, session: sessionHex });
+    this.#activation.get(agent.hex + sessionHex)?.();
+    return { closed: true, state: "closed", withdrawn: true, message: "Nobody had answered, so the call is withdrawn: the agent you called won't be shown it, even if their daemon comes back. Nothing was said, so there is nothing to seal." };
+  }
+
   async #closeInLane(agent: AgentContext, sessionHex: string, oneMessage = false): Promise<unknown> {
     const local = this.#requireSession(agent, sessionHex);
     if (local.own_closed || local.state === "closed") return { closed: true, state: local.state };
     this.#refuseIfStopped(agent, this.#urlOf(local));
+    if (local.state === "offered" && local.role === "caller") return this.#withdraw(agent, local);
     if (local.state !== "active") throw new LocalError("session_not_active", `this session is ${local.state}`);
     await this.#resendPending(agent, local);
     // Their close is an entry too, and it isn't a message anyone could have read.
@@ -2750,7 +2769,7 @@ export class Engine {
       const reminded = this.reminders.due(agent.hex, sessionHex, toHex(targetId), 0, true);
       return { session_id: sessionHex, state, ...signalsInfo, ...(reminded.due.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminded.due } } : {}), [ONCE_WRITTEN]: reminded.commit };
     }
-    return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
+    return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back. A send waits until then. To take the call back, close the session: the agent you called is then never shown it.` };
   }
 
   // One call about public signals, as the agent, to its own server or to the one an address names. A stopped agent does nothing.
