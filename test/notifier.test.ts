@@ -201,6 +201,25 @@ test("with no chat id, the chat that wrote to the bot last is used and named, an
   assert.equal(sent[0]?.chat_id, "22");
 });
 
+test("a second agent takes the first one's notifier with no token given, and never sees it", async () => {
+  const { notifiers } = setup();
+  await assert.rejects(notifiers.add(AGENT2, { type: "telegram", same_as_agent: AGENT }), (err: unknown) => refusal("no_such_notifier")(err) && /Ann has no Telegram notifier to copy/.test((err as Error).message));
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "@andre" });
+  const copied = await notifiers.add(AGENT2, { type: "telegram", same_as_agent: AGENT }) as { chat_id: string; bot: string };
+  assert.deepEqual([copied.chat_id, copied.bot], ["55", "@andre_cello_bot"], "the same bot, and the chat by its number");
+  assert.ok(!JSON.stringify(copied).includes(TOKEN));
+  assert.equal(sent.at(-1)?.text, "CELLO is connected. Your agent Bea can now reach you here.");
+  assert.equal((await notifiers.notify(AGENT2, {}) as { sent: boolean }).sent, true);
+  await assert.rejects(notifiers.add(AGENT2, { type: "telegram", name: "again", bot_token: TOKEN, same_as_agent: AGENT }), refusal("bad_argument"));
+
+  // With two to choose from it asks which, by name, and takes the one named.
+  await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" });
+  notifiers.remove(AGENT2, "telegram");
+  await assert.rejects(notifiers.add(AGENT2, { type: "telegram", name: "mine", same_as_agent: AGENT }), (err: unknown) => refusal("no_such_notifier")(err) && /say which with name: telegram, work/.test((err as Error).message));
+  const named = await notifiers.add(AGENT2, { type: "telegram", name: "work", same_as_agent: AGENT }) as { chat_id: string };
+  assert.equal(named.chat_id, "77");
+});
+
 test("the bot token is never shown: not in the answer, the list, or a refusal", async () => {
   const { notifiers } = setup();
   const added = await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });

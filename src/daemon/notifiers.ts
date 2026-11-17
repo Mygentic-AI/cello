@@ -363,8 +363,21 @@ export class Notifiers {
     const name = typeof params["name"] === "string" ? params["name"] : type;
     if (!NAME_RULE.test(name)) throw new LocalError("bad_argument", "name must be 1 to 32 letters, digits, underscores or dashes");
     // A pasted token often carries a stray space or newline, which Telegram answers with a bare "Not Found".
-    const token = typeof params["bot_token"] === "string" ? params["bot_token"].trim() : "";
-    if (token.length === 0) throw new LocalError("bad_argument", "A Telegram notifier needs bot_token: the token BotFather gave for the bot.");
+    let token = typeof params["bot_token"] === "string" ? params["bot_token"].trim() : "";
+    // Another agent on this machine already has the bot: take its notifier as it is, so the token is typed once, ever, and
+    // an agent can set this up for a new agent without being shown it.
+    let sameChat: string | undefined;
+    const sameAs = params["same_as_agent"];
+    if (typeof sameAs === "string") {
+      if (token.length > 0) throw new LocalError("bad_argument", "give bot_token or same_as, not both");
+      const theirs = this.#rows(sameAs).filter((row) => row.type === type);
+      const source = theirs.find((row) => row.name === name) ?? (theirs.length === 1 ? theirs[0] : undefined);
+      if (!source) throw new LocalError("no_such_notifier", `${this.#host.agentName(sameAs)} has ${theirs.length === 0 ? "no Telegram notifier to copy" : `${theirs.length} Telegram notifiers, so say which with name: ${theirs.map((row) => row.name).join(", ")}`}.`);
+      const config = JSON.parse(source.config) as TelegramConfig;
+      token = config.bot_token;
+      sameChat = config.chat_number;
+    }
+    if (token.length === 0) throw new LocalError("bad_argument", "A Telegram notifier needs bot_token, the token BotFather gave for the bot, or same_as, an agent on this machine that already has one.");
     const agentName = this.#host.agentName(agentHex);
     const existing = this.#rows(agentHex);
     if (existing.some((r) => r.name === name)) throw new LocalError("notifier_exists", `${agentName} already has a notifier named ${name}. Remove it first with notifier-remove, or give this one another name.`);
@@ -377,7 +390,7 @@ export class Notifiers {
     const sameBot = this.#holders().filter((h) => h.botId === botId);
     const reading = sameBot.length > 0;
     let bot: string;
-    let chatId = typeof params["chat_id"] === "string" && params["chat_id"].trim().length > 0 ? params["chat_id"].trim() : undefined;
+    let chatId = typeof params["chat_id"] === "string" && params["chat_id"].trim().length > 0 ? params["chat_id"].trim() : sameChat;
     let chatWho: string | undefined;
     let chatNumber: string;
     let newest: TelegramUpdate | undefined;

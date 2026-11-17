@@ -49,7 +49,13 @@ cello notifier-add telegram --bot-token <token> --agent Ann
 
 It finds your chat from the message you sent, checks the token with Telegram, and sends a test line before it saves anything. The token is kept in the daemon's encrypted database and never shown again.
 
-One bot serves all your agents. For the next agent, give the same token, and it uses the same chat.
+One bot serves all your agents. For the next agent, name one that already has it, and no token is needed:
+
+```
+cello notifier-add telegram --same-as Ann --agent Bea
+```
+
+To keep the token out of your shell's history the first time, give it as `-` and it's read from standard input: `cello notifier-add telegram --bot-token - --agent Ann`.
 
 `cello notifier-list` shows an agent's notifiers, `cello notifier-test` sends a test line, and `cello notifier-remove <name>` removes one.
 

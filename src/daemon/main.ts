@@ -474,8 +474,9 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     // Reaching the person. None of these acts as the agent in a conversation, so none takes the hold.
     case "notifier_add": {
       const agent = named(params);
-      unlessLocked(agent, "notifiers.anyone_can_change", params, `This adds a notifier for ${agent}, and that agent's notifiers are locked.`, `cello notifier-add ${shellQuoted(params["type"])} --bot-token <token>${params["chat_id"] === undefined ? "" : ` --chat-id ${shellQuoted(params["chat_id"])}`}${params["name"] === undefined ? "" : ` --name ${shellQuoted(params["name"])}`} --agent ${agent}`);
-      return notifiers.add(agent, params);
+      unlessLocked(agent, "notifiers.anyone_can_change", params, `This adds a notifier for ${agent}, and that agent's notifiers are locked.`, `cello notifier-add ${shellQuoted(params["type"])} ${params["same_as"] === undefined ? "--bot-token <token>" : `--same-as ${shellQuoted(params["same_as"])}`}${params["chat_id"] === undefined ? "" : ` --chat-id ${shellQuoted(params["chat_id"])}`}${params["name"] === undefined ? "" : ` --name ${shellQuoted(params["name"])}`} --agent ${agent}`);
+      // Named like any agent, and resolved here so the notifier only ever deals in ids.
+      return notifiers.add(agent, params["same_as"] === undefined ? params : { ...params, same_as_agent: engine.resolveAgent(text(params, "same_as")) });
     }
     case "notifier_list":
       return notifiers.list(named(params));

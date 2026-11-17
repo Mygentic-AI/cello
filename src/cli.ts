@@ -195,7 +195,8 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
     }
     const value = args[++i];
     if (value === undefined) usageError(`${arg} needs a value`, op);
-    params[param.name] = readValue(param, value);
+    // A secret given as - comes from standard input, so it isn't left in the shell's history or shown in a process list.
+    params[param.name] = param.name === "bot_token" && value === "-" ? readFileSync(0, "utf8").trim() : readValue(param, value);
   }
   if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`, op);
   positional.forEach((param, i) => {
