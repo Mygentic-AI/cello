@@ -248,8 +248,11 @@ test("each notification is recorded against its agent, session and Telegram's id
 test("a second notifier is announced on the first, and one failing doesn't hide the other", async () => {
   const { notifiers } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
-  // The bot is being read by now, so its newest message can't be looked up and the chat has to be given.
-  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN }), refusal("chat_id_needed"));
+  // One bot serves a person's other agents too: the next one needs only the token, and gets the chat already in use.
+  const shared = await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN }) as { chat_id: string };
+  assert.equal(shared.chat_id, "55");
+  assert.equal(sent.at(-1)?.text, "CELLO is connected. Your agent Bea can now reach you here.");
+  notifiers.remove(AGENT2, "telegram");
   const second = await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" }) as { told_existing: string[] };
   assert.deepEqual(second.told_existing, ["telegram"]);
   const notice = sent.find((s) => s.chat_id === "55" && s.text.startsWith("A new notifier was added"));
@@ -260,6 +263,9 @@ test("a second notifier is announced on the first, and one failing doesn't hide 
   assert.deepEqual(partial.notifiers, ["work"]);
   assert.equal(partial.failed[0]?.notifier, "telegram");
   assert.ok(partial.failed[0]?.message.includes("chat not found"), "Telegram's own words reach the caller");
+
+  // With two chats on the bot, guessing one would send an agent's words to the wrong place.
+  await assert.rejects(notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN }), refusal("chat_id_needed"));
 
   notifiers.remove(AGENT, "work");
   await assert.rejects(notifiers.notify(AGENT, { notifier: "work" }), refusal("no_such_notifier"));

@@ -945,7 +945,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Set up a way to reach the agent's human operator, such as Telegram.",
     scoped: true,
     acts: false,
-    description: "Set up a notifier: a route notify uses to reach the agent's human operator. Anyone can do this, an agent included. For telegram, the person makes a bot with @BotFather, sends that bot any message, and gives you the bot's token. With no chat_id, it uses the chat that wrote to the bot last and says whose it is. The token and the chat are checked with Telegram, and a test message is sent, before anything is saved. The token is kept in the encrypted database and never shown again. Notifiers the agent already had are told a new one was added.",
+    description: "Set up a notifier: a route notify uses to reach the agent's human operator. Anyone can do this, an agent included. For telegram, the person makes a bot with @BotFather, sends that bot any message, and gives you the bot's token. With no chat_id, it uses the chat that wrote to the bot last and says whose it is. One bot can serve all of a person's agents: for the next agent give the same token, and it uses the same chat. The token and the chat are checked with Telegram, and a test message is sent, before anything is saved. The token is kept in the encrypted database and never shown again. Notifiers the agent already had are told a new one was added.",
     params: [
       { name: "type", kind: "string", required: true, positional: true, allowed: ["telegram"], description: "What kind of notifier." },
       { name: "bot_token", kind: "string", description: "telegram: the bot's token, from @BotFather." },

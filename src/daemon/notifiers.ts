@@ -260,7 +260,9 @@ export class Notifiers {
     const botId = botIdOf(token);
     // A bot this daemon already reads can't be asked for its newest message: Telegram allows one reader, and asking would
     // throw away replies the reader hasn't taken yet.
-    const reading = this.#readers.has(botId);
+    // The database says whether it's in use, not the running readers, so this holds from the daemon's first moment.
+    const sameBot = this.#holders().filter((h) => h.botId === botId);
+    const reading = sameBot.length > 0;
     let bot: string;
     let chatId = typeof params["chat_id"] === "string" && params["chat_id"].trim().length > 0 ? params["chat_id"].trim() : undefined;
     let chatWho: string | undefined;
@@ -268,7 +270,13 @@ export class Notifiers {
     let newest: TelegramUpdate | undefined;
     try {
       bot = await botUsername(apiUrl, token);
-      if (reading && chatId === undefined) throw new LocalError("chat_id_needed", `Nothing was saved. This machine already uses @${bot} for another notifier, so the chat can't be looked up. Give it with chat_id: notifier-list on the agent that has it shows the one in use.`);
+      if (reading && chatId === undefined) {
+        // One bot can serve every agent a person has. The next agent uses the chat the first one found, with nothing more to give.
+        const chats = [...new Set(sameBot.map((h) => h.chat))];
+        if (chats.length !== 1) throw new LocalError("chat_id_needed", `Nothing was saved. This machine uses @${bot} with more than one chat, so it isn't clear which one this agent should write to. Give it with chat_id: notifier-list on an agent that has it shows them.`);
+        chatId = chats[0] as string;
+        chatWho = "the chat this bot already writes to";
+      }
       if (!reading) newest = await newestUpdate(apiUrl, token);
       if (chatId === undefined) {
         // No chat id given: use the chat that wrote to the bot last, and say whose it is so a wrong one shows.
