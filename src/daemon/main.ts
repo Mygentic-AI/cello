@@ -139,6 +139,18 @@ function requirePerson(params: Record<string, unknown>): void {
   if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
 }
 
+// For a command a person will paste into a shell: single quotes, so nothing in an agent's text is run or expanded.
+const shellQuoted = (value: unknown): string => `'${String(value ?? "").replaceAll("'", "'\\''")}'`;
+
+// The whole command, options included, so what the person runs is what the agent asked for and not a plainer Reminder.
+function reminderSetCommand(agent: string, params: Record<string, unknown>): string {
+  const flags = [
+    ...(params["at_start"] === true ? ["--at-start"] : []),
+    ...(["every_messages", "every_minutes", "with", "session", "for_minutes"] as const).flatMap((name) => (params[name] === undefined ? [] : [`--${name.replace("_", "-")} ${shellQuoted(params[name])}`])),
+  ];
+  return ["cello reminder-set", shellQuoted(params["text"]), ...flags, `--agent ${agent}`].join(" ");
+}
+
 // Reminders and notifiers are open to anyone unless their agent's lock is on. Then a change takes a person, as governance does.
 function unlessLocked(agent: string, key: string, params: Record<string, unknown>, what: string, command: string): void {
   if (engine.governance.reach.setting(new Uint8Array(Buffer.from(agent, "hex")), key) === "true") return;
@@ -462,14 +474,14 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     // Reaching the person. None of these acts as the agent in a conversation, so none takes the hold.
     case "notifier_add": {
       const agent = named(params);
-      unlessLocked(agent, "notifiers.anyone_can_change", params, `This adds a notifier for ${agent}, and that agent's notifiers are locked.`, `cello notifier-add ${text(params, "type")} --bot-token <token> --agent ${agent}`);
+      unlessLocked(agent, "notifiers.anyone_can_change", params, `This adds a notifier for ${agent}, and that agent's notifiers are locked.`, `cello notifier-add ${shellQuoted(params["type"])} --bot-token <token>${params["chat_id"] === undefined ? "" : ` --chat-id ${shellQuoted(params["chat_id"])}`}${params["name"] === undefined ? "" : ` --name ${shellQuoted(params["name"])}`} --agent ${agent}`);
       return notifiers.add(agent, params);
     }
     case "notifier_list":
       return notifiers.list(named(params));
     case "notifier_remove": {
       const agent = named(params);
-      unlessLocked(agent, "notifiers.anyone_can_change", params, `This removes a notifier from ${agent}, and that agent's notifiers are locked.`, `cello notifier-remove ${text(params, "name")} --agent ${agent}`);
+      unlessLocked(agent, "notifiers.anyone_can_change", params, `This removes a notifier from ${agent}, and that agent's notifiers are locked.`, `cello notifier-remove ${shellQuoted(params["name"])} --agent ${agent}`);
       return notifiers.remove(agent, text(params, "name"));
     }
     case "notifier_test":
@@ -479,7 +491,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     // Reminders aren't governance: anyone sets one, an agent included, for itself or for another of the owner's agents.
     case "reminder_set": {
       const agent = named(params);
-      unlessLocked(agent, "reminders.anyone_can_change", params, `This sets a Reminder for ${agent}, and that agent's Reminders are locked.`, `cello reminder-set ${JSON.stringify(params["text"] ?? "")} --agent ${agent}, with the same options`);
+      unlessLocked(agent, "reminders.anyone_can_change", params, `This sets a Reminder for ${agent}, and that agent's Reminders are locked.`, reminderSetCommand(agent, params));
       return engine.reminders.set(agent, params);
     }
     case "reminder_list":

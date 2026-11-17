@@ -112,6 +112,11 @@ test("a Reminder set from another agent's shell rides on the call's answer and o
   const kept = ok(["reminder-set", "set while open", "--agent", "Rae"], "sol-shell") as { reminder: number };
   ok(["settings-set", "reminders.anyone_can_change", "false", "--agent", "Rae"], "sol-shell");
   refused(["reminder-set", "set while locked", "--agent", "Rae"]);
+  // The refusal carries the whole command for a person to run: every option, and quoted so the text can't run anything.
+  const relay = cello(["reminder-set", "it's $HOME `id`", "--every-messages", "3", "--for-minutes", "60", "--with", rae["agent_id"] as string, "--agent", "Rae"], "sol-shell");
+  assert.ok((relay.json["message"] as string).endsWith(`cello reminder-set 'it'\\''s $HOME \`id\`' --every-messages '3' --with '${rae["agent_id"] as string}' --for-minutes '60' --agent ${rae["agent_id"] as string}`), relay.json["message"] as string);
+  // Going back to the default is turning the lock off, so it takes a person too.
+  refused(["settings-set", "reminders.anyone_can_change", "--clear", "--agent", "Rae"]);
   refused(["reminder-remove", String(kept.reminder), "--agent", "Rae"]);
   refused(["settings-set", "reminders.anyone_can_change", "true", "--agent", "Rae"]);
   assert.equal((ok(["reminder-list", "--agent", "Rae"], "sol-shell") as { reminders: unknown[] }).reminders.length, 1, "a locked agent's Reminders can still be read, and none changed");
@@ -121,5 +126,6 @@ test("a Reminder set from another agent's shell rides on the call's answer and o
   // The same for notifiers, refused before anything is asked of Telegram.
   ok(["settings-set", "notifiers.anyone_can_change", "false", "--agent", "Rae"], "sol-shell");
   refused(["notifier-add", "telegram", "--bot-token", "1:not-a-real-token", "--agent", "Rae"]);
+  refused(["notifier-remove", "telegram", "--agent", "Rae"]);
   refused(["settings-set", "notifiers.anyone_can_change", "true", "--agent", "Rae"]);
 });
