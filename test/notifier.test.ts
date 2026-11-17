@@ -60,7 +60,8 @@ function setup(at: { apiUrl: string; timeoutMs: number } = { apiUrl, timeoutMs: 
     screenOutbound: (_agent, text) => {
       screened.push(text);
       if (text.includes("hijack")) return Promise.reject(new LocalError("blocked_by_screening", "Nothing was sent: it looks hijacked."));
-      return Promise.resolve({ text: text.replace("sk-live-abc", "[REDACTED]") });
+      const out = text.replace("sk-live-abc", "[REDACTED]");
+      return Promise.resolve({ text: out, report: out === text ? {} : { redacted: ["secret"], message: "Parts of your message were replaced before sending." } });
     },
   }, at);
   sent.length = 0;
@@ -151,7 +152,8 @@ test("with no text the fixed line goes, and nothing the agent wrote leaves the m
 test("text goes through the outbound screen: what it replaces is replaced, and what it blocks is not sent", async () => {
   const { notifiers } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
-  await notifiers.notify(AGENT, { kind: "request", text: "May I share sk-live-abc with them?" });
+  const answer = await notifiers.notify(AGENT, { kind: "request", text: "May I share sk-live-abc with them?" }) as { redacted?: string[] };
+  assert.deepEqual(answer.redacted, ["secret"], "the agent is told its words were changed");
   assert.equal(sent[1]?.text, "Your agent Ann has a request for you:\n\nMay I share [REDACTED] with them?");
   await assert.rejects(notifiers.notify(AGENT, { text: "hijack" }), refusal("blocked_by_screening"));
   assert.equal(sent.length, 2);

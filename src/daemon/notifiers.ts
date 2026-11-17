@@ -52,7 +52,7 @@ interface NotifierRow { name: string; type: string; config: string; added_at: nu
 export interface NotifierHost {
   agentName(agentHex: string): string;
   // The same outbound screen a message gets, since the text goes to a service outside this machine.
-  screenOutbound(agentHex: string, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string }>;
+  screenOutbound(agentHex: string, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string; report: Record<string, unknown> }>;
 }
 
 const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentHex, "hex"));
@@ -196,13 +196,16 @@ export class Notifiers {
     const agentName = this.#host.agentName(agentHex);
     const given = params["text"] as string | undefined;
     let text = cannedLine(agentName, kind);
+    // What the screen changed or let through, so the agent knows the person didn't read its exact words.
+    let report: Record<string, unknown> = {};
     if (given !== undefined && given.length > 0) {
       const screened = await this.#host.screenOutbound(agentHex, given, params, `cello notify - --kind ${kind} --allow-flagged --agent ${agentHex}`);
       text = withText(agentName, kind, screened.text);
+      report = screened.report;
       if (text.length > TELEGRAM_MAX_CHARS) throw new LocalError("too_long", `Nobody was told: with its first line this is ${text.length} characters, and one Telegram message holds ${TELEGRAM_MAX_CHARS}. Shorten it, or leave the text out to send the fixed line.`);
     }
     const answer = await this.#sendAll(agentHex, rows, text, kind, sessionHex === undefined ? null : new Uint8Array(Buffer.from(sessionHex, "hex")), true);
     logEvent("notifier.sent", { agent: agentHex, kind, with_text: given !== undefined && given.length > 0 });
-    return { ...(answer as object), kind, included_text: given !== undefined && given.length > 0 };
+    return { ...(answer as object), kind, included_text: given !== undefined && given.length > 0, ...report };
   }
 }
