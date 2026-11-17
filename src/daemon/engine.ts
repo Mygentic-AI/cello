@@ -2793,8 +2793,10 @@ export class Engine {
       }
     }
     const notices = this.#store.notices(agent.signer.id);
-    const fromOperator = this.#operator.unread(agent.signer.id);
     const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
+    // A read of one session takes the operator's replies about that session and the ones about none. One about another
+    // conversation waits for a read that covers it, so it isn't shown in the wrong one and then cleared.
+    const fromOperator = this.#operator.unread(agent.signer.id).filter((row) => !wantedSession || row.session_id === null || equalBytes(row.session_id, wantedSession));
     const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
       result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(fromOperator.length > 0 ? { from_your_operator: { note: OPERATOR_NOTE, replies: fromOperator.map((m) => ({ text: m.text, session_id: m.session_id ? toHex(m.session_id) : null, via: m.via, at: new Date(m.received_at).toISOString() })) } } : {}), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
@@ -2807,7 +2809,7 @@ export class Engine {
           }
           for (const row of greetings) this.#away.markRead(agent.signer.id, row.session_id);
           if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
-          if (fromOperator.length > 0) this.#operator.clear(agent.signer.id, (fromOperator.at(-1) as { id: number }).id);
+          this.#operator.markRead(agent.signer.id, fromOperator.map((row) => row.id));
         });
       },
     };
