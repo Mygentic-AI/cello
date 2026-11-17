@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { type Server, createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Notifiers } from "../src/daemon/notifiers.ts";
 import { Store } from "../src/daemon/store.ts";
+import { TelegramError, sendText } from "../src/daemon/telegram.ts";
 
 const TOKEN = "123456:secret-bot-token";
 const AGENT = "07".repeat(32);
@@ -251,18 +252,38 @@ test("Telegram out of reach or silent is a named refusal within the time limit, 
   const { notifiers } = setup({ apiUrl, timeoutMs: 200, pollSeconds: 0 });
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   const started = Date.now();
-  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /may still have arrived/.test((err as Error).message));
+  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /no answer within 0.2 seconds\), so it may have arrived\. Running this again is safe/.test((err as Error).message));
   assert.ok(Date.now() - started < 3_000, "a silent Telegram must not hold the call open");
 
-  // A message Telegram took but didn't confirm is never sent again: that is how the person got the same message twice.
+  // A message Telegram took but didn't confirm is never sent again: that is how the person got the same message twice. And
+  // the agent isn't told "nobody was told", which is what makes it send again itself.
   silentOnce = 1;
   const before = sendTries;
-  await assert.rejects(notifiers.notify(AGENT, {}), (err: unknown) => /may still have arrived, so check the chat before sending it again/.test((err as Error).message));
+  const unsure = await notifiers.notify(AGENT, {}) as { sent: unknown; unconfirmed?: unknown[]; unconfirmed_note?: string };
   assert.equal(sendTries - before, 1, "sent once, not tried again");
+  assert.equal(unsure.sent, "unconfirmed");
+  assert.equal(unsure.unconfirmed?.length, 1);
+  assert.match(unsure.unconfirmed_note ?? "", /Don't send it again/);
+});
 
-  // A connection that never opens sent nothing, so it is tried again. 10.255.255.1 is an address nothing answers.
-  const nowhere = setup({ apiUrl: "http://10.255.255.1", timeoutMs: 200, pollSeconds: 0 });
-  await assert.rejects(nowhere.notifiers.add(AGENT, { type: "telegram", name: "far", bot_token: TOKEN, chat_id: "55" }), (err: unknown) => /in 3 tries/.test((err as Error).message));
+test("a send is tried again only while nothing could have reached Telegram", async () => {
+  // A connection that opens but whose https handshake never completes: nothing was sent, so each try is made.
+  let connections = 0;
+  const mute = createNetServer((socket) => { connections += 1; socket.on("error", () => undefined); });
+  servers.push(mute as unknown as Server);
+  await new Promise<void>((resolve) => mute.listen(0, "127.0.0.1", () => resolve()));
+  const at = { apiUrl: `https://127.0.0.1:${(mute.address() as AddressInfo).port}`, timeoutMs: 200, pollSeconds: 0 };
+  await assert.rejects(sendText(at, TOKEN, "55", "hello"), (err: unknown) => /in 3 tries/.test((err as Error).message));
+  assert.equal(connections, 3, "tried three times, because no try could have been delivered");
+
+  // An answer that starts and is cut off: the request arrived, so it's never made again.
+  let hits = 0;
+  const cut = createServer((_req, res) => { hits += 1; res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "100" }); res.write("{\"ok\":"); setTimeout(() => res.destroy(), 10); });
+  servers.push(cut);
+  await new Promise<void>((resolve) => cut.listen(0, "127.0.0.1", () => resolve()));
+  const cutAt = { apiUrl: `http://127.0.0.1:${(cut.address() as AddressInfo).port}`, timeoutMs: 2_000, pollSeconds: 0 };
+  await assert.rejects(sendText(cutAt, TOKEN, "55", "hello"), (err: unknown) => err instanceof TelegramError && err.maybeSent && !(err.message.includes(TOKEN)));
+  assert.equal(hits, 1, "a message whose answer was cut off is sent once");
 });
 
 test("notify with no notifier refuses by name, and never claims anyone was told", async () => {

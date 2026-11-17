@@ -195,9 +195,11 @@ export class Notifiers {
   }
 
   // Says something back in the operator's chat. It's a courtesy: failing to say it never holds up or undoes the reply itself.
-  async #answer(holder: Holder, text: string): Promise<void> {
+  // quiet: the line only confirms what the person just did, so the phone doesn't sound. A line saying their words didn't
+  // reach anyone does sound.
+  async #answer(holder: Holder, text: string, quiet = false): Promise<void> {
     try {
-      await sendText(this.#telegram, holder.token, holder.chat, text, [], true);
+      await sendText(this.#telegram, holder.token, holder.chat, text, [], quiet);
     } catch (err: unknown) {
       logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
     }
@@ -338,7 +340,7 @@ export class Notifiers {
     }
     const name = this.#host.agentName(agentHex);
     if (!this.#host.reachable(agentHex)) {
-      await this.#answer(here, `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`);
+      await this.#answer(here, `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`, true);
       return;
     }
     // When it's plain who the reply went to, a 👍 on it says so, and nothing new appears in the chat.
@@ -347,10 +349,10 @@ export class Notifiers {
         await thumbsUp(this.#telegram, token, chat, message.message_id);
         return;
       } catch (err: unknown) {
-        logEvent("notifier.answer_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
+        logEvent("notifier.reaction_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
       }
     }
-    await this.#answer(here, `Passed to ${name}.`);
+    await this.#answer(here, `Passed to ${name}.`, true);
   }
 
   #rows(agentHex: string): NotifierRow[] {
@@ -430,7 +432,7 @@ export class Notifiers {
       chatNumber = (await sendText(apiUrl, token, chatId, `CELLO is connected. Your agent ${agentName} can now reach you here.`)).chatId;
     } catch (err: unknown) {
       if (!(err instanceof TelegramError)) throw err;
-      throw new LocalError("notifier_check_failed", `Nothing was saved, because the check with Telegram failed. ${err.message}`);
+      throw new LocalError("notifier_check_failed", `Nothing was saved, because the check with Telegram failed. ${err.message}${err instanceof TelegramError && err.maybeSent ? " Running this again is safe: at worst the chat shows the connected line twice." : ""}`);
     }
     const config: TelegramConfig = { bot_token: token, chat_id: chatId, chat_number: chatNumber, bot };
     this.#store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(idOf(agentHex), name, type, JSON.stringify(config), Date.now());
@@ -490,6 +492,9 @@ export class Notifiers {
   async #sendAll(agentHex: string, rows: NotifierRow[], text: string, kind: string, sessionId: Uint8Array | null, record: boolean, choices: readonly string[] = []): Promise<unknown> {
     const reached: string[] = [];
     const failed: { notifier: string; message: string }[] = [];
+    // Taken by Telegram but not confirmed. Kept apart from failed: an agent told "nobody was told" sends again, and the
+    // person sees the same message twice.
+    const unconfirmed: { notifier: string; message: string }[] = [];
     // The same on every notifier this one call reaches, so a question with choices is answered once across all of them.
     const asked = choices.length > 0 ? randomBytes(12).toString("hex") : null;
     for (const row of rows) {
@@ -499,12 +504,16 @@ export class Notifiers {
         reached.push(row.name);
       } catch (err: unknown) {
         if (!(err instanceof TelegramError)) throw err;
-        logEvent("notifier.failed", { agent: agentHex, notifier: row.name, message: err.message });
-        failed.push({ notifier: row.name, message: err.message });
+        logEvent(err.maybeSent ? "notifier.unconfirmed" : "notifier.failed", { agent: agentHex, notifier: row.name, message: err.message });
+        (err.maybeSent ? unconfirmed : failed).push({ notifier: row.name, message: err.message });
       }
     }
-    if (reached.length === 0) throw new LocalError("notify_failed", `Nobody was told. ${failed.map((f) => `${f.notifier}: ${f.message}`).join(" ")}`);
-    return { sent: true, agent: this.#host.agentName(agentHex), notifiers: reached, ...(failed.length > 0 ? { failed } : {}) };
+    if (reached.length === 0 && unconfirmed.length === 0) throw new LocalError("notify_failed", `Nobody was told. ${failed.map((f) => `${f.notifier}: ${f.message}`).join(" ")}`);
+    const maybe = unconfirmed.length === 0 ? {} : {
+      unconfirmed,
+      unconfirmed_note: `Telegram took this but didn't confirm it, so it most likely arrived. Don't send it again unless your operator says it didn't come.${choices.length > 0 ? " If it did arrive, its buttons won't work, so your operator would type the answer." : ""}`,
+    };
+    return { sent: reached.length > 0 ? true : "unconfirmed", agent: this.#host.agentName(agentHex), notifiers: reached, ...maybe, ...(failed.length > 0 ? { failed } : {}) };
   }
 
   async test(agentHex: string, name: string | undefined): Promise<unknown> {
