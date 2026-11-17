@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { DEFAULT_WAIT_SECONDS } from "../ipc/operations.ts";
 import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.ts";
-import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
+import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, ONCE_WRITTEN, type Signal } from "./engine.ts";
 import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { Notifiers } from "./notifiers.ts";
@@ -351,8 +351,11 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       }
       return { released: true, agent_id: agent };
     }
-    case "initiate_session":
-      return engine.initiate(acting(params), text(params, "target"), params);
+    case "initiate_session": {
+      const answer = await engine.initiate(acting(params), text(params, "target"), params);
+      const onceWritten = (answer as { [ONCE_WRITTEN]?: () => void })[ONCE_WRITTEN];
+      return onceWritten ? new AfterWrite(answer, onceWritten) : answer;
+    }
     case "send":
       return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
     case "receive": {

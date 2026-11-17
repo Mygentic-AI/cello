@@ -72,6 +72,7 @@ export class Reminders {
       const over = (row.expires_at !== null && row.expires_at <= this.#now()) || (row.session_id !== null && !this.#host.sessionOpen(agentHex, hex(row.session_id)));
       if (!over) { live.push(row); continue; }
       this.#store.prepare("DELETE FROM reminders WHERE id = ?").run(row.id);
+      this.#drop(row.id);
       logEvent("reminder.ended", { agent: agentHex, reminder: row.id });
     }
     return live;
@@ -95,6 +96,7 @@ export class Reminders {
     const everyMessages = wholeNumber(params, "every_messages", 1000);
     const everyMinutes = wholeNumber(params, "every_minutes", 1440);
     const forMinutes = wholeNumber(params, "for_minutes", 43_200);
+    if (params["at_start"] !== undefined && typeof params["at_start"] !== "boolean") throw new LocalError("bad_argument", "at_start must be true or false");
     // With nothing said about when, it's shown once as each session starts.
     const atStart = params["at_start"] === true || (everyMessages === null && everyMinutes === null);
     const withHex = params["with"];
@@ -120,13 +122,20 @@ export class Reminders {
     const name = this.#host.agentName(agentHex);
     if (typeof id !== "number" || !this.#live(agentHex).some((row) => row.id === id)) throw new LocalError("no_such_reminder", `${name} has no Reminder numbered ${String(id)}. reminder-list shows them.`);
     this.#store.prepare("DELETE FROM reminders WHERE agent_id = ? AND id = ?").run(bytesOf(agentHex), id);
+    this.#drop(id);
     logEvent("reminder.removed", { agent: agentHex, reminder: id });
     return { removed: true, agent: name, reminder: id };
   }
 
   // An agent that's removed takes its Reminders with it.
   forget(agentHex: string): void {
+    for (const row of this.#live(agentHex)) this.#drop(row.id);
     this.#store.prepare("DELETE FROM reminders WHERE agent_id = ?").run(bytesOf(agentHex));
+  }
+
+  // What was kept in memory about a Reminder goes with it.
+  #drop(id: number): void {
+    for (const key of this.#shown.keys()) if (key.startsWith(`${id}:`)) this.#shown.delete(key);
   }
 
   #applies(row: Row, sessionHex: string, peerHex: string): boolean {
@@ -152,22 +161,35 @@ export class Reminders {
   // starting is true for the answer to a call the agent just placed: the caller sends before it ever reads.
   due(agentHex: string, sessionHex: string, peerHex: string, delivered: number, starting = false): { due: DueReminder[]; commit(): void } {
     const now = this.#now();
+    // Noted even when the agent has no Reminders yet, so one set later knows the conversation was already under way.
+    this.#firstSeen(sessionHex);
     const due: DueReminder[] = [];
-    const after: [string, Shown][] = [];
+    const seen: { row: Row; shown: boolean }[] = [];
     for (const row of this.#live(agentHex)) {
       if (!this.#applies(row, sessionHex, peerHex)) continue;
       const state = this.#state(row, sessionHex);
       let why: string | null = null;
-      if (row.at_start === 1 && !state.start && (starting || delivered > 0)) why = "the start of this session";
+      // One set part-way through a conversation is shown on the next read too, and says so, since it isn't the start.
+      if (row.at_start === 1 && !state.start && (starting || delivered > 0)) why = row.created_at > this.#firstSeen(sessionHex) ? "it was just set" : "the start of this session";
       else if (row.every_messages !== null && state.since + delivered >= row.every_messages) why = each(row.every_messages, "message");
       else if (row.every_minutes !== null && now - state.at >= row.every_minutes * 60_000) why = each(row.every_minutes, "minute");
       if (why !== null) due.push({ reminder: row.id, text: row.text, why });
-      // Any showing starts every count again, so one Reminder isn't shown twice in a row for two reasons.
-      // Only a message arriving ends a quiet spell and lets the timer wake the agent again: being shown doesn't.
-      const woke = delivered > 0 ? false : state.woke;
-      after.push([`${row.id}:${sessionHex}`, why !== null ? { start: true, since: 0, at: now, woke } : { ...state, since: state.since + delivered, woke }]);
+      seen.push({ row, shown: why !== null });
     }
-    return { due, commit: () => { for (const [key, state] of after) this.#shown.set(key, state); } };
+    return {
+      due,
+      // Applied to what's there when the answer has gone, not to what was there when it was built: a wake or another read
+      // may have come between.
+      commit: () => {
+        for (const { row, shown } of seen) {
+          const state = this.#state(row, sessionHex);
+          // Only a message arriving ends a quiet spell and lets the timer wake the agent again: being shown doesn't.
+          const woke = delivered > 0 ? false : state.woke;
+          // Any showing starts every count again, so one Reminder isn't shown twice in a row for two reasons.
+          this.#shown.set(`${row.id}:${sessionHex}`, shown ? { start: true, since: 0, at: now, woke } : { ...state, since: state.since + delivered, woke });
+        }
+      },
+    };
   }
 
   // Whether a timed Reminder is due in a session where nothing is arriving, so the agent should be woken to read it.

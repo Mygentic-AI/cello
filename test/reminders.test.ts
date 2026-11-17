@@ -58,6 +58,44 @@ test("at the start: once per session, with the call's answer or the first messag
   assert.deepEqual(read(reminders, S2, 5), []);
 });
 
+test("the caller's first read shows its start Reminder with nothing delivered, for a call that was answered later", () => {
+  const { reminders } = setup();
+  reminders.set(ANN, { text: "who you act for" });
+  // The call's answer said only "waiting", so nothing was shown then. The caller reads when the session starts.
+  const first = reminders.due(ANN, S1, PEER, 0, true);
+  assert.deepEqual(first.due.map((d) => d.why), ["the start of this session"]);
+  // Its answer never arrived, so it isn't used up.
+  const again = reminders.due(ANN, S1, PEER, 0, true);
+  again.commit();
+  assert.deepEqual(again.due.map((d) => d.why), ["the start of this session"]);
+  assert.deepEqual(reminders.due(ANN, S1, PEER, 0, true).due, []);
+});
+
+test("one set part-way through a conversation is shown next and says it was just set, and a timer waits its full interval", () => {
+  const { reminders, clock } = setup();
+  read(reminders, S1, 1);
+  clock.now += 30 * MINUTE;
+  reminders.set(ANN, { text: "added later" });
+  reminders.set(ANN, { text: "timed, added later", every_minutes: 10 });
+  assert.deepEqual(read(reminders, S1, 1), ["it was just set"]);
+  clock.now += 9 * MINUTE;
+  assert.equal(reminders.shouldWake(ANN, S1, PEER), false, "the timer runs from when it was set, not from when the session began");
+  clock.now += MINUTE;
+  assert.equal(reminders.shouldWake(ANN, S1, PEER), true);
+});
+
+test("a wake that lands between a read and its answer going out isn't forgotten", () => {
+  const { reminders, clock } = setup();
+  reminders.set(ANN, { text: "anything to ask me?", every_minutes: 10 });
+  read(reminders, S1, 1);
+  clock.now += 9 * MINUTE;
+  const slow = reminders.due(ANN, S1, PEER, 0);
+  clock.now += MINUTE;
+  assert.equal(reminders.shouldWake(ANN, S1, PEER), true);
+  slow.commit();
+  assert.equal(reminders.shouldWake(ANN, S1, PEER), false, "the slow read's commit must not undo the wake, or the agent is woken twice in one quiet spell");
+});
+
 test("a read that never reached the agent counts nothing and shows it again", () => {
   const { reminders } = setup();
   reminders.set(ANN, { text: "check scope", at_start: true, every_messages: 3 });
