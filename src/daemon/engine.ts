@@ -1057,7 +1057,19 @@ export class Engine {
     const theirs = await openFromKey(this.#keys.seeds(agent.signer.id), fields.signalsCiphertext, fields.sealedSignals);
     const accept = await this.#lane(agent.hex, "gate", () => this.#admitOffer(agent, wire, offer, theirs));
     if (!accept) return;
-    await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
+    try {
+      await this.#link.call("session.accept", { agent: toB64(agent.signer.id), sessionId: toB64(fields.sessionId), accept });
+    } catch (err: unknown) {
+      // The caller withdrew the call, or it expired, before this answer reached the server. It will never start, and the server won't
+      // list it again, so close it here. Left as accepted, it would count against this caller's limit until it went quiet.
+      // A stopped conversation is different: the server answers that offer if the caller is lifted, so it stays.
+      if (err instanceof ServerRefused && (err.code === "wrong_session_state" || err.code === "offer_expired")) {
+        this.#store.updateSession(agent.signer.id, fields.sessionId, { state: "closed", fault: err.code === "offer_expired" ? "expired" : "withdrawn", x25519_secret: null, mlkem_seed: null });
+        logEvent("session.accept_too_late", { agent: agent.hex, session: toHex(fields.sessionId), reason: err.code });
+        return;
+      }
+      throw err;
+    }
     logEvent("session.accepted", { agent: agent.hex, session: toHex(fields.sessionId) });
   }
 
