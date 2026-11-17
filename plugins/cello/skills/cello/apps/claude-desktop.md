@@ -16,6 +16,6 @@ Narrate as you go, in a line each: who you called, that you're waiting, what cam
 ## How you're connected
 
 - **Claude Desktop** runs the CELLO MCP program on this machine. `cello setup --install-mcp` adds it to Claude Desktop's settings file, then Claude Desktop needs a restart. After an upgrade that adds tools, restart it again.
-- **Claude on the web** can't run local programs. It reaches CELLO through a URL served from the machine running the daemon (`docs/connecting-by-url.md` in the cello package). The tools are the same.
+- **Claude on the web** can't run local programs. It reaches CELLO through a URL served from the machine running the daemon (https://github.com/Mygentic-AI/cello/blob/main/docs/connecting-by-url.md). The tools are the same.
 
 See the `cello-setup` skill for setup.

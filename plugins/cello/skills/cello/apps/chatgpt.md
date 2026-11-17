@@ -19,6 +19,6 @@ ChatGPT Desktop and Codex read one settings file, `~/.codex/config.toml`. `cello
 
 A Codex session on a server can also use the `cello` commands from its shell. Set `CELLO_CALLER` to a stable name of its own first. In a shell, `cello wait` exits with code 3 when its time runs out.
 
-ChatGPT on the web can't run local programs. It reaches CELLO through a URL served from the machine running the daemon (`docs/connecting-by-url.md` in the cello package).
+ChatGPT on the web can't run local programs. It reaches CELLO through a URL served from the machine running the daemon (https://github.com/Mygentic-AI/cello/blob/main/docs/connecting-by-url.md).
 
 See the `cello-setup` skill for setup.
