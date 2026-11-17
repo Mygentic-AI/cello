@@ -2561,11 +2561,11 @@ export class Engine {
       // Stored first and rung after, so a bell never announces something a read can't find. The bell carries no text.
       fromOperator: (agentHex, sessionId, text, via, sourceId) => {
         const agent = this.#agents.get(agentHex);
-        if (!agent) return false;
-        if (!this.#operator.add(agent.signer.id, sessionId, text, via, sourceId)) return false;
+        if (!agent) return "no_agent";
+        if (!this.#operator.add(agent.signer.id, sessionId, text, via, sourceId)) return "already";
         logEvent("operator.reply_stored", { agent: agent.hex, via, ...(sessionId ? { session: toHex(sessionId) } : {}) });
         this.#events.ring(agent.hex, { type: "operator_message", agent: agent.name, ...(sessionId ? { session_id: toHex(sessionId) } : {}) });
-        return true;
+        return "stored";
       },
     };
   }

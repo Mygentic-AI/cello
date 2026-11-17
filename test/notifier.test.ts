@@ -76,6 +76,8 @@ interface Handed { agent: string; session: string | null; text: string; via: str
 let handed: Handed[] = [];
 let told: { agent: string; text: string }[] = [];
 let held = new Set<string>();
+// Agents the daemon no longer has.
+let gone = new Set<string>();
 // How many times storing a reply fails before it works, to stand for a database that can't be written for a moment.
 let storeFailures = 0;
 const running: Notifiers[] = [];
@@ -97,10 +99,11 @@ function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds
     tell: (agent, text) => { told.push({ agent, text }); },
     fromOperator: (agent, sessionId, text, via, sourceId) => {
       if (storeFailures > 0) { storeFailures -= 1; throw new Error("database is locked"); }
-      if (seen.has(sourceId)) return false;
+      if (gone.has(agent)) return "no_agent";
+      if (seen.has(sourceId)) return "already";
       seen.add(sourceId);
       handed.push({ agent, session: sessionId ? Buffer.from(sessionId).toString("hex") : null, text, via });
-      return true;
+      return "stored";
     },
   }, at);
   running.push(notifiers);
@@ -122,6 +125,7 @@ function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = 
   handed = [];
   told = [];
   held = new Set([AGENT, AGENT2]);
+  gone = new Set();
   storeFailures = 0;
   const seen = new Set<string>();
   return { notifiers: open(store, at, seen), store, seen };
@@ -377,6 +381,24 @@ test("a refused token or a second reader stops the reading and tells the agent w
     assert.equal(readerCalls, calls, "a refused reader stops asking");
     assert.equal(told.length, 1, "and says so once");
   }
+});
+
+test("a removed agent's reply is refused in Telegram, never dropped, and forgetting it deletes its token and stops its bot", async () => {
+  const { notifiers, store } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.notify(AGENT, {});
+  gone = new Set([AGENT]);
+  says(55, "for an agent that's gone");
+  await until("being told it wasn't passed on", () => sent.some((s) => s.text.startsWith("The agent this was for is no longer on this machine")));
+  assert.deepEqual(handed, []);
+
+  notifiers.forget(AGENT);
+  assert.equal((store.prepare("SELECT count(*) AS c FROM notifiers").get() as { c: number }).c, 0, "the bot token goes with the agent");
+  assert.equal((store.prepare("SELECT count(*) AS c FROM notifications").get() as { c: number }).c, 0);
+  await settle();
+  const calls = readerCalls;
+  await settle();
+  assert.equal(readerCalls, calls, "a bot nobody uses is no longer read");
 });
 
 test("removing a bot's last notifier stops its reader, and a reply after that reaches nobody", async () => {

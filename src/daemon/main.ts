@@ -404,6 +404,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       const agent = engine.resolveAgent(text(params, "agent"));
       const answer = await engine.removeAgent(agent);
       holders.delete(agent);
+      notifiers.forget(agent);
       return answer;
     }
     case "agent_status":

@@ -61,8 +61,9 @@ export interface NotifierHost {
   reachable(agentHex: string): boolean;
   // A notice the agent reads with its next receive.
   tell(agentHex: string, text: string): void;
-  // Hands the agent what its operator said. False when this one was already handed over.
-  fromOperator(agentHex: string, sessionId: Uint8Array | null, text: string, via: string, sourceId: string): boolean;
+  // Hands the agent what its operator said. "already" when this one was handed over before, and "no_agent" when the agent
+  // is no longer on this daemon.
+  fromOperator(agentHex: string, sessionId: Uint8Array | null, text: string, via: string, sourceId: string): "stored" | "already" | "no_agent";
 }
 
 const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentHex, "hex"));
@@ -105,6 +106,19 @@ export class Notifiers {
   stop(): void {
     for (const reader of this.#readers.values()) reader.abort();
     this.#readers.clear();
+  }
+
+  // An agent that's removed takes its notifiers with it, tokens included, and a bot nobody else uses stops being read.
+  forget(agentHex: string): void {
+    this.#store.prepare("DELETE FROM notifications WHERE agent_id = ?").run(idOf(agentHex));
+    this.#store.prepare("DELETE FROM notifiers WHERE agent_id = ?").run(idOf(agentHex));
+    const inUse = new Set(this.#holders().map((h) => h.botId));
+    for (const [botId, reader] of this.#readers) {
+      if (inUse.has(botId)) continue;
+      reader.abort();
+      this.#readers.delete(botId);
+    }
+    logEvent("notifier.agent_forgotten", { agent: agentHex });
   }
 
   // Every agent's notifiers, oldest first.
@@ -221,7 +235,13 @@ export class Notifiers {
       target = { holder: first, sessionId: null };
     }
     const agentHex = target.holder.agentHex;
-    if (!this.#host.fromOperator(agentHex, target.sessionId, text, target.holder.name, `telegram:${botId}:${update.update_id}`)) return;
+    const outcome = this.#host.fromOperator(agentHex, target.sessionId, text, target.holder.name, `telegram:${botId}:${update.update_id}`);
+    if (outcome === "already") return;
+    if (outcome === "no_agent") {
+      // Never silently: the person believes they've given an instruction.
+      await this.#answer(here, "The agent this was for is no longer on this machine, so it wasn't passed on.");
+      return;
+    }
     const name = this.#host.agentName(agentHex);
     await this.#answer(here, this.#host.reachable(agentHex) ? `Passed to ${name}.` : `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`);
   }
