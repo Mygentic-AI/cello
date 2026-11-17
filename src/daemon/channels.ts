@@ -485,7 +485,12 @@ export class Channels {
       const follow = this.#requireFollow(signer.id, channel);
       if (follow.state !== "active") throw new LocalError("not_a_member", `this agent's state in that channel is ${describeState(follow.state)}, so it can't post`);
       const record = await this.#recordOf(follow);
-      const info = await this.#info(follow, record);
+      let info = await this.#info(follow, record);
+      // The admin may have just named this agent a poster, and the new settings may not have arrived yet. Ask once before refusing.
+      if (!namedToPost(info, record.fields.adminId, signer.id)) {
+        await this.#updateFromServer(agentHex, channel);
+        info = await this.#info(this.#requireFollow(signer.id, channel), record);
+      }
       if (!namedToPost(info, record.fields.adminId, signer.id)) throw new LocalError("not_allowed_to_post", "this channel doesn't let this agent post");
       const key = await this.#postingKey(agentHex, follow, record, info.generation);
       const seq = this.#db.nextAuthorSeq(signer.id, channel);
