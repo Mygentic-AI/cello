@@ -37,9 +37,10 @@ async function call(at: TelegramEndpoint, token: string, method: string, body: R
   try {
     answer = await response.json() as typeof answer;
   } catch {
-    throw new TelegramError(`Telegram answered with something unreadable (HTTP ${response.status}).`, response.status);
+    // No number: a page from a proxy or a hotel network isn't Telegram refusing the token.
+    throw new TelegramError(`Telegram answered with something unreadable (HTTP ${response.status}).`);
   }
-  if (answer.ok !== true) throw new TelegramError(`Telegram refused: ${answer.description ?? `HTTP ${response.status}`}.`, answer.error_code ?? response.status);
+  if (answer.ok !== true) throw new TelegramError(`Telegram refused: ${answer.description ?? `HTTP ${response.status}`}.`, answer.error_code);
   return answer.result;
 }
 

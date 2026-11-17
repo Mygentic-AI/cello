@@ -351,16 +351,18 @@ test("only the notifier's own private chat speaks as the operator, and a voice n
 });
 
 test("a reply survives a restart and a failed write: stored once, never skipped, never repeated", async () => {
-  const { notifiers, store, seen } = setup();
+  const { notifiers, store } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   storeFailures = 1;
   says(55, "first");
   await until("the reply after the write failed once", () => handed.length === 1);
   assert.equal(handed[0]?.text, "first");
+  await until("its place to be saved", () => store.getConfig("notifier.telegram.next_update.123456") === String(nextUpdate));
 
   notifiers.stop();
   says(55, "sent while the daemon was down");
-  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen);
+  // Nothing remembers what was handed over but the saved place: if that weren't kept, "first" would come again.
+  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, new Set());
   again.start();
   await until("the reply sent while it was down", () => handed.length === 2);
   await settle();

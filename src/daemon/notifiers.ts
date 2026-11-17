@@ -134,7 +134,11 @@ export class Notifiers {
     if (this.#readers.has(botId)) return;
     const reader = new AbortController();
     this.#readers.set(botId, reader);
-    void this.#read(botId, reader);
+    // Nothing in the reader may take the daemon down with it. If it dies it says so, and the next add or restart starts it again.
+    this.#read(botId, reader).catch((err: unknown) => {
+      if (this.#readers.get(botId) === reader) this.#readers.delete(botId);
+      logEvent("notifier.reading_crashed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
+    });
   }
 
   // Reads what people send the bot, for as long as a notifier uses it. The place reached is kept in the database and moves
@@ -149,7 +153,10 @@ export class Notifiers {
       try {
         const updates = await updatesFrom(this.#telegram, token, Number(this.#store.getConfig(offsetKey(botId)) ?? 0), stop);
         for (const update of updates) {
+          // A reader stopped part-way must not write its place over one a new notifier has just set.
+          if (stop.aborted) break;
           await this.#onUpdate(botId, token, update);
+          if (stop.aborted) break;
           this.#store.setConfig(offsetKey(botId), String(update.update_id + 1));
         }
         retry = FIRST_RETRY_MS;
