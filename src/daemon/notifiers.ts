@@ -82,8 +82,8 @@ export class Notifiers {
   // One send through one notifier. Returns the notifier's own id for what it sent.
   async #deliver(row: NotifierRow, text: string): Promise<string> {
     const config = JSON.parse(row.config) as TelegramConfig;
-    const messageId = await sendText(this.#telegram, config.bot_token, config.chat_id, text);
-    return `${config.chat_id}:${messageId}`;
+    const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, text);
+    return `${sent.chatId}:${sent.messageId}`;
   }
 
   // Proves the token and the chat with Telegram before anything is stored, so a mistake shows here and not at the first real notify.
@@ -92,15 +92,16 @@ export class Notifiers {
     if (type !== "telegram") throw new LocalError("bad_argument", `type must be one of: ${NOTIFIER_TYPES.join(", ")}`);
     const name = typeof params["name"] === "string" ? params["name"] : type;
     if (!NAME_RULE.test(name)) throw new LocalError("bad_argument", "name must be 1 to 32 letters, digits, underscores or dashes");
-    const token = params["bot_token"];
-    if (typeof token !== "string" || token.length === 0) throw new LocalError("bad_argument", "A Telegram notifier needs bot_token: the token BotFather gave for the bot.");
+    // A pasted token often carries a stray space or newline, which Telegram answers with a bare "Not Found".
+    const token = typeof params["bot_token"] === "string" ? params["bot_token"].trim() : "";
+    if (token.length === 0) throw new LocalError("bad_argument", "A Telegram notifier needs bot_token: the token BotFather gave for the bot.");
     const agentName = this.#host.agentName(agentHex);
     const existing = this.#rows(agentHex);
     if (existing.some((r) => r.name === name)) throw new LocalError("notifier_exists", `${agentName} already has a notifier named ${name}. Remove it first with notifier-remove, or give this one another name.`);
 
     const apiUrl = this.#telegram;
     let bot: string;
-    let chatId = typeof params["chat_id"] === "string" && params["chat_id"].length > 0 ? params["chat_id"] : undefined;
+    let chatId = typeof params["chat_id"] === "string" && params["chat_id"].trim().length > 0 ? params["chat_id"].trim() : undefined;
     let chatWho: string | undefined;
     try {
       bot = await botUsername(apiUrl, token);
@@ -134,7 +135,7 @@ export class Notifiers {
         untold.push({ notifier: other.name, message: err.message });
       }
     }
-    return { added: true, agent: agentName, notifier: name, type, bot: `@${bot}`, chat_id: chatId, ...(chatWho ? { chat_with: chatWho } : {}), test_sent: true, told_existing: told, ...(untold.length > 0 ? { could_not_tell: untold } : {}) };
+    return { added: true, agent: agentName, notifier: name, type, bot: `@${bot}`, chat_id: chatId, ...(chatWho ? { chat_with: chatWho } : {}), told_existing: told, ...(untold.length > 0 ? { could_not_tell: untold } : {}) };
   }
 
   list(agentHex: string): unknown {
@@ -190,16 +191,19 @@ export class Notifiers {
   async notify(agentHex: string, params: Record<string, unknown>): Promise<unknown> {
     const kind = (params["kind"] ?? "message") as Kind;
     if (!NOTIFY_KINDS.includes(kind)) throw new LocalError("bad_argument", `kind must be one of: ${NOTIFY_KINDS.join(", ")}`);
-    const rows = this.#chosen(agentHex, params["notifier"] as string | undefined, "notify");
-    const sessionHex = params["session_id"] as string | undefined;
-    if (sessionHex !== undefined && !/^[0-9a-f]{32}$/.test(sessionHex)) throw new LocalError("bad_argument", "session_id must be 32 hex characters");
+    const only = params["notifier"];
+    if (only !== undefined && typeof only !== "string") throw new LocalError("bad_argument", "notifier must be a notifier's name");
+    const rows = this.#chosen(agentHex, only, "notify");
+    const sessionHex = params["session_id"];
+    if (sessionHex !== undefined && (typeof sessionHex !== "string" || !/^[0-9a-f]{32}$/.test(sessionHex))) throw new LocalError("bad_argument", "session_id must be 32 hex characters");
     const agentName = this.#host.agentName(agentHex);
-    const given = params["text"] as string | undefined;
+    const given = params["text"];
+    if (given !== undefined && typeof given !== "string") throw new LocalError("bad_argument", "text must be a string");
     let text = cannedLine(agentName, kind);
     // What the screen changed or let through, so the agent knows the person didn't read its exact words.
     let report: Record<string, unknown> = {};
     if (given !== undefined && given.length > 0) {
-      const screened = await this.#host.screenOutbound(agentHex, given, params, `cello notify - --kind ${kind} --allow-flagged --agent ${agentHex}`);
+      const screened = await this.#host.screenOutbound(agentHex, given, params, `cello notify - --kind ${kind}${only ? ` --notifier ${only}` : ""}${sessionHex ? ` --session-id ${sessionHex}` : ""} --allow-flagged --agent ${agentHex}`);
       text = withText(agentName, kind, screened.text);
       report = screened.report;
       if (text.length > TELEGRAM_MAX_CHARS) throw new LocalError("too_long", `Nobody was told: with its first line this is ${text.length} characters, and one Telegram message holds ${TELEGRAM_MAX_CHARS}. Shorten it, or leave the text out to send the fixed line.`);

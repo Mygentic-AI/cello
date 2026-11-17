@@ -111,7 +111,7 @@ function acting(params: Record<string, unknown>): string {
   return agent;
 }
 
-// Naming an agent is enough for its own wallet: it doesn't act as the agent, so it takes no hold.
+// Naming an agent is enough for what doesn't speak for it in a conversation, such as its wallet and its notifiers: no hold is taken.
 function named(params: Record<string, unknown>): string {
   return engine.resolveAgent(text(params, "agent"));
 }

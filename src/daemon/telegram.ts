@@ -48,9 +48,10 @@ export async function latestChat(at: TelegramEndpoint, token: string): Promise<{
   return { id: String(chat.id), who: chat.username ? `@${chat.username}` : chat.first_name ?? String(chat.id) };
 }
 
-// Answers only once Telegram has accepted the message, with the id Telegram gave it.
-export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string): Promise<number> {
-  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text }) as { message_id?: number };
-  if (typeof sent?.message_id !== "number") throw new TelegramError("Telegram accepted the message but gave it no id.");
-  return sent.message_id;
+// Answers only once Telegram has accepted the message, with the ids Telegram gave: the chat's own number, which is what a
+// reply will carry even if the chat was named as @something, and the message's.
+export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string): Promise<{ chatId: string; messageId: number }> {
+  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text }) as { message_id?: number; chat?: { id?: number | string } };
+  if (typeof sent?.message_id !== "number" || sent.chat?.id === undefined) throw new TelegramError("Telegram accepted the message but didn't say where it went.");
+  return { chatId: String(sent.chat.id), messageId: sent.message_id };
 }

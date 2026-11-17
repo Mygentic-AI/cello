@@ -41,7 +41,8 @@ function telegram(): Promise<string> {
       if (body.chat_id === "hang") return;
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, description: "Bad Request: chat not found" })); return; }
       sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "" });
-      res.end(JSON.stringify({ ok: true, result: { message_id: 40 + sent.length } }));
+      // Telegram answers with the chat's number, whatever name it was given.
+      res.end(JSON.stringify({ ok: true, result: { message_id: 40 + sent.length, chat: { id: body.chat_id === "@andre" ? 55 : Number(body.chat_id) } } }));
     });
   });
   servers.push(server);
@@ -163,7 +164,8 @@ test("text goes through the outbound screen: what it replaces is replaced, and w
 
 test("each notification is recorded against its agent, session and Telegram's id, and a test line is not", async () => {
   const { notifiers, store } = setup();
-  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  // Named with a handle and a stray newline: what's recorded is the chat's number, which is what a reply carries.
+  await notifiers.add(AGENT, { type: "telegram", bot_token: `${TOKEN}\n`, chat_id: " @andre " });
   await notifiers.test(AGENT, undefined);
   const session = "ab".repeat(16);
   await notifiers.notify(AGENT, { kind: "request", session_id: session });
@@ -174,6 +176,7 @@ test("each notification is recorded against its agent, session and Telegram's id
   assert.equal(rows[0]?.kind, "request");
   assert.equal(rows[0]?.remote_id, "55:43");
   await assert.rejects(notifiers.notify(AGENT, { session_id: "nope" }), refusal("bad_argument"));
+  await assert.rejects(notifiers.notify(AGENT, { text: 7 }), refusal("bad_argument"));
 });
 
 test("a second notifier is announced on the first, and one failing doesn't hide the other", async () => {
