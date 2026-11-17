@@ -240,7 +240,7 @@ test("each notification is recorded against its agent, session and Telegram's id
   assert.equal(rows[0]?.notifier, "telegram");
   assert.equal(Buffer.from(rows[0]?.session_id ?? []).toString("hex"), session);
   assert.equal(rows[0]?.kind, "request");
-  assert.equal(rows[0]?.remote_id, "55:43");
+  assert.equal(rows[0]?.remote_id, "123456:55:43");
   await assert.rejects(notifiers.notify(AGENT, { session_id: "nope" }), refusal("bad_argument"));
   await assert.rejects(notifiers.notify(AGENT, { text: 7 }), refusal("bad_argument"));
 });
@@ -300,14 +300,23 @@ test("a reply finds its agent: by the message it answers, else whoever wrote las
   const annMessage = sent.at(-1)?.message_id as number;
   await notifiers.notify(AGENT2, { kind: "request", session_id: beaSession });
 
+  // A plain message names no conversation, so it carries no session: the last notification's could be days old.
   says(55, "plain, so for whoever wrote last");
   await until("the plain reply", () => handed.length === 1);
-  assert.deepEqual(handed[0], { agent: AGENT2, session: beaSession, text: "plain, so for whoever wrote last", via: "telegram" });
+  assert.deepEqual(handed[0], { agent: AGENT2, session: null, text: "plain, so for whoever wrote last", via: "telegram" });
 
   says(55, "answering Ann's own message", annMessage);
   await until("the threaded reply", () => handed.length === 2);
   assert.deepEqual(handed[1], { agent: AGENT, session: annSession, text: "answering Ann's own message", via: "telegram" });
   assert.ok(sent.some((s) => s.text === "Passed to Ann.") && sent.some((s) => s.text === "Passed to Bea."), "the answer names the agent it went to");
+
+  // Ann leaves the chat. An answer to her message must not be handed to Bea just because Bea wrote last.
+  notifiers.remove(AGENT, "telegram");
+  says(55, "still answering Ann", annMessage);
+  await until("being told Ann has gone", () => sent.some((s) => s.text.startsWith("The agent that sent that message no longer uses this chat")));
+  says(55, "/start again");
+  await settle();
+  assert.equal(handed.length, 2);
 });
 
 test("only the notifier's own private chat speaks as the operator, and a voice note is answered, never dropped", async () => {

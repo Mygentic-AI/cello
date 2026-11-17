@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   notifier   TEXT NOT NULL,
   session_id BLOB,
   kind       TEXT NOT NULL,
-  -- The notifier's own id for it. For Telegram: the chat id, a colon, and the message id.
+  -- The notifier's own id for it. For Telegram: the bot's id, the chat's number and the message's, with colons. All three,
+  -- because each bot numbers its messages from one, so two bots in one person's chat share numbers.
   remote_id  TEXT NOT NULL,
   sent_at    INTEGER NOT NULL
 );
@@ -186,7 +187,7 @@ export class Notifiers {
     }
     const text = typeof message.text === "string" ? message.text.trim() : "";
     // Telegram's own greeting when a chat with a bot is opened. It isn't something the person said to an agent.
-    if (text === "/start") return;
+    if (/^\/start(@\S+)?(\s|$)/.test(text)) return;
     if (text.length === 0) {
       await this.#answer(here, "Only text reaches your agent, so this wasn't passed on. Type your answer.");
       return;
@@ -197,13 +198,20 @@ export class Notifiers {
     // A reply to one of an agent's notifications goes to that agent, about that session.
     const repliedTo = message.reply_to_message?.message_id;
     if (repliedTo !== undefined) {
-      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id = ? ORDER BY id DESC").all(`${chat}:${repliedTo}`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
-      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: sent.session_id };
+      const sent = this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${repliedTo}`) as Sent | undefined;
+      const holder = sent && holds(sent.agent_id, sent.notifier);
+      if (sent && !holder) {
+        // The person named an agent by answering its message. Handing it to another one would be a guess they didn't make.
+        await this.#answer(here, "The agent that sent that message no longer uses this chat, so your reply wasn't passed on.");
+        return;
+      }
+      if (sent && holder) target = { holder, sessionId: sent.session_id };
     }
-    // A plain message goes to whichever agent wrote to this chat last, because that's who the person is answering.
+    // A plain message goes to whichever agent wrote to this chat last, because that's who the person is answering. It
+    // names no session: only answering a message says which conversation it's about.
     if (!target) {
-      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
-      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: sent.session_id };
+      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${botId}:${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
+      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: null };
     }
     if (!target) {
       if (new Set(holders.map((h) => h.agentHex)).size > 1) {
@@ -232,7 +240,7 @@ export class Notifiers {
   async #deliver(row: NotifierRow, text: string): Promise<string> {
     const config = JSON.parse(row.config) as TelegramConfig;
     const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, text);
-    return `${sent.chatId}:${sent.messageId}`;
+    return `${botIdOf(config.bot_token)}:${sent.chatId}:${sent.messageId}`;
   }
 
   // Proves the token and the chat with Telegram before anything is stored, so a mistake shows here and not at the first real notify.
