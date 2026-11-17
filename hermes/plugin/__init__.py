@@ -998,7 +998,9 @@ class CelloAdapter(BasePlatformAdapter):
             line = "[CELLO notice] " + text
             sid = _safe_scalar(notice.get("session_id"))
             logger.info("[cello] Notice for session %s: %s", sid, text)
-            if sid == current_session or (sid is None and self._session_scope == "agent" and current_session is not None):
+            # Only a read of a session has a turn to put these in. A read of none has no turn, so nothing counts as "here":
+            # with both ids empty they once matched, went into a list nobody used, and were never shown.
+            if current_session is not None and (sid == current_session or (sid is None and self._session_scope == "agent")):
                 here.append(line)
                 continue
             if sid is None:
@@ -1017,7 +1019,9 @@ class CelloAdapter(BasePlatformAdapter):
             line = OPERATOR_HEADING + "\n" + reply["text"]
             sid = _safe_scalar(reply.get("session_id"))
             logger.info("[cello] The operator answered through %s, about session %s", reply.get("via"), sid)
-            if sid == current_session or (sid is None and self._session_scope == "agent" and current_session is not None):
+            # Only a read of a session has a turn to put these in. A read of none has no turn, so nothing counts as "here":
+            # with both ids empty they once matched, went into a list nobody used, and were never shown.
+            if current_session is not None and (sid == current_session or (sid is None and self._session_scope == "agent")):
                 here.append(line)
                 continue
             if sid is None:
