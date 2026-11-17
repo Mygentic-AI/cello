@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Notifiers } from "../src/daemon/notifiers.ts";
-import { changeSetting } from "../src/daemon/settings.ts";
 import { Store } from "../src/daemon/store.ts";
 
 const TOKEN = "123456:secret-bot-token";
@@ -17,7 +16,7 @@ const AGENT = "07".repeat(32);
 
 interface Sent { token: string; chat_id: string; text: string }
 const sent: Sent[] = [];
-// What the stand-in does next: a chat id it refuses, or stops answering at all.
+// What the stand-in does next: a chat id it refuses. The chat "hang" is never answered.
 let refuseChat: string | null = null;
 // The chats that have written to the bot, oldest first.
 let wrote: number[] = [];
@@ -34,6 +33,7 @@ function telegram(): Promise<string> {
       if (!match || match[1] !== TOKEN) { res.statusCode = 401; res.end(JSON.stringify({ ok: false, description: "Unauthorized" })); return; }
       if (match[2] === "getMe") { res.end(JSON.stringify({ ok: true, result: { username: "andre_cello_bot" } })); return; }
       if (match[2] === "getUpdates") { res.end(JSON.stringify({ ok: true, result: wrote.map((id, i) => ({ update_id: i, message: { message_id: i, chat: { id, first_name: `person-${id}` } } })) })); return; }
+      if (body.chat_id === "hang") return;
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, description: "Bad Request: chat not found" })); return; }
       sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "" });
       res.end(JSON.stringify({ ok: true, result: { message_id: 40 + sent.length } }));
@@ -47,10 +47,9 @@ after(() => { for (const server of servers) server.close(); });
 const apiUrl = await telegram();
 const screened: string[] = [];
 
-function setup(): { notifiers: Notifiers; store: Store } {
+function setup(at: { apiUrl: string; timeoutMs: number } = { apiUrl, timeoutMs: 5_000 }): { notifiers: Notifiers; store: Store } {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notifier-")), "cello.db"));
   store.insertAgent(new Uint8Array(Buffer.from(AGENT, "hex")), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(2));
-  changeSetting(store, "telegram_api_url", apiUrl);
   const notifiers = new Notifiers(store, {
     agentName: () => "Ann",
     screenOutbound: (_agent, text) => {
@@ -58,7 +57,7 @@ function setup(): { notifiers: Notifiers; store: Store } {
       if (text.includes("hijack")) return Promise.reject(new LocalError("blocked_by_screening", "Nothing was sent: it looks hijacked."));
       return Promise.resolve({ text: text.replace("sk-live-abc", "[REDACTED]") });
     },
-  });
+  }, at);
   sent.length = 0;
   screened.length = 0;
   refuseChat = null;
@@ -105,6 +104,22 @@ test("the bot token is never shown: not in the answer, the list, or a refusal", 
   refuseChat = "55";
   await assert.rejects(notifiers.notify(AGENT, {}), refusal("notify_failed"));
   await assert.rejects(notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), refusal("notifier_exists"));
+});
+
+test("Telegram out of reach or silent is a named refusal within the time limit, and the token stays out of it", async () => {
+  const unreachable = setup({ apiUrl: `http://127.0.0.1:1/${TOKEN}`, timeoutMs: 5_000 });
+  await assert.rejects(unreachable.notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), (err: unknown) => refusal("notifier_check_failed")(err) && /couldn't be reached/.test((err as Error).message));
+
+  // An address that can't be parsed makes fetch quote the whole address, token included, in its own error.
+  const unparsable = setup({ apiUrl: "http://bad host", timeoutMs: 5_000 });
+  await assert.rejects(unparsable.notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" }), refusal("notifier_check_failed"));
+
+  const { notifiers } = setup({ apiUrl, timeoutMs: 200 });
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT, { type: "telegram", name: "slow", bot_token: TOKEN, chat_id: "55" });
+  const started = Date.now();
+  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /didn't answer within 0.2 seconds/.test((err as Error).message));
+  assert.ok(Date.now() - started < 3_000, "a silent Telegram must not hold the call open");
 });
 
 test("notify with no notifier refuses by name, and never claims anyone was told", async () => {

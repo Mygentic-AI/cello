@@ -3,9 +3,8 @@
 // Anyone can set one up, agents included, because setting up a bot is hard enough already.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
-import { currentText } from "./settings.ts";
 import type { Store } from "./store.ts";
-import { TelegramError, botUsername, latestChat, sendText } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, botUsername, latestChat, sendText } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -61,8 +60,10 @@ const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentH
 export class Notifiers {
   readonly #store: Store;
   readonly #host: NotifierHost;
+  readonly #telegram: TelegramEndpoint;
 
-  constructor(store: Store, host: NotifierHost) {
+  constructor(store: Store, host: NotifierHost, telegram: TelegramEndpoint = TELEGRAM) {
+    this.#telegram = telegram;
     this.#store = store;
     this.#host = host;
     store.exec(SCHEMA);
@@ -81,7 +82,7 @@ export class Notifiers {
   // One send through one notifier. Returns the notifier's own id for what it sent.
   async #deliver(row: NotifierRow, text: string): Promise<string> {
     const config = JSON.parse(row.config) as TelegramConfig;
-    const messageId = await sendText(currentText(this.#store, "telegram_api_url"), config.bot_token, config.chat_id, text);
+    const messageId = await sendText(this.#telegram, config.bot_token, config.chat_id, text);
     return `${config.chat_id}:${messageId}`;
   }
 
@@ -97,7 +98,7 @@ export class Notifiers {
     const existing = this.#rows(agentHex);
     if (existing.some((r) => r.name === name)) throw new LocalError("notifier_exists", `${agentName} already has a notifier named ${name}. Remove it first with notifier-remove, or give this one another name.`);
 
-    const apiUrl = currentText(this.#store, "telegram_api_url");
+    const apiUrl = this.#telegram;
     let bot: string;
     let chatId = typeof params["chat_id"] === "string" && params["chat_id"].length > 0 ? params["chat_id"] : undefined;
     let chatWho: string | undefined;
