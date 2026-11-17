@@ -886,7 +886,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
       { name: "direction", kind: "string", required: true, allowed: ["inbound", "outbound"], description: "inbound judges who calls you. outbound judges who you call." },
       { name: "scope", kind: "string", required: true, allowed: ["default", "tier", "contact"], description: "Where it applies: every call, one tier, or one contact." },
       { name: "target", kind: "string", description: "For tier: unknown, known, whitelisted or vip. For contact: its agent_id. Not used for default." },
-      { name: "require_types", kind: "string", description: "Signal types that must all be shown, comma-separated, such as email,github." },
+      { name: "require_types", kind: "string", description: "Signal types that must all be shown, comma-separated, such as email,github_anon." },
       { name: "require_issuer_kind", kind: "string", allowed: ["issuer", "agent"], description: "At least one shown signal must come from this kind: issuer, or agent (an endorsement)." },
       { name: "min_count", kind: "number", description: "At least this many signals. Signals from your own operator never count toward a rule." },
     ],

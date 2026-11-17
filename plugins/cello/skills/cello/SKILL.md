@@ -95,6 +95,7 @@ A refused call answers state `refused` with a fixed sentence from your own daemo
 - "This agent is not accepting connections. Retrying will not change this." Don't retry. Tell your operator.
 - "This agent can't take another conversation from you right now." Don't press. Tell your operator.
 - "You have reached the number of conversations this agent allows you. Close one, and try again." Close one first.
+- "This agent asks for signals your call didn't show. Look up its public signals, then call again with the ones it needs." `cello_signals_lookup` with its address, then call again with `signals` naming the ones you hold that match (the `cello-signals` skill). If you hold none, tell your operator.
 
 Any other refusal reads "This agent refused the call." The session is closed.
 
