@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
-import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendText, updatesFrom } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendText, thumbsUp, updatesFrom } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -197,7 +197,7 @@ export class Notifiers {
   // Says something back in the operator's chat. It's a courtesy: failing to say it never holds up or undoes the reply itself.
   async #answer(holder: Holder, text: string): Promise<void> {
     try {
-      await sendText(this.#telegram, holder.token, holder.chat, text);
+      await sendText(this.#telegram, holder.token, holder.chat, text, [], true);
     } catch (err: unknown) {
       logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
     }
@@ -214,7 +214,7 @@ export class Notifiers {
       if (!holder || !Number.isInteger(messageId)) continue;
       try {
         await clearButtons(this.#telegram, holder.token, holder.chat, messageId);
-        await sendText(this.#telegram, holder.token, holder.chat, row.id === tappedId ? line : elsewhere);
+        await sendText(this.#telegram, holder.token, holder.chat, row.id === tappedId ? line : elsewhere, [], true);
       } catch (err: unknown) {
         logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
       }
@@ -301,7 +301,8 @@ export class Notifiers {
     }
     const holds = (agentId: Uint8Array, notifier: string): Holder | undefined => holders.find((h) => h.name === notifier && h.agentHex === Buffer.from(agentId).toString("hex"));
     type Sent = { agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null };
-    let target: { holder: Holder; sessionId: Uint8Array | null } | undefined;
+    // guessed: the person didn't say which agent, and more than one uses this chat. Then they're told who it went to.
+    let target: { holder: Holder; sessionId: Uint8Array | null; guessed?: boolean } | undefined;
     // A reply to one of an agent's notifications goes to that agent, about that session.
     const repliedTo = message.reply_to_message?.message_id;
     if (repliedTo !== undefined) {
@@ -318,7 +319,7 @@ export class Notifiers {
     // names no session: only answering a message says which conversation it's about.
     if (!target) {
       const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${botId}:${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
-      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: null };
+      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: null, guessed: new Set(holders.map((h) => h.agentHex)).size > 1 };
     }
     if (!target) {
       if (new Set(holders.map((h) => h.agentHex)).size > 1) {
@@ -336,7 +337,20 @@ export class Notifiers {
       return;
     }
     const name = this.#host.agentName(agentHex);
-    await this.#answer(here, this.#host.reachable(agentHex) ? `Passed to ${name}.` : `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`);
+    if (!this.#host.reachable(agentHex)) {
+      await this.#answer(here, `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`);
+      return;
+    }
+    // When it's plain who the reply went to, a 👍 on it says so, and nothing new appears in the chat.
+    if (!target.guessed && typeof message.message_id === "number") {
+      try {
+        await thumbsUp(this.#telegram, token, chat, message.message_id);
+        return;
+      } catch (err: unknown) {
+        logEvent("notifier.answer_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    await this.#answer(here, `Passed to ${name}.`);
   }
 
   #rows(agentHex: string): NotifierRow[] {

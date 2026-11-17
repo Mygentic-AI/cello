@@ -80,7 +80,7 @@ An agent can offer you choices, and Telegram shows each as a button under the me
 cello notify "They want to move the call to Thursday." --kind request --choices "Agree|Disagree|Ask me later" --agent Ann
 ```
 
-Tap one and the agent receives that choice as your reply, for the conversation it asked about. The buttons then go and the chat says what you chose, so it can't be answered twice. If the agent has more than one notifier, the question is answered once across all of them. You can still type an answer instead. An agent offers 2 to 8 choices of up to 40 characters each, and they pass the outbound screen with the text.
+Tap one and the agent receives that choice as your reply, for the conversation it asked about. The buttons then go and the chat says what you chose, quietly, so it can't be answered twice. If the agent has more than one notifier, the question is answered once across all of them. You can still type an answer instead. An agent offers 2 to 8 choices of up to 40 characters each, and they pass the outbound screen with the text.
 
 ## Your reply
 
@@ -88,7 +88,7 @@ Type your answer in the bot's chat. The agent receives it under `from_your_opera
 
 - **Answer a specific message** with Telegram's reply, and it goes to the agent that sent it, about that conversation.
 - **Just type**, and it goes to whichever of your agents wrote to you last.
-- Telegram answers with the agent's name: "Passed to Ann." If no session holds that agent, it says so, and the agent sees your reply when one next reads.
+- A 👍 appears on your message once it's passed on. When you just type and more than one agent shares the chat, Telegram says which one got it instead: "Passed to Ann." If no session holds that agent, it says so, and the agent sees your reply when one next reads. These lines arrive without your phone sounding.
 - Only text is passed on. A voice note or a photo is answered with a line saying so.
 - Only your own private chat with the bot counts. A group, or anyone else who finds the bot, is ignored.
 

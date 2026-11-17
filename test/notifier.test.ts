@@ -17,10 +17,13 @@ const AGENT = "07".repeat(32);
 const AGENT2 = "08".repeat(32);
 const NAMES: Record<string, string> = { [AGENT]: "Ann", [AGENT2]: "Bea" };
 
-interface Sent { token: string; chat_id: string; text: string; message_id: number; buttons: { text: string; callback_data: string }[] }
-// What Telegram was told to show after a tap, and the messages it was told to rewrite.
+interface Sent { token: string; chat_id: string; text: string; message_id: number; buttons: { text: string; callback_data: string }[]; silent: boolean }
+// What Telegram was told to show after a tap, the messages it was told to rewrite, and the reactions put on the person's own.
 let tapAnswers: string[] = [];
 let edits: { message_id: number; chat_id: string; buttons: number }[] = [];
+const reactions: { message_id: number; chat_id: string; emoji: string }[] = [];
+// Every sendMessage that reached the stand-in, answered or not.
+let sendTries = 0;
 interface Update { update_id: number; message: Record<string, unknown> }
 const sent: Sent[] = [];
 // What the stand-in does next: a chat id it refuses. The chat "hang" is never answered.
@@ -77,12 +80,19 @@ function telegram(): Promise<string> {
         res.end(JSON.stringify({ ok: true, result: {} }));
         return;
       }
+      if (match[2] === "sendMessage") sendTries += 1;
+      if (match[2] === "setMessageReaction") {
+        const reaction = body as { message_id?: number; chat_id?: string; reaction?: { emoji?: string }[] };
+        reactions.push({ message_id: Number(reaction.message_id), chat_id: String(reaction.chat_id), emoji: reaction.reaction?.[0]?.emoji ?? "" });
+        res.end(JSON.stringify({ ok: true, result: true }));
+        return;
+      }
       if (body.chat_id === "hang") return;
       if (match[2] === "sendMessage" && silentOnce > 0) { silentOnce -= 1; return; }
       if (body.chat_id === refuseChat) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: chat not found" })); return; }
       const messageId = 41 + sent.length;
       const keyboard = (body as { reply_markup?: { inline_keyboard?: { text: string; callback_data: string }[][] } }).reply_markup?.inline_keyboard ?? [];
-      sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "", message_id: messageId, buttons: keyboard.flat() });
+      sent.push({ token: match[1], chat_id: body.chat_id ?? "", text: body.text ?? "", message_id: messageId, buttons: keyboard.flat(), silent: (body as { disable_notification?: boolean }).disable_notification === true });
       // Telegram answers with the chat's number, whatever name it was given.
       res.end(JSON.stringify({ ok: true, result: { message_id: messageId, chat: { id: body.chat_id === "@andre" ? 55 : Number(body.chat_id) } } }));
     });
@@ -241,14 +251,18 @@ test("Telegram out of reach or silent is a named refusal within the time limit, 
   const { notifiers } = setup({ apiUrl, timeoutMs: 200, pollSeconds: 0 });
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   const started = Date.now();
-  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /didn't answer within 0.2 seconds, in 3 tries/.test((err as Error).message));
+  await assert.rejects(notifiers.add(AGENT, { type: "telegram", name: "silent", bot_token: TOKEN, chat_id: "hang" }), (err: unknown) => refusal("notifier_check_failed")(err) && /may still have arrived/.test((err as Error).message));
   assert.ok(Date.now() - started < 3_000, "a silent Telegram must not hold the call open");
 
-  // Telegram sometimes ignores one new connection and answers the next. One silent try must not fail the call.
+  // A message Telegram took but didn't confirm is never sent again: that is how the person got the same message twice.
   silentOnce = 1;
-  const afterSilence = await notifiers.notify(AGENT, {}) as { sent: boolean };
-  assert.equal(afterSilence.sent, true);
-  assert.equal(silentOnce, 0, "the first try was the silent one");
+  const before = sendTries;
+  await assert.rejects(notifiers.notify(AGENT, {}), (err: unknown) => /may still have arrived, so check the chat before sending it again/.test((err as Error).message));
+  assert.equal(sendTries - before, 1, "sent once, not tried again");
+
+  // A connection that never opens sent nothing, so it is tried again. 10.255.255.1 is an address nothing answers.
+  const nowhere = setup({ apiUrl: "http://10.255.255.1", timeoutMs: 200, pollSeconds: 0 });
+  await assert.rejects(nowhere.notifiers.add(AGENT, { type: "telegram", name: "far", bot_token: TOKEN, chat_id: "55" }), (err: unknown) => /in 3 tries/.test((err as Error).message));
 });
 
 test("notify with no notifier refuses by name, and never claims anyone was told", async () => {
@@ -335,11 +349,15 @@ test("what was typed to set the bot up is never an instruction, and the first re
   assert.deepEqual(handed, [], "the hi that found the chat must not reach the agent as its operator's words");
 
   says(55, "/start");
+  const replyId = 900 + nextUpdate;
+  const messagesBefore = sent.length;
   says(55, "  Yes, agree to Thursday.  ");
   await until("the reply to be handed over", () => handed.length === 1);
   assert.deepEqual(handed[0], { agent: AGENT, session: null, text: "Yes, agree to Thursday.", via: "telegram" });
-  await until("the answer in Telegram", () => sent.some((s) => s.text === "Passed to Ann."));
+  // With one agent on the chat it's plain who got it: a 👍 on the person's message says so, and nothing new is sent.
+  await until("the 👍 on the reply", () => reactions.some((r) => r.chat_id === "55" && r.message_id === replyId && r.emoji === "👍"));
   await settle();
+  assert.equal(sent.length, messagesBefore, "no 'Passed to' message when a 👍 says it");
   assert.equal(handed.length, 1, "one reply is handed over once");
 });
 
@@ -364,10 +382,17 @@ test("a reply finds its agent: by the message it answers, else whoever wrote las
   await until("the plain reply", () => handed.length === 1);
   assert.deepEqual(handed[0], { agent: AGENT2, session: null, text: "plain, so for whoever wrote last", via: "telegram" });
 
+  // Two agents share the chat and the person didn't say which: they're told who got it, without the phone sounding.
+  await until("being told it went to Bea", () => sent.some((s) => s.text === "Passed to Bea." && s.silent));
+
+  const threadedId = 900 + nextUpdate;
   says(55, "answering Ann's own message", annMessage);
   await until("the threaded reply", () => handed.length === 2);
   assert.deepEqual(handed[1], { agent: AGENT, session: annSession, text: "answering Ann's own message", via: "telegram" });
-  assert.ok(sent.some((s) => s.text === "Passed to Ann.") && sent.some((s) => s.text === "Passed to Bea."), "the answer names the agent it went to");
+  // Answering Ann's message named Ann, so a 👍 is enough.
+  await until("the 👍 on the threaded reply", () => reactions.some((r) => r.message_id === threadedId));
+  await settle();
+  assert.ok(!sent.some((s) => s.text === "Passed to Ann."), "no 'Passed to' message when the person named the agent");
 
   // Ann leaves the chat. An answer to her message must not be handed to Bea just because Bea wrote last.
   notifiers.remove(AGENT, "telegram");
@@ -450,7 +475,7 @@ test("choices become buttons, and a tap comes back as that choice, for the agent
   taps(55, question.message_id, question.buttons[1]?.callback_data as string);
   await until("the tapped choice", () => handed.length === 1);
   assert.deepEqual(handed[0], { agent: AGENT, session: annSession, text: "Disagree", via: "telegram" });
-  await until("the chat to be told", () => sent.some((s) => s.text === "You chose: Disagree. Passed to Ann."));
+  await until("the chat to be told, without the phone sounding", () => sent.some((s) => s.text === "You chose: Disagree. Passed to Ann." && s.silent));
   assert.deepEqual(tapAnswers, ["Passed to Ann."]);
   // The buttons come off and the question's own words are left alone.
   assert.deepEqual(edits, [{ message_id: question.message_id, chat_id: "55", buttons: 0 }]);

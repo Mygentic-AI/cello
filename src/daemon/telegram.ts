@@ -18,6 +18,12 @@ export class TelegramError extends Error {
 
 class TimedOut extends Error {}
 
+// A try that failed after the connection was made. The request may have reached Telegram and been acted on.
+class FailedAfterSending extends Error {
+  readonly first: unknown;
+  constructor(first: unknown) { super("failed after sending"); this.first = first; }
+}
+
 // Why a connection failed, in the system's own codes. Telegram has an IPv4 and an IPv6 address, and a failure to reach it
 // is one error per address with an empty message of its own, so each address's code is listed.
 function reason(err: unknown): string {
@@ -42,6 +48,12 @@ function post(url: URL, body: string, limitMs: number, stop: AbortSignal | undef
       response.on("end", () => { done(); resolve({ status: response.statusCode ?? 0, text: Buffer.concat(parts).toString("utf8") }); });
       response.on("error", (err) => { done(); reject(err); });
     });
+    // Whether the request could have left. Until the connection is made (and for https, secured), nothing was sent.
+    let connected = false;
+    request.on("socket", (socket) => {
+      if (!socket.connecting) connected = true;
+      else socket.once(url.protocol === "http:" ? "connect" : "secureConnect", () => { connected = true; });
+    });
     const timer = setTimeout(() => { request.destroy(new TimedOut()); }, limitMs);
     const stopped = (): void => { request.destroy(new Error("stopped")); };
     function done(): void {
@@ -49,17 +61,19 @@ function post(url: URL, body: string, limitMs: number, stop: AbortSignal | undef
       stop?.removeEventListener("abort", stopped);
     }
     stop?.addEventListener("abort", stopped);
-    request.on("error", (err) => { done(); reject(err); });
+    request.on("error", (err) => { done(); reject(connected ? new FailedAfterSending(err) : err); });
     request.end(body);
   });
 }
 
 // How many times one call is tried. Telegram sometimes doesn't answer a new connection at all: measured on 17 November from
 // two networks, one try in six sat silent for its whole limit while the next was answered in under a second. So a silent
-// try is given up on quickly and made again. A person not being told matters more than their being told twice.
+// try is given up on quickly and made again.
 const TRIES = 3;
 
-async function call(at: TelegramEndpoint, token: string, method: string, body: Record<string, unknown>, limitMs = at.timeoutMs, stop?: AbortSignal, tries = TRIES): Promise<unknown> {
+// once: the call does something each time it's made, as sending a message does. It's tried again only when the connection
+// was never made. Once it was, the message may have gone, and trying again is how the person got the same message twice.
+async function call(at: TelegramEndpoint, token: string, method: string, body: Record<string, unknown>, limitMs = at.timeoutMs, stop?: AbortSignal, tries = TRIES, once = false): Promise<unknown> {
   let url: URL;
   try {
     url = new URL(`${at.apiUrl}/bot${token}/${method}`);
@@ -70,8 +84,11 @@ async function call(at: TelegramEndpoint, token: string, method: string, body: R
   for (let attempt = 1; response === undefined; attempt++) {
     try {
       response = await post(url, JSON.stringify(body), limitMs, stop);
-    } catch (err: unknown) {
+    } catch (caught: unknown) {
       if (stop?.aborted) throw new TelegramError("Stopped.");
+      const afterSending = caught instanceof FailedAfterSending;
+      const err = afterSending ? caught.first : caught;
+      if (once && afterSending) throw new TelegramError("Telegram didn't confirm the message. It may still have arrived, so check the chat before sending it again.");
       if (attempt < tries) continue;
       const times = tries === 1 ? "" : `, in ${tries} tries`;
       if (err instanceof TimedOut) throw new TelegramError(`Telegram didn't answer within ${limitMs / 1000} seconds${times}.`);
@@ -132,9 +149,11 @@ export async function updatesFrom(at: TelegramEndpoint, token: string, offset: n
 // Answers only once Telegram has accepted the message, with the ids Telegram gave: the chat's own number, which is what a
 // reply will carry even if the chat was named as @something, and the message's.
 // With choices, each becomes a button under the message, one to a row so a long one is never cut short.
-export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string, choices: readonly string[] = []): Promise<{ chatId: string; messageId: number }> {
+// silent: the phone doesn't sound for it. For lines that only confirm what the person just did.
+export async function sendText(at: TelegramEndpoint, token: string, chatId: string, text: string, choices: readonly string[] = [], silent = false): Promise<{ chatId: string; messageId: number }> {
   const buttons = choices.length === 0 ? {} : { reply_markup: { inline_keyboard: choices.map((label, index) => [{ text: label, callback_data: choiceData(index) }]) } };
-  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text, ...buttons }) as { message_id?: number; chat?: { id?: number | string } };
+  const quiet = silent ? { disable_notification: true } : {};
+  const sent = await call(at, token, "sendMessage", { chat_id: chatId, text, ...buttons, ...quiet }, at.timeoutMs, undefined, TRIES, true) as { message_id?: number; chat?: { id?: number | string } };
   if (typeof sent?.message_id !== "number" || sent.chat?.id === undefined) throw new TelegramError("Telegram accepted the message but didn't say where it went.");
   return { chatId: String(sent.chat.id), messageId: sent.message_id };
 }
@@ -142,6 +161,11 @@ export async function sendText(at: TelegramEndpoint, token: string, chatId: stri
 // Stops the tapped button's spinner, with a short line Telegram shows the person.
 export async function answerTap(at: TelegramEndpoint, token: string, tapId: string, text: string): Promise<void> {
   await call(at, token, "answerCallbackQuery", { callback_query_id: tapId, text });
+}
+
+// Puts a 👍 on the person's own message: it was passed on. Nothing new appears in the chat.
+export async function thumbsUp(at: TelegramEndpoint, token: string, chatId: string, messageId: number): Promise<void> {
+  await call(at, token, "setMessageReaction", { chat_id: chatId, message_id: messageId, reaction: [{ type: "emoji", emoji: "👍" }] });
 }
 
 // Takes the buttons off a message, so a choice that's been made can't be made again. The words are left alone: rewriting
