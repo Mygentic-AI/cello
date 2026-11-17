@@ -179,6 +179,7 @@ function shutdown(): void {
   logEvent("daemon.stopping");
   void accountPage?.close();
   channels.stop();
+  notifiers.stop();
   engine.stop();
   for (const socket of sockets) socket.destroy();
   ipc.close(() => {
@@ -576,6 +577,7 @@ if (ipcKey) writeFileSync(ipcKeyPath(home), `${ipcKey}\n`, { mode: 0o600 });
 await new Promise<void>((resolve) => ipc.listen({ path, readableAll: false, writableAll: false }, resolve));
 logEvent("daemon.listening", { pid: process.pid, server: serverUrl });
 await engine.start();
+notifiers.start();
 channels.start();
 await startAccountPage();
 

@@ -4,7 +4,7 @@
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
-import { TELEGRAM, TelegramError, type TelegramEndpoint, botUsername, latestChat, sendText } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, botIdOf, botUsername, newestUpdate, sendText, updatesFrom } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -46,27 +46,176 @@ export function withText(agentName: string, kind: Kind, text: string): string {
   return `Your agent ${agentName} has a ${kind} for you:\n\n${text}`;
 }
 
-interface TelegramConfig { bot_token: string; chat_id: string; bot: string }
+// chat_id is what was given or found. chat_number is the chat's own number, from Telegram's answer, which a reply carries.
+interface TelegramConfig { bot_token: string; chat_id: string; chat_number: string; bot: string }
 interface NotifierRow { name: string; type: string; config: string; added_at: number }
+// A notifier with its agent, and what a reply has to match: the bot and the chat's own number.
+interface Holder { agentHex: string; name: string; botId: string; token: string; chat: string }
 
 export interface NotifierHost {
   agentName(agentHex: string): string;
   // The same outbound screen a message gets, since the text goes to a service outside this machine.
   screenOutbound(agentHex: string, text: string, params: Record<string, unknown>, retry: string): Promise<{ text: string; report: Record<string, unknown> }>;
+  // Whether any session holds this agent right now.
+  reachable(agentHex: string): boolean;
+  // A notice the agent reads with its next receive.
+  tell(agentHex: string, text: string): void;
+  // Hands the agent what its operator said. False when this one was already handed over.
+  fromOperator(agentHex: string, sessionId: Uint8Array | null, text: string, via: string, sourceId: string): boolean;
 }
 
 const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentHex, "hex"));
+const offsetKey = (botId: string): string => `notifier.telegram.next_update.${botId}`;
+const FIRST_RETRY_MS = 1_000;
+const LONGEST_RETRY_MS = 60_000;
+
+// Ends early when the reader is stopped, so stopping the daemon never waits out a retry.
+function pause(ms: number, stop: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      stop.removeEventListener("abort", done);
+      resolve();
+    }
+    stop.addEventListener("abort", done);
+  });
+}
 
 export class Notifiers {
   readonly #store: Store;
   readonly #host: NotifierHost;
   readonly #telegram: TelegramEndpoint;
+  // One reader per bot, however many notifiers use it: Telegram allows a bot only one.
+  readonly #readers = new Map<string, AbortController>();
 
   constructor(store: Store, host: NotifierHost, telegram: TelegramEndpoint = TELEGRAM) {
     this.#telegram = telegram;
     this.#store = store;
     this.#host = host;
     store.exec(SCHEMA);
+  }
+
+  // Starts listening for the operator's replies on every bot a notifier uses.
+  start(): void {
+    for (const holder of this.#holders()) this.#listen(holder.botId);
+  }
+
+  stop(): void {
+    for (const reader of this.#readers.values()) reader.abort();
+    this.#readers.clear();
+  }
+
+  // Every agent's notifiers, oldest first.
+  #holders(): Holder[] {
+    const rows = this.#store.prepare("SELECT agent_id, name, config FROM notifiers ORDER BY added_at, name").all() as { agent_id: Uint8Array; name: string; config: string }[];
+    return rows.map((row) => {
+      const config = JSON.parse(row.config) as TelegramConfig;
+      return { agentHex: Buffer.from(row.agent_id).toString("hex"), name: row.name, botId: botIdOf(config.bot_token), token: config.bot_token, chat: config.chat_number };
+    });
+  }
+
+  #listen(botId: string): void {
+    if (this.#readers.has(botId)) return;
+    const reader = new AbortController();
+    this.#readers.set(botId, reader);
+    void this.#read(botId, reader);
+  }
+
+  // Reads what people send the bot, for as long as a notifier uses it. The place reached is kept in the database and moves
+  // on only once a reply is stored, so a restart or a failed write repeats nothing and loses nothing.
+  async #read(botId: string, reader: AbortController): Promise<void> {
+    const stop = reader.signal;
+    let retry = FIRST_RETRY_MS;
+    while (!stop.aborted) {
+      // The newest notifier's token, since an older one may have been replaced at BotFather.
+      const token = this.#holders().filter((h) => h.botId === botId).at(-1)?.token;
+      if (token === undefined) break;
+      try {
+        const updates = await updatesFrom(this.#telegram, token, Number(this.#store.getConfig(offsetKey(botId)) ?? 0), stop);
+        for (const update of updates) {
+          await this.#onUpdate(botId, token, update);
+          this.#store.setConfig(offsetKey(botId), String(update.update_id + 1));
+        }
+        retry = FIRST_RETRY_MS;
+      } catch (err: unknown) {
+        if (stop.aborted) break;
+        const message = err instanceof Error ? err.message : String(err);
+        const code = err instanceof TelegramError ? err.code : undefined;
+        if (code === 401 || code === 404 || code === 409) {
+          logEvent("notifier.reading_stopped", { bot: botId, code, message });
+          for (const holder of this.#holders().filter((h) => h.botId === botId)) {
+            this.#host.tell(holder.agentHex, code === 409
+              ? `Another program is reading the Telegram bot behind your notifier ${holder.name}, and a bot allows only one reader, so your operator's replies can't arrive here. Notifications still go out. Tell your operator to give this agent a bot nothing else uses: cello notifier-remove ${holder.name}, then notifier-add.`
+              : `Telegram no longer accepts the token of the bot behind your notifier ${holder.name} (${message}), so you can't reach your operator through it and their replies won't arrive. Set it up again with a current token: cello notifier-remove ${holder.name}, then notifier-add.`);
+          }
+          break;
+        }
+        logEvent("notifier.reading_failed", { bot: botId, message, retry_ms: retry });
+        await pause(retry, stop);
+        retry = Math.min(retry * 2, LONGEST_RETRY_MS);
+      }
+    }
+    if (this.#readers.get(botId) === reader) this.#readers.delete(botId);
+  }
+
+  // Says something back in the operator's chat. It's a courtesy: failing to say it never holds up or undoes the reply itself.
+  async #answer(holder: Holder, text: string): Promise<void> {
+    try {
+      await sendText(this.#telegram, holder.token, holder.chat, text);
+    } catch (err: unknown) {
+      logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // One thing sent to the bot. Only the exact bot and chat a notifier holds may speak as the operator, and only a private chat.
+  async #onUpdate(botId: string, token: string, update: TelegramUpdate): Promise<void> {
+    const message = update.message;
+    if (message?.chat?.id === undefined) return;
+    const chat = String(message.chat.id);
+    const holders = this.#holders().filter((h) => h.botId === botId && h.chat === chat);
+    const first = holders[0];
+    if (!first) {
+      logEvent("notifier.reply_ignored", { bot: botId, reason: "not a chat any notifier holds" });
+      return;
+    }
+    const here: Holder = { ...first, token };
+    if (message.chat.type !== "private") {
+      await this.#answer(here, "Replies are only taken from a private chat with this bot, so this wasn't passed to any agent.");
+      return;
+    }
+    const text = typeof message.text === "string" ? message.text.trim() : "";
+    // Telegram's own greeting when a chat with a bot is opened. It isn't something the person said to an agent.
+    if (text === "/start") return;
+    if (text.length === 0) {
+      await this.#answer(here, "Only text reaches your agent, so this wasn't passed on. Type your answer.");
+      return;
+    }
+    const holds = (agentId: Uint8Array, notifier: string): Holder | undefined => holders.find((h) => h.name === notifier && h.agentHex === Buffer.from(agentId).toString("hex"));
+    type Sent = { agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null };
+    let target: { holder: Holder; sessionId: Uint8Array | null } | undefined;
+    // A reply to one of an agent's notifications goes to that agent, about that session.
+    const repliedTo = message.reply_to_message?.message_id;
+    if (repliedTo !== undefined) {
+      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id = ? ORDER BY id DESC").all(`${chat}:${repliedTo}`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
+      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: sent.session_id };
+    }
+    // A plain message goes to whichever agent wrote to this chat last, because that's who the person is answering.
+    if (!target) {
+      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
+      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: sent.session_id };
+    }
+    if (!target) {
+      if (new Set(holders.map((h) => h.agentHex)).size > 1) {
+        await this.#answer(here, "More than one agent uses this chat, and none has written to you yet, so it isn't clear who this is for. It wasn't passed on. Reply to one of an agent's messages once it has written.");
+        return;
+      }
+      target = { holder: first, sessionId: null };
+    }
+    const agentHex = target.holder.agentHex;
+    if (!this.#host.fromOperator(agentHex, target.sessionId, text, target.holder.name, `telegram:${botId}:${update.update_id}`)) return;
+    const name = this.#host.agentName(agentHex);
+    await this.#answer(here, this.#host.reachable(agentHex) ? `Passed to ${name}.` : `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`);
   }
 
   #rows(agentHex: string): NotifierRow[] {
@@ -100,27 +249,39 @@ export class Notifiers {
     if (existing.some((r) => r.name === name)) throw new LocalError("notifier_exists", `${agentName} already has a notifier named ${name}. Remove it first with notifier-remove, or give this one another name.`);
 
     const apiUrl = this.#telegram;
+    const botId = botIdOf(token);
+    // A bot this daemon already reads can't be asked for its newest message: Telegram allows one reader, and asking would
+    // throw away replies the reader hasn't taken yet.
+    const reading = this.#readers.has(botId);
     let bot: string;
     let chatId = typeof params["chat_id"] === "string" && params["chat_id"].trim().length > 0 ? params["chat_id"].trim() : undefined;
     let chatWho: string | undefined;
+    let chatNumber: string;
+    let newest: TelegramUpdate | undefined;
     try {
       bot = await botUsername(apiUrl, token);
+      if (reading && chatId === undefined) throw new LocalError("chat_id_needed", `Nothing was saved. This machine already uses @${bot} for another notifier, so the chat can't be looked up. Give it with chat_id: notifier-list on the agent that has it shows the one in use.`);
+      if (!reading) newest = await newestUpdate(apiUrl, token);
       if (chatId === undefined) {
         // No chat id given: use the chat that wrote to the bot last, and say whose it is so a wrong one shows.
-        const chat = await latestChat(apiUrl, token);
-        if (chat && "group" in chat) throw new LocalError("no_chat_yet", `Nothing was saved. The last message to @${bot} came from the group "${chat.group}", and a group is only used when you name it. Send @${bot} a message from your own chat and run this again, or give the group's id with chat_id.`);
-        if (!chat) throw new LocalError("no_chat_yet", `Nothing was saved. Nobody has written to @${bot} yet, so there's no chat to send to. Open Telegram, send @${bot} any message, and run this again. Or give the chat id with chat_id.`);
-        chatId = chat.id;
-        chatWho = chat.who;
+        // Only a person's own chat counts, so a group the bot sits in is never picked by accident.
+        const chat = newest?.message?.chat;
+        if (chat?.id === undefined) throw new LocalError("no_chat_yet", `Nothing was saved. Nobody has written to @${bot} yet, so there's no chat to send to. Open Telegram, send @${bot} any message, and run this again. Or give the chat id with chat_id.`);
+        if (chat.type !== "private") throw new LocalError("no_chat_yet", `Nothing was saved. The last message to @${bot} came from the group "${chat.title ?? String(chat.id)}", and a group is only used when you name it. Send @${bot} a message from your own chat and run this again, or give the group's id with chat_id.`);
+        chatId = String(chat.id);
+        chatWho = chat.username ? `@${chat.username}` : chat.first_name ?? chatId;
       }
-      await sendText(apiUrl, token, chatId, `CELLO is connected. Your agent ${agentName} can now reach you here.`);
+      chatNumber = (await sendText(apiUrl, token, chatId, `CELLO is connected. Your agent ${agentName} can now reach you here.`)).chatId;
     } catch (err: unknown) {
       if (!(err instanceof TelegramError)) throw err;
       throw new LocalError("notifier_check_failed", `Nothing was saved, because the check with Telegram failed. ${err.message}`);
     }
-    const config: TelegramConfig = { bot_token: token, chat_id: chatId, bot };
+    const config: TelegramConfig = { bot_token: token, chat_id: chatId, chat_number: chatNumber, bot };
     this.#store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(idOf(agentHex), name, type, JSON.stringify(config), Date.now());
     logEvent("notifier.added", { agent: agentHex, notifier: name, type });
+    // Reading starts after whatever was sent to the bot to set it up. A "hi" typed to find the chat is not an instruction.
+    if (newest) this.#store.setConfig(offsetKey(botId), String(newest.update_id + 1));
+    this.#listen(botId);
 
     // The routes that were already there hear about the new one, so one added by a tricked agent doesn't go unseen.
     const told: string[] = [];
@@ -149,9 +310,14 @@ export class Notifiers {
   }
 
   remove(agentHex: string, name: string): unknown {
-    this.#row(agentHex, name);
+    const botId = botIdOf((JSON.parse(this.#row(agentHex, name).config) as TelegramConfig).bot_token);
     this.#store.prepare("DELETE FROM notifiers WHERE agent_id = ? AND name = ?").run(idOf(agentHex), name);
     logEvent("notifier.removed", { agent: agentHex, notifier: name });
+    // The bot's last notifier going takes its reader with it.
+    if (!this.#holders().some((h) => h.botId === botId)) {
+      this.#readers.get(botId)?.abort();
+      this.#readers.delete(botId);
+    }
     return { removed: true, agent: this.#host.agentName(agentHex), notifier: name };
   }
 
