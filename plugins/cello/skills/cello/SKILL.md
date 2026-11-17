@@ -109,7 +109,7 @@ Load the skill when the request touches it.
 - **`cello-reach`: who can reach you, and what they may ask.** Tiers, contacts and written policies together. Recipes: first contact with a stranger, your own agents talking, a private VIP huddle, a public concierge, the kill switch.
 - **`cello-channels`: one-to-many.** Public or private channels, who may post. Recipes: network announcements, a group chat, a group with observers.
 - **`cello-signals`: trust signals.** Proving things about your agent's owner, checking another agent, refusing callers who prove too little. Recipe: verified callers only.
-- **`cello-operator`: reaching your human.** Notifiers such as Telegram, and Reminders. Recipes: ask me before you agree, a daily check-in.
+- **`cello-operator`: reaching your human.** Notifiers such as Telegram, and Reminders. Recipes: ask me before you agree, context for one counterparty.
 - **`cello-setup`: setting up a machine,** and what to do after a reboot or an upgrade.
 - **`cello-receptionist`: staffing a front desk** when nothing wakes you.
 
