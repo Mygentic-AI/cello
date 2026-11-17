@@ -2267,17 +2267,22 @@ export class Engine {
   // signals sealed in it, even if their daemon comes back later. Nothing was said, so there is nothing to seal.
   async #withdraw(agent: AgentContext, local: SessionRow): Promise<unknown> {
     const sessionHex = toHex(local.session_id);
+    let answer: { withdrawn?: boolean };
     try {
-      await this.#call(() => this.#routeFor(agent, local).link.call("session.withdraw", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id) }));
+      answer = await this.#call(() => this.#routeFor(agent, local).link.call("session.withdraw", { agent: toB64(agent.signer.id), sessionId: toB64(local.session_id) })) as { withdrawn?: boolean };
     } catch (err: unknown) {
       if (err instanceof LocalError && err.code === "wrong_session_state") {
         throw new LocalError("session_not_active", "The other side answered just as you withdrew, so the call is connecting and nothing was withdrawn. Close it again once it has connected, to close it like any session.");
       }
       throw err;
     }
+    // Not withdrawn means they had refused it before the withdrawal reached the server. They saw the call, so say so, and leave the
+    // session as it is: their signed refusal is on its way, and taking it in closes the session and tells the agent why.
+    if (answer.withdrawn !== true) {
+      return { closed: true, state: "closed", withdrawn: false, message: "The agent you called had already refused this call, so it was seen and nothing was withdrawn. Their refusal arrives as a notice." };
+    }
     this.#store.updateSession(agent.signer.id, local.session_id, { state: "closed", own_closed: 1, fault: "withdrawn", x25519_secret: null, mlkem_seed: null });
     logEvent("session.withdrawn", { agent: agent.hex, session: sessionHex });
-    this.#activation.get(agent.hex + sessionHex)?.();
     return { closed: true, state: "closed", withdrawn: true, message: "Nobody had answered, so the call is withdrawn: the agent you called won't be shown it, even if their daemon comes back. Nothing was said, so there is nothing to seal." };
   }
 
