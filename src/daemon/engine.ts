@@ -68,6 +68,7 @@ import {
 } from "../protocol/wire.ts";
 import { Away, type GreetingRow, ONE_MESSAGE_LINE } from "./away.ts";
 import { OperatorInbox } from "./operator-inbox.ts";
+import { REMINDER_NOTE, Reminders } from "./reminders.ts";
 import { LocalError, requirePerson } from "./errors.ts";
 import { checkUsageFacts } from "./usage-facts.ts";
 import { Governance, REFUSAL_SENTENCES, type RefusalCode } from "./governance.ts";
@@ -151,7 +152,7 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "operator_message" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status" | "agent_displaced";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "operator_message" | "reminder" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status" | "agent_displaced";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;
@@ -306,6 +307,7 @@ export class Engine {
   readonly #keyBusy = new Set<string>();
   readonly #away: Away;
   readonly #operator: OperatorInbox;
+  readonly reminders: Reminders;
   #lastCrashTold = 0;
   #modelMissingTold = false;
 
@@ -363,6 +365,13 @@ export class Engine {
     });
     this.#away = new Away(store);
     this.#operator = new OperatorInbox(store);
+    this.reminders = new Reminders(store, {
+      agentName: (agentHex) => this.#requireAgent(agentHex).name,
+      sessionOpen: (agentHex, sessionHex) => {
+        const row = this.#store.session(new Uint8Array(Buffer.from(agentHex, "hex")), new Uint8Array(Buffer.from(sessionHex, "hex")));
+        return row !== undefined && row.state !== "closed";
+      },
+    });
     this.#screening = new ScreeningQueue({
       load: (job) => this.#loadForScreen(job),
       verdict: (job, verdict) => this.#onVerdict(job, verdict),
@@ -417,6 +426,7 @@ export class Engine {
       this.#catchUpEverywhere();
       this.#retryOutbox();
       this.#retireIdleVisits();
+      this.#wakeForReminders();
       // A replaced public signal that the server hasn't yet been told to drop. The wallet limits this to one try a minute.
       for (const agent of this.#agents.values()) if (agent.online) this.#background("encryption key", this.#publishKey(agent));
       for (const agent of this.#agents.values()) this.wallet.settlePublic(agent.hex).catch((err: unknown) => logEvent("signal.public.settle_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
@@ -2548,6 +2558,22 @@ export class Engine {
     };
   }
 
+  // A timed Reminder in a conversation where nothing is arriving: the agent is woken to read it, with a bell that says
+  // nothing. Only an agent someone holds, in a session that's open, with nothing unread, since a read would show it anyway.
+  #wakeForReminders(): void {
+    for (const agent of this.#agents.values()) {
+      if (!this.#events.reachable(agent.hex)) continue;
+      for (const local of this.#store.sessionsOf(agent.signer.id)) {
+        if (local.state !== "active" || local.own_closed === 1) continue;
+        if (this.#store.unreadCount(agent.signer.id, local.session_id, local.read_position) > 0) continue;
+        if (this.reminders.shouldWake(agent.hex, toHex(local.session_id), toHex(local.counterparty_id))) {
+          logEvent("reminder.woke", { agent: agent.hex, session: toHex(local.session_id) });
+          this.#events.ring(agent.hex, { type: "reminder", agent: agent.name, session_id: toHex(local.session_id) });
+        }
+      }
+    }
+  }
+
   // What notifiers.ts needs from here: an agent's name, and the outbound screen for text that leaves this machine.
   notifierHost(): NotifierHost {
     return {
@@ -2708,7 +2734,12 @@ export class Engine {
       this.#refusals.delete(agent.hex + sessionHex);
       return { session_id: sessionHex, state: "refused", message: refused, ...signalsInfo };
     }
-    if (state === "active") return { session_id: sessionHex, state, ...signalsInfo };
+    if (state === "active") {
+      // The caller speaks first, so what it's to be reminded of at the start comes with the call's answer, not its first read.
+      const reminded = this.reminders.due(agent.hex, sessionHex, toHex(targetId), 0, true);
+      reminded.commit();
+      return { session_id: sessionHex, state, ...signalsInfo, ...(reminded.due.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminded.due } } : {}) };
+    }
     return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back.` };
   }
 
@@ -2746,6 +2777,8 @@ export class Engine {
     const reads: { sessionId: Uint8Array; through: number }[] = [];
     const screening: unknown[] = [];
     const policies: unknown[] = [];
+    const reminders: unknown[] = [];
+    const reminderCommits: (() => void)[] = [];
     const guidance: { session_id: string; text: string }[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
@@ -2786,6 +2819,11 @@ export class Engine {
       }
       const held = this.#screening.waiting(agent.hex, toHex(local.session_id));
       if (held) screening.push({ session_id: toHex(local.session_id), ...held });
+      if (local.state === "active" && local.own_closed !== 1) {
+        const reminded = this.reminders.due(agent.hex, toHex(local.session_id), toHex(local.counterparty_id), unread.length);
+        for (const one of reminded.due) reminders.push({ session_id: toHex(local.session_id), ...one });
+        reminderCommits.push(reminded.commit);
+      }
       if (unread.length > 0) {
         for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || Boolean(held), finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
           guidance.push({ session_id: toHex(local.session_id), text });
@@ -2799,7 +2837,7 @@ export class Engine {
     const fromOperator = this.#operator.unread(agent.signer.id).filter((row) => !wantedSession || row.session_id === null || equalBytes(row.session_id, wantedSession));
     const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
-      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(fromOperator.length > 0 ? { from_your_operator: { note: OPERATOR_NOTE, replies: fromOperator.map((m) => ({ text: m.text, session_id: m.session_id ? toHex(m.session_id) : null, via: m.via, at: new Date(m.received_at).toISOString() })) } } : {}), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(fromOperator.length > 0 ? { from_your_operator: { note: OPERATOR_NOTE, replies: fromOperator.map((m) => ({ text: m.text, session_id: m.session_id ? toHex(m.session_id) : null, via: m.via, at: new Date(m.received_at).toISOString() })) } } : {}), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(reminders.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminders } } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -2810,6 +2848,7 @@ export class Engine {
           for (const row of greetings) this.#away.markRead(agent.signer.id, row.session_id);
           if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
           this.#operator.markRead(agent.signer.id, fromOperator.map((row) => row.id));
+          for (const shown of reminderCommits) shown();
         });
       },
     };

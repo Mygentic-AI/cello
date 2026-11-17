@@ -405,6 +405,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       const answer = await engine.removeAgent(agent);
       holders.delete(agent);
       notifiers.forget(agent);
+      engine.reminders.forget(agent);
       return answer;
     }
     case "agent_status":
@@ -459,6 +460,13 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return notifiers.test(named(params), optionalText(params, "name"));
     case "notify":
       return notifiers.notify(named(params), params);
+    // Reminders aren't governance: anyone sets one, an agent included, for itself or for another of the owner's agents.
+    case "reminder_set":
+      return engine.reminders.set(named(params), params);
+    case "reminder_list":
+      return engine.reminders.list(named(params));
+    case "reminder_remove":
+      return engine.reminders.remove(named(params), params["reminder"]);
     case "channel_create":
       return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);
     case "channel_join":

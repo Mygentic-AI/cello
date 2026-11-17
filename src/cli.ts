@@ -200,7 +200,8 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
   if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`, op);
   positional.forEach((param, i) => {
     const value = given[i];
-    if (value !== undefined) params[param.name] = param.name === "text" && value === "-" ? readFileSync(0, "utf8") : value;
+    // A number given by position is a number to the daemon, as one given by flag is.
+    if (value !== undefined) params[param.name] = param.name === "text" && value === "-" ? readFileSync(0, "utf8") : param.kind === "number" ? readValue(param, value) : value;
   });
   for (const param of op.params) {
     if (param.required && params[param.name] === undefined) usageError(`${op.command} needs ${isSignalParam(op, param) ? SIGNAL_FLAGS : param.positional ? `<${param.name}>` : flag(param.name)}`, op);
