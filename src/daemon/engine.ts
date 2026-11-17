@@ -77,6 +77,7 @@ import { type Collected, HOW_TO_GET_A_CODE, Wallet } from "./wallet.ts";
 import { EncryptionKeys, PresentedStore, ensurePresentedSchema } from "./presented.ts";
 import { MAX_PRESENTED_SIGNALS, PresentedTooMany, checkEncryptionKey, openFromKey, openUnderSession, sealToKey, sealUnderSession } from "../protocol/presented-signals.ts";
 import type { ChannelHost } from "./channels.ts";
+import type { NotifierHost } from "./notifiers.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
@@ -2538,6 +2539,14 @@ export class Engine {
         const screened = await this.#screenOutbound(this.#requireAgent(agentHex), text, params, retry);
         return screened;
       },
+    };
+  }
+
+  // What notifiers.ts needs from here: an agent's name, and the outbound screen for text that leaves this machine.
+  notifierHost(): NotifierHost {
+    return {
+      agentName: (agentHex) => this.#requireAgent(agentHex).name,
+      screenOutbound: (agentHex, text, params, retry) => this.#screenOutbound(this.#requireAgent(agentHex), text, params, retry),
     };
   }
 

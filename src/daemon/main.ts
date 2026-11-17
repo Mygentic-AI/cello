@@ -10,6 +10,7 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, type Signal } from "./engine.ts";
 import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
+import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
 import { celloHome, databasePath, endpointIsFile, holdsOldVersion, ipcKeyPath, oldVersionMessage, socketPath } from "./paths.ts";
@@ -68,6 +69,7 @@ function ring(agentHex: string, bell: Doorbell): void {
 
 const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
+const notifiers = new Notifiers(store, engine.notifierHost());
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
 mainThreadDelay.enable();
@@ -444,6 +446,17 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     case "policy_approve":
     case "moniker":
       return governed(method, params);
+    // Reaching the person. None of these acts as the agent in a conversation, so none takes the hold.
+    case "notifier_add":
+      return notifiers.add(named(params), params);
+    case "notifier_list":
+      return notifiers.list(named(params));
+    case "notifier_remove":
+      return notifiers.remove(named(params), text(params, "name"));
+    case "notifier_test":
+      return notifiers.test(named(params), optionalText(params, "name"));
+    case "notify":
+      return notifiers.notify(named(params), params);
     case "channel_create":
       return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);
     case "channel_join":

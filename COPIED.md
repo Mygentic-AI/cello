@@ -27,6 +27,10 @@ From `cello-client`, comments on their own lines removed, ids changed to blobs, 
 - `src/daemon/guards.ts` is a rewrite, with the classifiers, baselines and refusal texts of `core/gateway/src/config/config-store.ts` and `core/daemon/src/gateway-config-handlers.ts`. It keeps a plain log instead of v1's hash chain.
 - `src/daemon/reach.ts` and `tiers.ts` are rewrites, with the numbers and refusal texts of `core/daemon/src/contacts-tier-migration.ts` and `agent-settings-keys.ts`.
 
+## Notifiers
+
+- `src/daemon/telegram.ts` is a rewrite, with the two Bot API calls of `core/daemon/src/telegram-bot-client.ts`. It adds a time limit, the token check, and finding the chat. `src/daemon/notifiers.ts` is new: v1's doorbell rang by itself with fixed labels, and here the agent decides.
+
 ## The screener
 
 From `cello-client`, `core/gateway/src/detect/`, commit `2ea5834d`: comments on their own lines removed, imports rewritten. Each works alone and would be written the same way today. Nothing from the gateway's socket client or its deadline logic came across.
