@@ -27,7 +27,8 @@
     "README.md",
     ".claude-plugin",
     "plugins",
-    "hermes"
+    "hermes",
+    "!**/__pycache__"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
