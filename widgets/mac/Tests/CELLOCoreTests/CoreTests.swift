@@ -637,10 +637,11 @@ final class PanelSizeTests: XCTestCase {
         XCTAssertEqual(PanelSize.listHeight(content: 900, chrome: 400, screen: 500), PanelSize.smallestList)
     }
 
-    // A question with eight choices, the card's reply box under them, and the composer closed, fits without scrolling.
-    // The text heights in the sum are the system font's line heights, not read from a drawn panel, so the margin is small
-    // by design: an eye on the real panel is the last word.
-    func testEightChoicesAndTheReplyBoxFitOnALaptopScreen() {
+    // A question with eight short choices, the card's reply box under them, and the composer closed, fits without
+    // scrolling, as long as nothing else is showing and the question takes at most two lines. Anything more (an answered
+    // card, a settings line, a third line of question) scrolls, and the last assert says so. The text heights in the sum
+    // are the system font's line heights, not read from a drawn panel: an eye on the real panel is the last word.
+    func testEightShortChoicesAndTheReplyBoxFitOnALaptopScreenWithNothingElseShowing() {
         // The owner's MacBook Pro: 982 high, less a 33-point menu bar and a 79-point Dock, as macOS logged it.
         let owners = 870.0
         // A 13-inch MacBook Air at its default size: 956 high, less the menu bar and the Dock.
@@ -652,6 +653,8 @@ final class PanelSizeTests: XCTestCase {
         }
         XCTAssertTrue(fits(owners, questionLines: 2), "\(PanelLayout.oneQuestion(choices: 8, questionLines: 2, talkingTo: true)) against \(owners * PanelSize.screenShare)")
         XCTAssertTrue(fits(air, questionLines: 1), "\(PanelLayout.oneQuestion(choices: 8, questionLines: 1, talkingTo: true)) against \(air * PanelSize.screenShare)")
+        // The limit, stated: a third line of question on the owner's screen no longer fits.
+        XCTAssertFalse(fits(owners, questionLines: 3))
         // Still easy to hit with a mouse.
         XCTAssertGreaterThanOrEqual(PanelLayout.choiceHeight, 28)
     }
