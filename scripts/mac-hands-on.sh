@@ -131,13 +131,16 @@ up() {
     [ "$waited" -ge 900 ] && die "Another run held the build lock for 15 minutes."
     sleep 5
   done
+  # Held, it's freed on any exit, Ctrl-C included: a leaked lock makes every later live run wait 15 minutes and stop.
+  trap 'rmdir "$HOME/cello-live-runs/.heavy-lock" 2>/dev/null' EXIT
+  trap 'exit 130' INT TERM
   echo "Building and starting the server on port $port (project $COMPOSE_PROJECT_NAME)."
   if ! compose up -d --build --wait server > "$run/docker-up.log" 2>&1; then
-    rmdir "$lock"
     tail -30 "$run/docker-up.log" >&2
     die "The server didn't start."
   fi
   rmdir "$lock"
+  trap - EXIT INT TERM
   local url="ws://127.0.0.1:$port/v1"
 
   local out
