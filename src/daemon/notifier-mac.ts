@@ -153,7 +153,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     if (paused !== undefined) {
       const row = this.#row(id);
       if (row) this.#push(this.#frame(row, true));
-      return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's kept, and shows when they're back. Don't send it again.`;
+      return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's waiting in their CELLO panel for when they're back. Don't send it again.`;
     }
     const listening = this.#subscribers();
     if (listening.length === 0) {

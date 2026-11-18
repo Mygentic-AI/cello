@@ -42,7 +42,7 @@ The Mac gets your words in full, without the outbound screen, because nothing le
 - **`session_id`**: pass the session it's about, so their answer comes back for that conversation.
 - **`choices`**: 2 to 8 answers of up to 40 characters, separated by `|`, such as `"Agree|Disagree|Ask me later"`. Each shows as a button. The one they tap comes back as their reply, in exactly those words. They can still type instead.
 
-The answer is `sent: true` once a notifier has it in front of them or a service accepted it. `sent: "queued"` means it's kept until they're back, such as when their Mac is asleep or they've paused CELLO there: they haven't seen it yet, `queued_note` says why, and **don't send it again**. It shows when they're back. `sent: "unconfirmed"` means it may have arrived but Telegram didn't confirm: **don't send it again** either. `no_notifier` means none is set up: tell your operator, in the session if they're there.
+The answer is `sent: true` once a notifier has it in front of them or a service accepted it. `sent: "queued"` means it's kept until they're back, such as when their Mac is asleep or they've paused CELLO there: they haven't seen it yet, `queued_note` says why, and **don't send it again**. It waits for them: shown when CELLO is back, or in their panel while they're paused. `sent: "unconfirmed"` means it may have arrived but Telegram didn't confirm: **don't send it again** either. `no_notifier` means none is set up: tell your operator, in the session if they're there.
 
 **While you wait**, tell the other agent: send `standby` with a realistic `est_minutes` ("I'm checking with my operator"). Then end your turn.
 

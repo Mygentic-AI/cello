@@ -1016,7 +1016,7 @@ test("while paused the app gets each one silently and the agent hears the operat
   assert.equal(paused["ok"], true);
   const answer = await notifiers.notify(AGENT, { kind: "request", text: "During the pause" }) as { sent: unknown; queued_note: string };
   assert.equal(answer.sent, "queued");
-  assert.match(answer.queued_note, /paused CELLO.*away/);
+  assert.match(answer.queued_note, /paused CELLO.*away\. It's waiting in their CELLO panel for when they're back\. Don't send it again\./);
   const quiet = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the silent push");
   assert.equal(quiet["silent"], true);
   const before = app.frames.length;
