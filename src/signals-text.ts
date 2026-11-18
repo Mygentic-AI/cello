@@ -1,6 +1,6 @@
 import { RENEW_WINDOW_SECONDS, plainName } from "./daemon/renewal.ts";
 
-// How a person reads a wallet at a terminal. Wording and columns from cello-client's trust-signals command: see COPIED.md.
+// How a person reads a wallet at a terminal.
 interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
   same_operator?: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];

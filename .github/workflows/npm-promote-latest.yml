@@ -1,4 +1,4 @@
-# Moves @cello-protocol/cli from `beta` to `latest`. Modelled on cello-client's promote workflow, for one package.
+# Moves @cello-protocol/cli from `beta` to `latest`.
 #
 # CI publishes to `beta`, and the install route (`npm i -g @cello-protocol/cli@latest`) reads `latest`, so a release isn't delivered
 # until this runs. Doing it by hand from a laptop needs a local token that expires silently.

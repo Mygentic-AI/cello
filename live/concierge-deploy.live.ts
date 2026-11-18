@@ -1,4 +1,4 @@
-// The Concierge as the container runs it: a fresh Linux container brought up the way deploy/concierge/RUNBOOK.md says,
+// The Concierge as the container runs it: a fresh Linux container brought up the way the Dockerfile and run.sh in deploy/concierge say,
 // a stranger's call taken end to end, and then each way it can die. The strangers are real agents on a daemon outside the container.
 // Run it with scripts/concierge-deploy-test.sh.
 import assert from "node:assert/strict";

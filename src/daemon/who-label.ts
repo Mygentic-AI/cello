@@ -1,4 +1,4 @@
-// The name rule from cello-client, and the short form of a key.
+// The name rule, and the short form of a key.
 export const MONIKER_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export function validateMoniker(raw: unknown): string | null {

@@ -1,5 +1,5 @@
 // The screen on the way out: credentials are redacted, hijack artifacts stop the message, and invisible characters and
-// data-carrying image links are removed. It never runs the model. Rewritten from cello-client's screen/outbound.ts.
+// data-carrying image links are removed. It never runs the model.
 import { OutboundPIIScreener } from "../daemon/pii.ts";
 import { screenOutboundExfil } from "./exfil.ts";
 import { redactSecrets } from "./secrets.ts";
