@@ -61,12 +61,15 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   #sweeper: NodeJS.Timeout | undefined;
   // Why the door didn't open, when it didn't.
   #doorProblem: string | undefined;
+  // The agents that reach the Mac, as the app was last told, so it hears when one goes.
+  readonly #reaching: Set<string>;
 
   // No socket path: no door, as on any machine but a Mac.
   constructor(ctx: NotifierContext, socketPath: string | undefined) {
     this.#ctx = ctx;
     ctx.store.exec(SCHEMA);
     this.#door = socketPath === undefined ? undefined : new OperatorDoor(socketPath, this);
+    this.#reaching = new Set(ctx.rows().map((row) => row.agentHex));
   }
 
   start(): void {
@@ -90,16 +93,20 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
 
   // A notifier that's gone takes its waiting notifications with it, words and all, and the app hears the agent left.
   prune(): void {
-    const holding = new Set(this.#ctx.rows().map((row) => `${row.agentHex}/${row.name}`));
+    const current = this.#ctx.rows();
+    const holding = new Set(current.map((row) => `${row.agentHex}/${row.name}`));
     const rows = this.#ctx.store.prepare("SELECT DISTINCT agent_id, notifier FROM mac_queue").all() as { agent_id: Uint8Array; notifier: string }[];
-    const left = new Set<string>();
     for (const row of rows) {
-      const agentHex = hexOf(row.agent_id);
-      if (holding.has(`${agentHex}/${row.notifier}`)) continue;
+      if (holding.has(`${hexOf(row.agent_id)}/${row.notifier}`)) continue;
       this.#ctx.store.prepare("DELETE FROM mac_queue WHERE agent_id = ? AND notifier = ?").run(row.agent_id, row.notifier);
-      if (![...holding].some((key) => key.startsWith(`${agentHex}/`))) left.add(agentHex);
     }
-    for (const agentHex of left) this.#push({ op: "agent_removed", agent_id: agentHex });
+    // Every agent the app knows of that's gone, whether or not it ever sent anything.
+    const still = new Set(current.map((row) => row.agentHex));
+    for (const agentHex of [...this.#reaching]) {
+      if (still.has(agentHex)) continue;
+      this.#reaching.delete(agentHex);
+      this.#push({ op: "agent_removed", agent_id: agentHex });
+    }
   }
 
   prepare(params: Record<string, unknown>, copied: (() => string) | undefined): (agentName: string, agentHex: string) => Promise<Connected> {
@@ -118,7 +125,10 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
           next: open ? `CELLO on this Mac shows ${agentName}'s notifications from now on.` : `Open CELLO on this Mac to finish. One Allow there covers every agent on this Mac. Until then, notify says queued and keeps each one for when it opens.`,
         },
         route: "the CELLO app on this Mac",
-        saved: () => this.#push({ op: "agent_added", agent_id: agentHex, agent: agentName }),
+        saved: () => {
+          this.#reaching.add(agentHex);
+          this.#push({ op: "agent_added", agent_id: agentHex, agent: agentName });
+        },
       });
     };
   }
@@ -207,6 +217,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       case "pause": return this.#pause(request);
       case "resume": return this.#resume();
       case "remove": return this.#remove();
+      case "remove_agent": return this.#removeAgent(request);
     }
   }
 
@@ -311,6 +322,19 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       this.#ctx.host.tell(agent.agent_id, "Your operator removed CELLO from their Mac, so notify no longer reaches them there.");
     }
     return Promise.resolve({ fields: { removed_from: agents.map((a) => ({ agent_id: a.agent_id, agent: a.agent })) } });
+  }
+
+  // Takes the Mac off one agent, as Settings' Remove beside it does, and tells that agent. The others keep it.
+  #removeAgent(request: Record<string, unknown>): Promise<DoorReply> {
+    const agent = request["agent"];
+    const theirs = typeof agent === "string" ? this.#ctx.rows().filter((row) => row.agentHex === agent) : [];
+    if (typeof agent !== "string" || theirs.length === 0) throw new LocalError("no_such_agent", "Name the agent by its agent_id, one that reaches you here. subscribe lists them.");
+    const name = this.#nameOf(agent);
+    this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac' AND agent_id = ?").run(idOf(agent));
+    this.prune();
+    for (const row of theirs) logEvent("notifier.removed", { agent, notifier: row.name, by: "operator_door" });
+    this.#ctx.host.tell(agent, "Your operator took you off CELLO on their Mac, so notify no longer reaches them there. Their other notifiers are as they were.");
+    return Promise.resolve({ fields: { removed: { agent_id: agent, agent: name } } });
   }
 
   #holds(agentHex: string, name: string): boolean {

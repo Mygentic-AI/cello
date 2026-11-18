@@ -1043,7 +1043,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Remove a notifier.",
     scoped: true,
     acts: false,
-    description: "Remove one of the agent's notifiers. Whatever it holds goes with it: a Telegram bot token, or the notifications the Mac app hadn't shown. The Mac app's own Remove takes it off every agent at once.",
+    description: "Remove one of the agent's notifiers. Whatever it holds goes with it: a Telegram bot token, or the notifications the Mac app hadn't shown. In the Mac app, the person can do the same for one agent from Settings, or take the Mac off every agent at once.",
     params: [{ name: "name", kind: "string", required: true, positional: true, description: "The notifier's name. notifier-list shows them." }],
   },
   {

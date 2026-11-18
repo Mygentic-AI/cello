@@ -295,6 +295,21 @@ public final class Controller {
         }
     }
 
+    // Takes the Mac off one agent. Its cards go at once; the door's agent_removed frame then finds nothing left to do.
+    public func removeAgent(_ agentID: String, done: @escaping (String?) -> Void) {
+        let name = state.agents.first { $0.agentID == agentID }?.name ?? agentID
+        client.send(.removeAgent(agentID: agentID)) { [weak self] reply in
+            guard let self else { return }
+            if reply.ok {
+                self.run(self.state.agentRemoved(agentID))
+                self.changed()
+                done(nil)
+            } else {
+                done(reply.error == "not_connected" ? Copy.notConnected : reply.error == "no_such_agent" ? Copy.agentNotHere(name) : Copy.removeAgentFailed(name))
+            }
+        }
+    }
+
     // The door's own message is for agents and the command line, so the person gets a line worded for them.
     public static func problem(_ reply: Reply, agent: String) -> String {
         switch reply.error {

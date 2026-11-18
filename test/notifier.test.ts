@@ -1040,6 +1040,24 @@ test("while paused the app gets each one silently and the agent hears the operat
   await app.close();
 });
 
+test("the app takes one agent off the Mac: it's told, the app hears it went, and the other agent keeps the Mac", async () => {
+  const { notifiers, door } = await withMac();
+  await notifiers.add(AGENT, { type: "mac" });
+  await notifiers.add(AGENT2, { type: "mac", same_as: AGENT });
+  const { app } = await StandInMacApp.open(door);
+  const unknown = await app.request({ op: "remove_agent", agent: "09".repeat(32) });
+  assert.deepEqual([unknown["ok"], unknown["error"]], [false, "no_such_agent"]);
+  // Bea never sent anything, and the app still hears she went.
+  const removed = await app.request({ op: "remove_agent", agent: AGENT2 });
+  assert.deepEqual([removed["ok"], (removed["removed"] as { agent: string }).agent], [true, "Bea"]);
+  await app.waitFor((f) => f["op"] === "agent_removed" && f["agent_id"] === AGENT2, "the app to hear Bea went");
+  assert.deepEqual((notifiers.list(AGENT2) as { notifiers: unknown[] }).notifiers, []);
+  assert.equal((notifiers.list(AGENT) as { notifiers: unknown[] }).notifiers.length, 1);
+  assert.ok(told.some((t) => t.agent === AGENT2 && /took you off CELLO on their Mac/.test(t.text)));
+  assert.ok(!told.some((t) => t.agent === AGENT), "the other agent isn't told anything");
+  await app.close();
+});
+
 test("a door that couldn't open is named, never reported as a Mac asleep", async () => {
   const { store, seen } = setup();
   insertMacRow(store);

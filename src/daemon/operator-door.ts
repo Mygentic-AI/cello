@@ -13,7 +13,7 @@ import { logEvent } from "./log.ts";
 export const OPERATOR_PROTOCOL = 1;
 
 // Everything the door takes. hello comes first, and anything else, or any other word, is refused.
-export const OPERATOR_OPS = ["hello", "subscribe", "ack", "pick", "reply", "pause", "resume", "remove"] as const;
+export const OPERATOR_OPS = ["hello", "subscribe", "ack", "pick", "reply", "pause", "resume", "remove", "remove_agent"] as const;
 export type OperatorOp = Exclude<(typeof OPERATOR_OPS)[number], "hello">;
 
 // A person's line is short. A longer one is a fault, and the connection goes.

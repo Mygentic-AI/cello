@@ -229,6 +229,8 @@ public enum Request: Equatable, Sendable {
     case pause(until: Date)
     case resume
     case remove
+    // Takes the Mac off one agent; the rest keep it.
+    case removeAgent(agentID: String)
 
     public var op: String {
         switch self {
@@ -240,6 +242,7 @@ public enum Request: Equatable, Sendable {
         case .pause: return "pause"
         case .resume: return "resume"
         case .remove: return "remove"
+        case .removeAgent: return "remove_agent"
         }
     }
 
@@ -259,6 +262,7 @@ public enum Request: Equatable, Sendable {
             case let .agent(agentID): o["agent"] = agentID
             }
         case let .pause(until): o["until"] = isoString(until)
+        case let .removeAgent(agentID): o["agent"] = agentID
         }
         return o
     }

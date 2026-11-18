@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         panel = PanelModel(controller: controller)
         panel.onQuit = { [weak self] in self?.confirmQuit() }
         panel.onRemove = { [weak self] in self?.confirmRemove() }
+        panel.onRemoveAgent = { [weak self] agent in self?.confirmRemoveAgent(agent) }
         panel.onRetry = { [weak self] in self?.controller.retryStart() }
         panel.onProblem = { [weak self] line in self?.say(line) }
 
@@ -75,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         case let .withdraw(itemID):
             banners.withdraw(itemID)
         case let .joined(agent):
-            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody)
+            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody(agent.name))
         case .ack:
             break
         }
@@ -193,6 +194,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
                 return
             }
             self.removeFromThisMac()
+        }
+    }
+
+    // One agent off this Mac. The app stays, for every other agent.
+    private func confirmRemoveAgent(_ agent: Agent) {
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let confirm = alert(title: Copy.removeAgentTitle(agent.name), body: Copy.removeAgentBody(agent.name), confirm: Copy.remove)
+        confirm.buttons.first?.hasDestructiveAction = true
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        controller.removeAgent(agent.agentID) { [weak self] problem in
+            if let problem { self?.say(problem) }
         }
     }
 

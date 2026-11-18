@@ -78,6 +78,8 @@ final class FrameTests: XCTestCase {
         XCTAssertEqual(pick["choice"] as? Int, 1)
         let answer = try decoded(.reply(target: .item(9), text: "Yes"))
         XCTAssertEqual(answer["id"] as? Int, 9)
+        let one = try decoded(.removeAgent(agentID: "beef"))
+        XCTAssertEqual([one["op"] as? String, one["agent"] as? String], ["remove_agent", "beef"])
         XCTAssertNil(answer["agent"])
         let message = try decoded(.reply(target: .agent("beef"), text: "Hi"))
         XCTAssertEqual(message["agent"] as? String, "beef")

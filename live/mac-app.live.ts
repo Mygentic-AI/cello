@@ -189,6 +189,7 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   ok(["notifier-add", "mac", "--same-as", "Ann", "--agent", "Bea"], "bea-shell");
   const joined = await app.waitFor("Bea joining", (e) => e["effect"] === "joined", fromJoin);
   assert.equal(joined["title"], "Bea can reach you here now");
+  assert.equal(joined["body"], "Not you? Open CELLO › Settings to remove Bea.");
   const beaId = (await app.run({ do: "state" }))["agents"] as { agent_id: string; name: string }[];
   const bea = beaId.find((a) => a.name === "Bea")?.agent_id as string;
   const wrote = await app.run({ do: "message", agent: bea, text: "Bea, book the room for Friday." });
@@ -240,8 +241,17 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   assert.deepEqual((again["waiting"] as { text: string; shown: boolean }[]).map((w) => [w.text, w.shown]).sort(), [["Coffee or tea?", true], ["Lunch: pizza or salad?", true], ["The quote came in 8% lower.", true]].sort());
   assert.ok(!relaunched.events.some((e) => e["effect"] === "banner" || e["effect"] === "summary"), `nothing bannered on relaunch: ${JSON.stringify(relaunched.events)}`);
 
-  // 9. Remove takes the Mac off every agent.
+  // 8c. Settings takes one agent off: Bea goes from the app and is told, and Ann keeps the Mac.
   const app2 = relaunched;
+  const offBea = await app2.run({ do: "remove_agent", agent: bea });
+  assert.equal(offBea["ok"], true, JSON.stringify(offBea));
+  assert.deepEqual(((await app2.run({ do: "state" }))["agents"] as { name: string }[]).map((a) => a.name), ["Ann"]);
+  assert.deepEqual((ok(["notifier-list", "--agent", "Bea"]) as { notifiers: unknown[] }).notifiers, []);
+  assert.equal((ok(["notifier-list", "--agent", "Ann"]) as { notifiers: unknown[] }).notifiers.length, 1);
+  const told = ok(["receive", "--agent", "Bea"], "bea-shell") as { notices?: { text: string }[] };
+  assert.ok(told.notices?.some((n) => /took you off CELLO on their Mac/.test(n.text)), JSON.stringify(told.notices));
+
+  // 9. Remove takes the Mac off every agent.
   assert.equal((await app2.run({ do: "remove" }))["ok"], true);
   for (const name of ["Ann", "Bea"]) assert.deepEqual((ok(["notifier-list", "--agent", name]) as { notifiers: unknown[] }).notifiers, []);
   assert.equal(annId.length, 64);

@@ -65,9 +65,8 @@ public enum Copy {
         return "\(andList(agents)) can reach you here. This is how a question from them will look."
     }
     public static func joinedTitle(_ agent: String) -> String { "\(agent) can reach you here now" }
-    // The design's line is "Not you? Open CELLO › Settings to remove her." Settings can't remove one agent yet (the door
-    // only removes the Mac from all of them), so this says only what Settings does. Andre's call which way to close it.
-    public static let joinedBody = "Not you? Open CELLO › Settings to see every agent that can reach you here."
+    // The design's line, with the agent's name for "her", since the app can't know an agent's pronoun.
+    public static func joinedBody(_ agent: String) -> String { "Not you? Open CELLO › Settings to remove \(agent)." }
 
     // The panel
     public static func waitingHeader(_ count: Int) -> String { "WAITING FOR YOU · \(count)" }
@@ -129,6 +128,11 @@ public enum Copy {
         if agents.isEmpty { return "Your agents won't be able to reach you here. Your phone keeps working as it does now." }
         return "\(andList(agents)) won't be able to reach you here. Your phone keeps working as it does now."
     }
+    // One agent off this Mac, from the list in Settings.
+    public static func removeAgentMenu(_ agent: String) -> String { "Remove \(agent)…" }
+    public static func removeAgentTitle(_ agent: String) -> String { "Remove \(agent) from this Mac?" }
+    public static func removeAgentBody(_ agent: String) -> String { "\(agent) won't be able to reach you here. Your other agents, and your phone, keep working as they do now." }
+    public static func removeAgentFailed(_ agent: String) -> String { "\(agent) couldn't be removed right now, so nothing changed. Try again in a moment." }
     public static let remove = "Remove"
     public static let cancel = "Cancel"
     public static let removeFailed = "CELLO couldn't be removed right now, so nothing changed. Try again in a moment."

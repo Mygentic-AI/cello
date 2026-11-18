@@ -33,7 +33,7 @@ func describe(_ effect: Effect) -> [String: Any] {
     case let .banner(p): return ["effect": "banner", "plan": plan(p)]
     case let .summary(s): return ["effect": "summary", "item_ids": s.itemIDs, "title": s.title, "body": s.body, "sound": s.sound]
     case let .withdraw(id): return ["effect": "withdraw", "item_id": id]
-    case let .joined(agent): return ["effect": "joined", "agent_id": agent.agentID, "title": Copy.joinedTitle(agent.name), "body": Copy.joinedBody]
+    case let .joined(agent): return ["effect": "joined", "agent_id": agent.agentID, "title": Copy.joinedTitle(agent.name), "body": Copy.joinedBody(agent.name)]
     case let .ack(id): return ["effect": "ack", "item_id": id]
     }
 }
@@ -111,6 +111,7 @@ func run(_ command: [String: Any]) {
     case "pause": controller.pause(until: Date().addingTimeInterval((command["seconds"] as? NSNumber)?.doubleValue ?? 3600)) { answer(what, $0) }
     case "resume": controller.resume { answer(what, $0) }
     case "remove": controller.remove { answer(what, $0) }
+    case "remove_agent": controller.removeAgent(command["agent"] as? String ?? "") { answer(what, $0) }
     case "quit": exit(0)
     default: out(["event": "error", "message": "unknown command \(what)"])
     }

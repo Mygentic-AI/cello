@@ -14,6 +14,7 @@ final class PanelModel: ObservableObject {
     @Published var loginItemOn = LoginItem.isOn
     var onQuit: () -> Void = {}
     var onRemove: () -> Void = {}
+    var onRemoveAgent: (Agent) -> Void = { _ in }
     var onRetry: () -> Void = {}
     var onProblem: (String) -> Void = { _ in }
 
@@ -136,8 +137,11 @@ struct PanelView: View {
             }
             Divider()
             Toggle(Copy.openAtLogin, isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) }))
+            // Each agent that can reach you here, and removing one alone, with a confirm.
             Menu(Copy.agentsHere(state.agents.map(\.name))) {
-                ForEach(state.agents, id: \.agentID) { agent in Text(agent.name) }
+                ForEach(state.agents, id: \.agentID) { agent in
+                    Button(Copy.removeAgentMenu(agent.name)) { model.onRemoveAgent(agent) }
+                }
             }
             Divider()
             Button(Copy.quit) { model.onQuit() }

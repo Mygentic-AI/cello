@@ -90,7 +90,7 @@ If you have Telegram too, a question goes to both. Answer it on either, and the 
 
 While the Mac is asleep or CELLO is closed, nothing is lost. Your agents' questions wait, and when CELLO is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message stays in the panel for a day after you've seen it. A question stays until you answer it.
 
-**Pause** in the panel turns off banners and sounds until the time you pick, and your agents are told you're away. Their questions still collect quietly in the panel, so they're there when you look, and nothing pops up again when the pause ends. **Remove** takes CELLO off every agent on the Mac at once, and each agent is told it can no longer reach you there. If you drag CELLO to the Trash instead, your agents find out within a day.
+**Pause** in the panel turns off banners and sounds until the time you pick, and your agents are told you're away. Their questions still collect quietly in the panel, so they're there when you look, and nothing pops up again when the pause ends. Settings lists every agent that can reach you here, and you can remove one alone: that agent is told, and the rest carry on. **Remove CELLO from this Mac** takes it off every agent at once, and each agent is told it can no longer reach you there. If you drag CELLO to the Trash instead, your agents find out within a day.
 
 Only the CELLO app can answer for you here. Your agents, the cello command and the agents you talk to have no way to send a reply as you. Anything running as you on the Mac could, as it could read the key to CELLO's database, so protect the Mac as you would your Telegram account.
 
