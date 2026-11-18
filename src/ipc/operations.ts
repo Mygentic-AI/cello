@@ -1003,11 +1003,11 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Tell your human operator that you need them.",
     scoped: true,
     acts: false,
-    description: "Reach your human operator through the agent's notifiers, for when you need a decision or an answer and they aren't at this session. You decide what leaves this machine. With no text, a fixed line goes: \"Your agent <name> has a message waiting for you.\", or \"a request\" with kind request. It says nothing about what. With text, your words go too, to a service outside this machine, so they pass the same outbound screen as a message. If your operator asked to be notified without contents, leave the text out. It answers sent: true once a notifier has accepted it, and refuses with no_notifier if none is set up. sent: \"unconfirmed\" means the message may have arrived but the service didn't confirm it: don't send it again.",
+    description: "Reach your human operator through the agent's notifiers, for when you need a decision or an answer and they aren't at this session. You decide what leaves this machine. With no text, a fixed line goes: \"Your agent <name> has a message waiting for you.\", or \"a request\" with kind request. It says nothing about what. With text, your words go too. To a service outside this machine, such as Telegram, they pass the same outbound screen as a message. The CELLO app on this Mac gets them in full, unscreened, because nothing leaves the machine. If your operator asked to be notified without contents, leave the text out. It answers sent: true once a notifier has it in front of them or a service accepted it, and refuses with no_notifier if none is set up. sent: \"queued\" means a notifier is keeping it until your operator is back, such as the Mac app while the Mac is asleep or they've paused it: they haven't seen it yet, queued_note says why, and you must not send it again. sent: \"unconfirmed\" means the message may have arrived but the service didn't confirm it: don't send it again either.",
     params: [
       { name: "text", kind: "string", positional: true, description: "What to tell them. Leave out to send the fixed line and nothing else. On the command line, - reads it from standard input." },
       { name: "kind", kind: "string", allowed: ["message", "request"], description: "message: something to read. request: you need an answer. Left out: message." },
-      { name: "choices", kind: "string", description: "Answers your operator can give with one tap, 2 to 8 of them with | between, such as \"Agree|Disagree|Ask me later\". Each is at most 40 characters and is shown as a button. The one they tap comes back under from_your_operator as its exact words, for this session. They can still type an answer instead. The choices leave this machine with the message, so they pass the outbound screen too." },
+      { name: "choices", kind: "string", description: "Answers your operator can give with one tap, 2 to 8 of them with | between, such as \"Agree|Disagree|Ask me later\". Each is at most 40 characters and is shown as a button. The one they tap comes back under from_your_operator as its exact words, for this session. They can still type an answer instead. Where the message leaves this machine, the choices pass the outbound screen with it." },
       { name: "session_id", kind: "string", description: "The session this is about, 32 hex characters, so an answer can be matched to it." },
       { name: "notifier", kind: "string", description: "Only this notifier. Left out: every notifier the agent has." },
       { name: "allow_flagged", kind: "boolean", description: "Send a value a guard held. Needs a person at a terminal, unless the autonomous_override guard is on." },
@@ -1016,7 +1016,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "notifier-add",
     group: "Notifiers",
-    summary: "Set up a way to reach the agent's human operator, such as Telegram.",
+    summary: "Set up a way to reach the agent's human operator, such as Telegram or the CELLO app on a Mac.",
     scoped: true,
     acts: false,
     description: `${NOTIFIER_ADD_INTRO} ${NOTIFIER_TYPES.map((type) => `For ${type.name}, ${lowerFirst(type.setup)}`).join(" ")}`,
@@ -1024,7 +1024,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [
       { name: "type", kind: "string", required: true, positional: true, allowed: NOTIFIER_TYPES.map((type) => type.name), description: `What kind of notifier: ${NOTIFIER_TYPES.map((type) => type.name).join(", ")}.` },
       ...kindParams(NOTIFIER_TYPES),
-      { name: "same_as", kind: "string", description: "An agent on this machine that already has a notifier of this type: its name or agent_id. This agent gets the same one, such as the same bot and chat, with nothing secret to give again. Use it in place of the type's secret, such as bot_token." },
+      { name: "same_as", kind: "string", description: "An agent on this machine that already has a notifier of this type: its name or agent_id. This agent gets the same one, such as the same bot and chat, with nothing secret to give again. Use it in place of the type's secret, such as Telegram's bot_token." },
       { name: "name", kind: "string", description: "Your name for it, 1 to 32 letters, digits, underscores or dashes. Left out: its type." },
     ],
   },
@@ -1034,7 +1034,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "List the agent's notifiers.",
     scoped: true,
     acts: false,
-    description: "List the agent's notifiers: each one's name, type, and where it sends. A bot token is never shown.",
+    description: "List the agent's notifiers: each one's name, type, and where it sends, such as a Telegram bot and chat, or whether the CELLO app on this Mac is open or paused. A bot token is never shown.",
     params: [],
   },
   {
@@ -1043,7 +1043,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Remove a notifier.",
     scoped: true,
     acts: false,
-    description: "Remove one of the agent's notifiers. Its bot token is deleted with it.",
+    description: "Remove one of the agent's notifiers. Whatever it holds goes with it: a Telegram bot token, or the notifications the Mac app hadn't shown. The Mac app's own Remove takes it off every agent at once.",
     params: [{ name: "name", kind: "string", required: true, positional: true, description: "The notifier's name. notifier-list shows them." }],
   },
   {
