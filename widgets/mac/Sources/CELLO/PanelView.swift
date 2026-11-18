@@ -155,9 +155,15 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Copy.unreachableTitle).font(.system(size: 14, weight: .bold))
             switch why {
-            case .stopped:
+            case let .stopped(said):
                 Text(Copy.unreachableStopped).font(.system(size: 13))
+                if !said.isEmpty {
+                    Text(Copy.loginSaid(said)).font(.system(size: 11, design: .monospaced)).foregroundColor(muted).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
                 Text(Copy.unreachableFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+            case .noDoor:
+                Text(Copy.unreachableNoDoor).font(.system(size: 13))
+                Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
             case .unknownInstall:
                 Text(Copy.unreachableUnknownInstall).font(.system(size: 13))
                 Text(Copy.unreachableFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)

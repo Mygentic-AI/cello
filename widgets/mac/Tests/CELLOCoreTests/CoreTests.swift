@@ -107,7 +107,7 @@ final class LookTests: XCTestCase {
         s.setPaused(until: t0.addingTimeInterval(60))
         XCTAssertEqual(s.look(at: t0), .paused, "paused outranks a waiting question")
         XCTAssertEqual(s.look(at: t0.addingTimeInterval(61)), .waiting, "a pause ends by itself at its time")
-        s.connection = .unreachable(.stopped)
+        s.connection = .unreachable(.stopped("exit 1"))
         XCTAssertEqual(s.look(at: t0), .unreachable, "struck through outranks everything")
     }
 
@@ -394,5 +394,18 @@ final class LaunchTests: XCTestCase {
         guard case .success = CelloStarter.start(working) else { return XCTFail("CELLO_HOME reaches the command") }
         let gone = LaunchInfo(celloHome: home, start: ["/nonexistent/node", "cli.js", "login"])
         guard case .failure(.notInstalled("/nonexistent/node")) = CelloStarter.start(gone) else { return XCTFail() }
+    }
+}
+
+final class ControllerStartTests: XCTestCase {
+    // No socket is opened: start() is never called.
+    func testAFailedStartKeepsWhatCelloLoginSaid() {
+        let c = Controller(socketPath: "/nonexistent/operator.sock", turnedOn: true)
+        c.startFinished(.failure(.exited(1, "A daemon is already running for wss://x. Run: cello logout")))
+        XCTAssertEqual(c.state.connection, .unreachable(.stopped("A daemon is already running for wss://x. Run: cello logout")))
+        c.startFinished(.failure(.notInstalled("/opt/node")))
+        XCTAssertEqual(c.state.connection, .unreachable(.unknownInstall))
+        c.startFinished(.failure(.timedOut))
+        XCTAssertEqual(c.state.connection, .unreachable(.stopped(Copy.startTimedOut)))
     }
 }

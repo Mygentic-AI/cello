@@ -144,6 +144,10 @@ public enum Copy {
     public static let unreachableStopped = "CELLO stopped in the background and couldn't start again."
     public static let unreachableUnknownInstall = "This app doesn't know where CELLO is installed, so it couldn't start it."
     public static let unreachableFix = "Open Terminal and run: cello login"
+    public static func loginSaid(_ said: String) -> String { "cello login said: \(said)" }
+    public static let startTimedOut = "it didn't finish within a minute."
+    public static let unreachableNoDoor = "CELLO is running, but this app can't reach it."
+    public static let restartFix = "Open Terminal and run: cello logout, then cello login"
     public static let tryAgain = "Try again"
     public static let mismatchFix = "Update CELLO so this app and CELLO match."
 

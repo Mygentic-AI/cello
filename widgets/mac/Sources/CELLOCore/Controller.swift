@@ -68,7 +68,8 @@ public final class Controller {
             if let since = failuresSinceStart {
                 failuresSinceStart = since + 1
                 if since + 1 >= failuresAfterStart, state.connection == .starting {
-                    state.connection = .unreachable(.stopped)
+                    // cello login said it was running, and still there's no door for this app.
+                    state.connection = .unreachable(.noDoor)
                     changed()
                 }
             } else if failure == .notRunning, failures >= failuresBeforeStart, !startTried {
@@ -118,7 +119,11 @@ public final class Controller {
             failuresSinceStart = 0
         case let .failure(error):
             failuresSinceStart = nil
-            if case .notInstalled = error { state.connection = .unreachable(.unknownInstall) } else { state.connection = .unreachable(.stopped) }
+            switch error {
+            case .notInstalled, .unreadable: state.connection = .unreachable(.unknownInstall)
+            case let .exited(_, said): state.connection = .unreachable(.stopped(said))
+            case .timedOut: state.connection = .unreachable(.stopped(Copy.startTimedOut))
+            }
             changed()
         }
     }
