@@ -737,3 +737,27 @@ final class PausedMarkTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(marks.seen.last!.at.timeIntervalSince(pausedAt), pausedWordSeconds - 0.5)
     }
 }
+
+final class FocusTests: XCTestCase {
+    // A Focus that lets CELLO through lets its active notifications through. News is passive, so it waits regardless.
+    func testQuestionsComeThroughAFocusThatLetsCelloThroughAndNewsAlwaysWaits() {
+        XCTAssertTrue(BannerPlan.forItem(item(1, choices: ["Yes", "No"])).breaksThrough)
+        XCTAssertTrue(BannerPlan.forItem(item(2, choices: [])).breaksThrough)
+        XCTAssertFalse(BannerPlan.forItem(item(3, kind: .message)).breaksThrough)
+        // A test is the person checking it arrives, not news.
+        XCTAssertTrue(BannerPlan.forItem(item(4, kind: .test)).breaksThrough)
+        XCTAssertTrue(SummaryPlan(itemIDs: [1, 3], title: "", body: "", sound: true).breaksThrough)
+        XCTAssertFalse(SummaryPlan(itemIDs: [3], title: "", body: "", sound: false).breaksThrough)
+    }
+
+    func testEveryBannerTheAppPostsCarriesItsLevelAndFirstRunOpensFocusSettings() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Sources/CELLO").standardized
+        let banners = try String(contentsOf: app.appendingPathComponent("Banners.swift"), encoding: .utf8)
+        XCTAssertEqual(banners.components(separatedBy: "UNMutableNotificationContent()").count, banners.components(separatedBy: "content.interruptionLevel = ").count)
+        XCTAssertTrue(banners.contains("breaksThrough ? .active : .passive"))
+        let firstRun = try String(contentsOf: app.appendingPathComponent("FirstRun.swift"), encoding: .utf8)
+        XCTAssertTrue(firstRun.contains("Copy.focusSettingsURL"))
+        // The extension macOS 14 and later registers for System Settings › Focus.
+        XCTAssertEqual(Copy.focusSettingsURL, "x-apple.systempreferences:com.apple.Focus-Settings.extension")
+    }
+}

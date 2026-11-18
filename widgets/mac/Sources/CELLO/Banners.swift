@@ -58,12 +58,17 @@ final class Banners: NSObject, UNUserNotificationCenterDelegate {
 
     static func identifier(_ itemID: Int) -> String { "item-\(itemID)" }
 
+    // A question comes through a Focus that lets CELLO through. News is passive: it never breaks through a Focus, even
+    // one that lets CELLO through, and waits in Notification Center and the panel.
+    static func level(_ breaksThrough: Bool) -> UNNotificationInterruptionLevel { breaksThrough ? .active : .passive }
+
     // shown: called with true once macOS has it and banners are allowed.
     func post(_ plan: BannerPlan, shown: @escaping (Bool) -> Void) {
         let content = UNMutableNotificationContent()
         content.title = plan.title
         content.body = plan.body
         content.sound = plan.sound ? .default : nil
+        content.interruptionLevel = Self.level(plan.breaksThrough)
         content.categoryIdentifier = category(for: plan)
         if let id = plan.itemID { content.userInfo = ["item": id] }
         let identifier = plan.itemID.map(Self.identifier) ?? UUID().uuidString
@@ -75,16 +80,19 @@ final class Banners: NSObject, UNUserNotificationCenterDelegate {
         content.title = summary.title
         content.body = summary.body
         content.sound = summary.sound ? .default : nil
+        content.interruptionLevel = Self.level(summary.breaksThrough)
         content.categoryIdentifier = Self.summaryCategory
         add("summary-\(UUID().uuidString)", content, shown)
     }
 
     // A banner about the app itself, with no sound: an agent joined, an answer didn't go, the first hello.
-    func postQuiet(title: String, body: String, sound: Bool = false) {
+    // breaksThrough: false for news about the app, such as an agent joining, which waits through a Focus like any news.
+    func postQuiet(title: String, body: String, sound: Bool = false, breaksThrough: Bool = true) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = sound ? .default : nil
+        content.interruptionLevel = Self.level(breaksThrough)
         add(UUID().uuidString, content) { _ in }
     }
 

@@ -64,6 +64,12 @@ public enum Copy {
         if agents.isEmpty { return "Your agents can reach you here. This is how a question from them will look." }
         return "\(andList(agents)) can reach you here. This is how a question from them will look."
     }
+    // A Focus holds CELLO back unless the person adds it to that Focus's allowed apps. No app can add itself.
+    public static let focusTitle = "Let questions through Focus?"
+    public static let focusBody = "When a Focus is on, macOS holds CELLO back. To let questions through, choose the Focus in Focus settings and add CELLO to its allowed apps. News always waits."
+    public static let focusOpen = "Open Focus settings"
+    // System Settings › Focus, the list of Focuses. There's no link to one Focus's allowed apps.
+    public static let focusSettingsURL = "x-apple.systempreferences:com.apple.Focus-Settings.extension"
     public static func joinedTitle(_ agent: String) -> String { "\(agent) can reach you here now" }
     // The design's line, with the agent's name for "her", since the app can't know an agent's pronoun.
     public static func joinedBody(_ agent: String) -> String { "Not you? Open CELLO › Settings to remove \(agent)." }

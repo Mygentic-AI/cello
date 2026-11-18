@@ -33,6 +33,8 @@ public struct BannerPlan: Equatable, Sendable {
     public let sound: Bool
     // For Reply: the agent the text box names.
     public let replyTo: String?
+    // Comes through a Focus that lets CELLO through. News never does: it waits, even then.
+    public let breaksThrough: Bool
 
     // Banners with the same buttons share one category, so each distinct set of buttons is registered once.
     public var category: String {
@@ -44,13 +46,14 @@ public struct BannerPlan: Equatable, Sendable {
         return "b-" + String(hash, radix: 16)
     }
 
-    public init(itemID: Int?, title: String, body: String, buttons: [BannerButton], sound: Bool, replyTo: String?) {
+    public init(itemID: Int?, title: String, body: String, buttons: [BannerButton], sound: Bool, replyTo: String?, breaksThrough: Bool = true) {
         self.itemID = itemID
         self.title = title
         self.body = body
         self.buttons = buttons
         self.sound = sound
         self.replyTo = replyTo
+        self.breaksThrough = breaksThrough
     }
 
     public static let maxBannerChoices = 2
@@ -70,7 +73,7 @@ public struct BannerPlan: Equatable, Sendable {
             // Only a decision makes a sound.
             return BannerPlan(itemID: item.id, title: Copy.requestTitle(item.agent), body: item.text, buttons: buttons, sound: true, replyTo: item.agent)
         case .message:
-            return BannerPlan(itemID: item.id, title: Copy.messageTitle(item.agent), body: item.text, buttons: [.reply], sound: false, replyTo: item.agent)
+            return BannerPlan(itemID: item.id, title: Copy.messageTitle(item.agent), body: item.text, buttons: [.reply], sound: false, replyTo: item.agent, breaksThrough: false)
         case .test:
             return BannerPlan(itemID: item.id, title: Copy.testTitle(item.agent), body: item.text, buttons: [], sound: false, replyTo: nil)
         }
@@ -83,6 +86,8 @@ public struct SummaryPlan: Equatable, Sendable {
     public let title: String
     public let body: String
     public let sound: Bool
+    // A summary with a question in it comes through a Focus that lets CELLO through; one of news only waits.
+    public var breaksThrough: Bool { sound }
 
     public init(itemIDs: [Int], title: String, body: String, sound: Bool) {
         self.itemIDs = itemIDs

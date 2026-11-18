@@ -25,13 +25,13 @@ guard let at = args.firstIndex(of: "--socket"), at + 1 < args.count else {
 }
 
 func plan(_ p: BannerPlan) -> [String: Any] {
-    ["item_id": p.itemID as Any, "title": p.title, "body": p.body, "buttons": p.buttons.map(\.title), "button_ids": p.buttons.map(\.identifier), "sound": p.sound, "category": p.category]
+    ["item_id": p.itemID as Any, "title": p.title, "body": p.body, "buttons": p.buttons.map(\.title), "button_ids": p.buttons.map(\.identifier), "sound": p.sound, "category": p.category, "breaks_through": p.breaksThrough]
 }
 
 func describe(_ effect: Effect) -> [String: Any] {
     switch effect {
     case let .banner(p): return ["effect": "banner", "plan": plan(p)]
-    case let .summary(s): return ["effect": "summary", "item_ids": s.itemIDs, "title": s.title, "body": s.body, "sound": s.sound]
+    case let .summary(s): return ["effect": "summary", "item_ids": s.itemIDs, "title": s.title, "body": s.body, "sound": s.sound, "breaks_through": s.breaksThrough]
     case let .withdraw(id): return ["effect": "withdraw", "item_id": id]
     case let .joined(agent): return ["effect": "joined", "agent_id": agent.agentID, "title": Copy.joinedTitle(agent.name), "body": Copy.joinedBody(agent.name)]
     case let .ack(id): return ["effect": "ack", "item_id": id]

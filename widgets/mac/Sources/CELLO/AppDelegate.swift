@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         case let .withdraw(itemID):
             banners.withdraw(itemID)
         case let .joined(agent):
-            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody(agent.name))
+            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody(agent.name), breaksThrough: false)
         case .ack:
             break
         }

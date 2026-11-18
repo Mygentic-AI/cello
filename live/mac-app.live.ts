@@ -142,6 +142,8 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   assert.equal(summary["title"], "1 question waited while you were away");
   assert.match(summary["body"] as string, /^Ann, (just now|1 minute ago)\. Ann, (just now|1 minute ago)\.$/);
   assert.equal(summary["sound"], true);
+  // With a question in it, it comes through a Focus that lets CELLO through.
+  assert.equal(summary["breaks_through"], true);
   assert.ok(!app.events.some((e) => e["effect"] === "banner"), "no banner each");
   let state = await app.run({ do: "state" });
   assert.deepEqual([state["connection"], state["look"]], ["connected", "waiting"]);
@@ -156,8 +158,8 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   const from2 = app.events.length;
   const asked = await notify(["Cy wants Thursday. May I agree?", "--kind", "request", "--choices", "Agree|Disagree", "--session-id", session], "Ann");
   assert.equal(asked["sent"], true, JSON.stringify(asked));
-  const two = (await app.waitFor("the two-choice banner", (e) => e["effect"] === "banner", from2))["plan"] as { item_id: number; title: string; buttons: string[]; sound: boolean };
-  assert.deepEqual([two.title, two.buttons, two.sound], ["Ann needs your decision", ["Agree", "Disagree", "Reply…"], true]);
+  const two = (await app.waitFor("the two-choice banner", (e) => e["effect"] === "banner", from2))["plan"] as { item_id: number; title: string; buttons: string[]; sound: boolean; breaks_through: boolean };
+  assert.deepEqual([two.title, two.buttons, two.sound, two.breaks_through], ["Ann needs your decision", ["Agree", "Disagree", "Reply…"], true, true]);
   state = await app.run({ do: "state" });
   const card = (state["waiting"] as { id: number; talking: string }[]).find((w) => w.id === two.item_id);
   assert.equal(card?.talking, "Talking to “Cy”, a name it gave itself, not checked");
