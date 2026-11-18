@@ -107,6 +107,12 @@ public final class Controller {
 
     // The person clicked Try again on the struck-through look.
     public func retryStart() {
+        if case .unreachable(.subscribeRefused) = state.connection {
+            state.connection = .connected
+            changed()
+            client.send(.subscribe) { [weak self] reply in self?.subscribed(reply) }
+            return
+        }
         if case .unreachable(.mismatch) = state.connection {
             state.connection = .connecting
             changed()
@@ -133,7 +139,15 @@ public final class Controller {
     }
 
     private func subscribed(_ reply: Reply) {
-        guard reply.ok else { return }
+        guard reply.ok else {
+            // A dropped line reconnects and subscribes again. A refusal would leave the app looking connected with
+            // nothing able to arrive, so it's said.
+            if reply.error != "not_connected" {
+                state.connection = .unreachable(.subscribeRefused(reply.message ?? reply.error ?? "refused"))
+                changed()
+            }
+            return
+        }
         state.subscribed(reply)
         changed()
         DispatchQueue.main.asyncAfter(deadline: .now() + catchUpWindow) { [weak self] in

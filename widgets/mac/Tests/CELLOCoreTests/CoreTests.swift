@@ -426,3 +426,60 @@ final class ControllerConnectTests: XCTestCase {
         XCTAssertTrue(Copy.cannotConnect(ENAMETOOLONG).hasPrefix("This app can't connect to CELLO: "))
     }
 }
+
+final class ControllerDoorTests: XCTestCase {
+    func testARefusedSubscribeIsSaidNotShownAsConnected() {
+        let door = FakeDoor()
+        defer { door.close() }
+        door.answer = { r in
+            r["op"] as? String == "subscribe"
+                ? ["op": "result", "ref": r["ref"] ?? "", "ok": false, "error": "internal_error", "message": "That failed inside CELLO: disk full"]
+                : ["op": "result", "ref": r["ref"] ?? "", "ok": true]
+        }
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil { c.state.connection == .unreachable(.subscribeRefused("That failed inside CELLO: disk full")) }, "\(c.state.connection)")
+        XCTAssertEqual(c.state.look(at: Date()), .unreachable)
+    }
+
+    // The door takes a reply's ref as its id, so a line dropped before the answer is resent with the same ref and
+    // reaches the agent once.
+    func testAReplyResentAfterADroppedLineKeepsItsRef() {
+        let door = FakeDoor()
+        defer { door.close() }
+        var dropped = false
+        door.answer = { r in
+            switch r["op"] as? String {
+            case "subscribe":
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+            case "reply" where !dropped:
+                dropped = true
+                return nil
+            default:
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann"]
+            }
+        }
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil { c.state.agents.count == 1 })
+        var first: Bool?
+        c.message("aa", text: "Book the room.") { ok, _ in first = ok }
+        XCTAssertTrue(waitUntil { first != nil })
+        XCTAssertEqual(first, false, "the line dropped before an answer")
+        XCTAssertTrue(waitUntil { c.state.connection == .connected && door.requests.filter { $0["op"] as? String == "subscribe" }.count == 2 })
+        var second: Bool?
+        c.message("aa", text: "Book the room.") { ok, _ in second = ok }
+        XCTAssertTrue(waitUntil { second != nil })
+        XCTAssertEqual(second, true)
+        let refs = door.requests.filter { $0["op"] as? String == "reply" }.map { $0["ref"] as? String }
+        XCTAssertEqual(refs.count, 2)
+        XCTAssertEqual(refs[0], refs[1], "the same ref both times")
+        var third: Bool?
+        c.message("aa", text: "Book the room.") { ok, _ in third = ok }
+        XCTAssertTrue(waitUntil { third != nil })
+        let after = door.requests.filter { $0["op"] as? String == "reply" }.map { $0["ref"] as? String }
+        XCTAssertNotEqual(after[2], after[0], "once taken, the same words again are a new message")
+    }
+}

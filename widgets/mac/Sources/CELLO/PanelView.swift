@@ -161,6 +161,9 @@ struct PanelView: View {
                     Text(Copy.loginSaid(said)).font(.system(size: 11, design: .monospaced)).foregroundColor(muted).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 Text(Copy.unreachableFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+            case let .subscribeRefused(message):
+                Text(message).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
             case let .cannotConnect(code):
                 Text(Copy.cannotConnect(code)).font(.system(size: 13))
                 Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)

@@ -10,6 +10,8 @@ public enum Unreachable: Equatable, Sendable {
     case noDoor
     // Connecting fails for a reason other than CELLO not running, by its errno.
     case cannotConnect(Int32)
+    // Connected, but the door refused to subscribe: its own words.
+    case subscribeRefused(String)
     // The app was never told how to start CELLO.
     case unknownInstall
     // The door speaks another version: its own words say which side to update.
