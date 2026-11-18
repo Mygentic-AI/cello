@@ -22,6 +22,12 @@ private func markTime(_ date: Date) -> String {
     Calendar.current.isDateInToday(date) ? markClock.string(from: date) : markDay.string(from: date)
 }
 
+// Keys and mouse buttons pressed on this Mac since it started, in any app. Reading the count needs no permission.
+private func pressesSoFar() -> UInt64 {
+    let kinds: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+    return kinds.reduce(0) { $0 + UInt64(CGEventSource.counterForEventType(.hidSystemState, eventType: $1)) }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -67,13 +73,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         // The panel follows its content's size, so it grows with what's waiting and with a long reply.
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
-        clickAway = ClickAway(start: { [weak self] in self?.watchMouse() }, stop: { [weak self] in self?.unwatchMouse() })
+        clickAway = ClickAway(start: { [weak self] in self?.watchMouse() }, stop: { [weak self] in self?.unwatchMouse() }, presses: pressesSoFar)
         clickAway.close = { [weak self] in self?.popover.performClose(nil) }
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.clickAway.appDeactivated()
         }
+        // After a banner click macOS gives the front back to the app that had it, so this app is no longer active and
+        // a later Command-Tab to a third app would resign nothing. Any other app coming forward counts the same.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self?.clickAway.appDeactivated()
+        }
 
-        banners.onOpenPanel = { [weak self] in self?.showPanel() }
+        banners.onOpenPanel = { [weak self] in
+            self?.clickAway.openingFromBanner()
+            self?.showPanel()
+        }
         banners.onPick = { [weak self] id, choice in self?.pickFromBanner(id, choice) }
         banners.onReply = { [weak self] id, text in self?.replyFromBanner(id, text) }
 
@@ -166,6 +182,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         if window === statusItem.button?.window { return .onMark }
         if window === popover.contentViewController?.view.window { return .insidePanel }
         return window.styleMask.contains(.titled) ? .elsewhere : .insidePanel
+    }
+
+    // Every close passes here, the transient popover's own included, so a panel a banner just opened outlasts the
+    // front being handed back.
+    func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        clickAway.mayClose()
     }
 
     func popoverDidShow(_ notification: Notification) {

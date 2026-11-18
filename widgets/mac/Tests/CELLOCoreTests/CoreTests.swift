@@ -674,7 +674,7 @@ final class ClickAwayTests: XCTestCase {
     // The owner's repro: it closed until a button inside it was clicked, and after that an outside click did nothing.
     func testAnOutsideClickClosesThePanelAfterAClickInsideItAndAfterTheMarkChanged() {
         var started = 0, stopped = 0, closed = 0
-        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 })
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 })
         away.close = { closed += 1 }
         away.panelShown()
         away.click(.insidePanel)      // answered Yes
@@ -689,7 +689,7 @@ final class ClickAwayTests: XCTestCase {
 
     func testTheWatchStartsAgainEachTimeThePanelOpensAndIsIdleWhileItIsShut() {
         var started = 0, stopped = 0, closed = 0
-        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 })
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 })
         away.close = { closed += 1 }
         away.click(.elsewhere)
         away.appDeactivated()
@@ -703,6 +703,55 @@ final class ClickAwayTests: XCTestCase {
             away.panelClosed()
         }
         XCTAssertEqual([started, stopped, closed], [3, 3, 3])
+    }
+
+    // The owner's flash, as the Mac's log recorded it: the banner click's press and release, CELLO brought forward,
+    // and 62 ms later macOS handing the front back to iTerm with nothing pressed. Here every close macOS asks for goes
+    // through mayClose, as popoverShouldClose does in the app.
+    func testAPanelABannerOpenedOutlastsTheFrontBeingHandedBack() {
+        var pressed: UInt64 = 40
+        var closed = 0
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        away.close = { if away.mayClose() { closed += 1 } }
+        pressed += 1                  // the click on the banner, before it opens anything
+        away.openingFromBanner()
+        away.panelShown()
+        away.appDeactivated()         // iTerm made front again
+        XCTAssertFalse(away.mayClose(), "the transient popover's own close is refused too")
+        XCTAssertEqual(closed, 0)
+        XCTAssertTrue(away.watching)
+        pressed += 1                  // then a real click somewhere else
+        away.click(.elsewhere)
+        XCTAssertEqual(closed, 1)
+    }
+
+    func testAfterAPressABannerPanelClosesWhenAnotherAppComesForward() {
+        var pressed: UInt64 = 0
+        var closed = 0
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        away.close = { if away.mayClose() { closed += 1 } }
+        away.openingFromBanner()
+        away.panelShown()
+        away.appDeactivated()
+        XCTAssertEqual(closed, 0)
+        pressed += 2                  // typed in the reply box, then Command-Tab
+        away.appDeactivated()
+        XCTAssertEqual(closed, 1)
+    }
+
+    // The hold is for that one opening. Opened from the mark next, it closes on deactivation as before.
+    func testTheHoldEndsWhenThePanelClosesAndNeverTouchesAMarkOpen() {
+        var closed = 0
+        let away = ClickAway(start: {}, stop: {}, presses: { 7 })
+        away.close = { if away.mayClose() { closed += 1 } }
+        away.openingFromBanner()
+        away.panelShown()
+        away.appDeactivated()
+        XCTAssertEqual(closed, 0)
+        away.panelClosed()            // closed from the mark: the mark's click is a press in the app
+        away.panelShown()
+        away.appDeactivated()
+        XCTAssertEqual(closed, 1)
     }
 }
 
