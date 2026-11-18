@@ -143,6 +143,7 @@ public enum Copy {
     public static let add = "Add"
     public static let done = "Done"
     public static func addLocked(_ agent: String) -> String { "\(agent) is locked against changes from here, so it can only be added from Terminal on this Mac." }
+    public static func addedUntold(_ agent: String) -> String { "\(agent) can reach you here now. Your other ways of hearing from \(agent) couldn't be told about it just now." }
     public static func addFailed(_ agent: String) -> String { "\(agent) couldn't be added right now, so nothing changed. Try again in a moment." }
     public static let quit = "Quit CELLO"
     public static let quitTitle = "Quit CELLO?"

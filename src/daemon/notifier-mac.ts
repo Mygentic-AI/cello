@@ -358,9 +358,9 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     if (this.#ctx.host.notifiersLocked(theirs.agentHex)) {
       throw new LocalError("notifiers_locked", `${theirs.name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be added for it from the app. A person at a terminal can: cello notifier-add mac --route-only --agent ${theirs.agentHex}`);
     }
-    await this.#ctx.addRoute(theirs.agentHex);
-    logEvent("notifier.added_from_app", { agent: theirs.agentHex });
-    return { fields: { added: { agent_id: theirs.agentHex, agent: theirs.name } } };
+    // A route that couldn't be told of the new one is said, never swallowed: it's how a tricked add would show.
+    const result = await this.#ctx.addRoute(theirs.agentHex) as { told_existing?: string[]; could_not_tell?: { notifier: string }[] };
+    return { fields: { added: { agent_id: theirs.agentHex, agent: theirs.name }, told_existing: result.told_existing ?? [], could_not_tell: (result.could_not_tell ?? []).map((u) => u.notifier) } };
   }
 
   #holds(agentHex: string, name: string): boolean {

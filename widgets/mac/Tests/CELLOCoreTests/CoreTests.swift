@@ -820,6 +820,8 @@ final class AddAgentTests: XCTestCase {
             switch (r["op"] as? String, r["agent"] as? String) {
             case ("subscribe", _): return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
             case ("add_agent", "cc"): return ["op": "result", "ref": r["ref"] ?? "", "ok": false, "error": "notifiers_locked", "message": "The door's words, for the command line."]
+            case ("add_agent", "dd"): return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "added": ["agent_id": "dd", "agent": "Dan"], "told_existing": [String](), "could_not_tell": ["telegram"]]
+            case ("add_agent", "ee"): return ["op": "result", "ref": r["ref"] ?? "", "ok": false, "error": "notifier_exists", "message": "Eve already has a notifier named mac."]
             case ("add_agent", _): return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "added": ["agent_id": "bb", "agent": "Bea"]]
             default: return ["op": "result", "ref": r["ref"] ?? "", "ok": true]
             }
@@ -834,15 +836,25 @@ final class AddAgentTests: XCTestCase {
         defer { c.stop() }
         XCTAssertTrue(waitUntil(3) { c.state.connection == .connected && !c.state.catchingUp })
         var answer: String?? = .none
-        c.addAgent("cc", name: "Cy") { answer = .some($0) }
+        c.addAgent("cc", name: "Cy") { problem, _ in answer = .some(problem) }
         XCTAssertTrue(waitUntil { answer != nil })
         XCTAssertEqual(answer, .some(Copy.addLocked("Cy")))
         answer = .none
-        c.addAgent("bb", name: "Bea") { answer = .some($0) }
+        c.addAgent("bb", name: "Bea") { problem, _ in answer = .some(problem) }
         XCTAssertTrue(waitUntil { answer != nil })
         XCTAssertEqual(answer, .some(nil))
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         XCTAssertEqual(c.state.agents.map(\.name), ["Ann", "Bea"])
         XCTAssertFalse(effects.seen.contains { if case .joined = $0 { return true } else { return false } }, "no Not you? banner for the agent just added")
+        // Added, but a route it already had couldn't be told: said, never a clean success.
+        var note: String?? = .none
+        c.addAgent("dd", name: "Dan") { _, n in note = .some(n) }
+        XCTAssertTrue(waitUntil { note != nil })
+        XCTAssertEqual(note, .some(Copy.addedUntold("Dan")))
+        // "Already exists" counts as done only when the agent really is on the Mac now.
+        answer = .none
+        c.addAgent("ee", name: "Eve") { problem, _ in answer = .some(problem) }
+        XCTAssertTrue(waitUntil { answer != nil })
+        XCTAssertEqual(answer, .some(Copy.addFailed("Eve")))
     }
 }

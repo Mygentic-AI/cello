@@ -1092,14 +1092,21 @@ test("the app lists the agents on this machine and adds one to the Mac as notifi
   // Unlocked: added through the shared add, so Telegram hears of it and the app hears she joined.
   locked.delete(AGENT2);
   const added = await app.request({ op: "add_agent", agent: AGENT2 });
-  assert.deepEqual([added["ok"], (added["added"] as { agent: string }).agent], [true, "Bea"]);
+  assert.deepEqual([added["ok"], (added["added"] as { agent: string }).agent, added["told_existing"], added["could_not_tell"]], [true, "Bea", ["telegram"], []]);
   await app.waitFor((f) => f["op"] === "agent_added" && f["agent_id"] === AGENT2, "the app to hear Bea joined");
   assert.deepEqual((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.map((n) => n.type).sort(), ["mac", "telegram"]);
   assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Bea: mac, the CELLO app on this Mac\./);
+  // A route that can't be told is named in the answer, so the app can say so.
+  notifiers.remove(AGENT, "mac");
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  refuseChat = "55";
+  const untold = await app.request({ op: "add_agent", agent: AGENT });
+  refuseChat = null;
+  assert.deepEqual([untold["ok"], untold["told_existing"], untold["could_not_tell"]], [true, [], ["telegram"]]);
   const again = await app.request({ op: "add_agent", agent: AGENT2 });
   assert.deepEqual([again["ok"], again["error"]], [false, "notifier_exists"]);
   const after = await app.request({ op: "agents" });
-  assert.deepEqual([(after["agents"] as { agent: string }[]).map((a) => a.agent), after["others"]], [["Ann", "Bea"], []]);
+  assert.deepEqual([(after["agents"] as { agent: string }[]).map((a) => a.agent).sort(), after["others"]], [["Ann", "Bea"], []]);
   await app.close();
 });
 

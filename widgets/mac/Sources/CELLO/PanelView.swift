@@ -70,18 +70,24 @@ final class PanelModel: ObservableObject {
         loadAgents()
     }
 
-    func loadAgents() {
+    // keepLine: a note from an add just made stays, unless the list itself fails.
+    func loadAgents(keepLine: Bool = false) {
         controller.listAgents { [weak self] _, others, problem in
             self?.others = others
-            self?.agentsLine = problem
+            if problem != nil || !keepLine { self?.agentsLine = problem }
         }
     }
 
     func addAgent(_ agent: LocalAgent) {
         agentProblems[agent.agentID] = nil
-        controller.addAgent(agent.agentID, name: agent.name) { [weak self] problem in
+        controller.addAgent(agent.agentID, name: agent.name) { [weak self] problem, note in
             guard let self else { return }
-            if let problem { self.agentProblems[agent.agentID] = problem } else { self.loadAgents() }
+            if let problem {
+                self.agentProblems[agent.agentID] = problem
+            } else {
+                self.agentsLine = note
+                self.loadAgents(keepLine: note != nil)
+            }
         }
     }
 

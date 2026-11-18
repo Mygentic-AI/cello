@@ -356,8 +356,9 @@ public final class Controller {
         }
     }
 
-    // Adds the Mac for an agent on this machine. It joins quietly: the person just chose it.
-    public func addAgent(_ agentID: String, name: String, done: @escaping (String?) -> Void) {
+    // Adds the Mac for an agent on this machine. It joins quietly: the person just chose it. done gets the line to show
+    // when it failed, or when it worked but a route the agent already had couldn't be told.
+    public func addAgent(_ agentID: String, name: String, done: @escaping (_ problem: String?, _ note: String?) -> Void) {
         state.addingStarted(agentID)
         client.send(.addAgent(agentID: agentID)) { [weak self] reply in
             guard let self else { return }
@@ -366,15 +367,16 @@ public final class Controller {
                 self.run(self.state.agentAdded(Agent(agentID: agentID, name: name)))
                 self.state.addingEnded(agentID)
                 self.changed()
-                done(nil)
+                let untold = reply.fields["could_not_tell"] as? [String] ?? []
+                done(nil, untold.isEmpty ? nil : Copy.addedUntold(name))
             } else {
                 self.state.addingEnded(agentID)
                 switch reply.error {
-                case "not_connected": done(Copy.notConnected)
-                case "notifiers_locked": done(Copy.addLocked(name))
-                // Added meanwhile, from Terminal or another app: what the person wanted is so.
-                case "notifier_exists": done(nil)
-                default: done(Copy.addFailed(name))
+                case "not_connected": done(Copy.notConnected, nil)
+                case "notifiers_locked": done(Copy.addLocked(name), nil)
+                // Added meanwhile, from Terminal or another app, is what the person wanted. Anything else by that name isn't.
+                case "notifier_exists" where self.state.agents.contains(where: { $0.agentID == agentID }): done(nil, nil)
+                default: done(Copy.addFailed(name), nil)
                 }
             }
         }
