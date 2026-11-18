@@ -77,7 +77,9 @@ cello notifier-add mac --same-as Ann --agent Bea
 
 Or tell the agent "put CELLO on my Mac", and it does the same.
 
-The app doesn't come with the npm package yet. Until it does, it comes from a checkout of this repository: there `notifier-add mac` uses the app built in `widgets/mac/build`, and without one it says so and changes nothing. To build the app yourself from this repository, with only the Xcode command-line tools (`xcode-select --install`), add `--build`, or build it with `widgets/mac/scripts/assemble.sh` and give it with `--app <path to CELLO.app>`. The app is one binary for Apple silicon and Intel, signed ad hoc.
+The app comes ready-built. On a Mac, `npm i -g @cello-protocol/cli` also installs `@cello-protocol/mac-app`, which holds it, and `notifier-add mac` copies it from there. Other systems skip that package. The app is one binary for Apple silicon and Intel, signed ad hoc. If the package is missing, for example because optional packages were turned off, it says so and changes nothing.
+
+To build the app yourself, from a checkout of this repository with only the Xcode command-line tools (`xcode-select --install`), add `--build`. Or build it with `widgets/mac/scripts/assemble.sh` and give it with `--app <path to CELLO.app>`.
 
 What you see:
 
