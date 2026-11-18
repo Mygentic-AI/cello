@@ -1,9 +1,11 @@
-# Publishes the client to npm's `beta` tag when a v* tag is pushed.
+# Publishes the client and its Mac app to npm's `beta` tag when a v* tag is pushed.
 #
 # Always `pnpm publish`, never `npm publish`.
 #
-# Before tagging: run scripts/pre-tag-gate.sh on the commit, and run the "npm credential check" workflow once (it has never run here).
-# The first publish also needs the repo secret NPM_TOKEN, an npm automation token. That secret is Andre's to add.
+# Before tagging: run scripts/pre-tag-gate.sh on the commit, run the "npm credential check" workflow, and run this workflow by
+# hand on main ("Run workflow"): a manual run builds and checks everything, the Mac app included, and publishes nothing.
+# A tag publishes in this order: every check, then the Mac app, then the cli, so nothing reaches npm before the checks pass
+# and the cli is never on npm naming an app that isn't.
 # Nothing publishes until a tag equal to `v<version in package.json>` is pushed, and the release check below refuses a build whose
 # shipped issuer list or Concierge address is empty, so merging this does not release anything.
 # This publishes to `beta` only. `latest` moves with the "npm promote to latest" workflow.
@@ -12,25 +14,57 @@ name: Publish
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 jobs:
-  # The prebuilt Mac app, @cello-protocol/mac-app, which the cli names as an optional dependency at exactly this version.
-  # It goes first, so the cli is never on npm naming an app that isn't. Only a Mac can build it: macOS runners are free for
-  # a public repo. Its first run on a runner is the first proof the app builds there.
-  mac-app:
-    name: Publish the Mac app to npm (beta)
-    runs-on: macos-15
+  verify:
+    name: Checks, before anything is published
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: The tag matches both packages' version
+      - name: The packages may be published, and the tag matches both versions
         run: |
-          want="v$(node -p "require('./package.json').version")"
-          mac="v$(node -p "require('./mac-app/package.json').version")"
-          if [ "$GITHUB_REF_NAME" != "$want" ] || [ "$mac" != "$want" ]; then
-            echo "FAIL: the tag is $GITHUB_REF_NAME, package.json says $want and mac-app/package.json says $mac. All three must match."
+          if [ "$(node -p "require('./package.json').private === true")" = "true" ]; then
+            echo "FAIL: package.json still says private: true. Removing it is the last step before going public."
             exit 1
           fi
+          want="v$(node -p "require('./package.json').version")"
+          mac="v$(node -p "require('./mac-app/package.json').version")"
+          if [ "$mac" != "$want" ]; then
+            echo "FAIL: package.json says $want and mac-app/package.json says $mac. Bump both."
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "FAIL: the tag is $GITHUB_REF_NAME, but package.json says $want."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      - run: pnpm install --frozen-lockfile
+      # Empty shipped list or empty Concierge address, or a list the production roots didn't sign: refused before anything is built.
+      - run: node tools/check-release.ts
+      - run: pnpm run test
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+
+  # The prebuilt Mac app, @cello-protocol/mac-app, which the cli names as an optional dependency at exactly this version.
+  # Only a Mac can build it: macOS runners are free for a public repo.
+  mac-app:
+    name: Build, check and publish the Mac app (beta)
+    needs: verify
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
 
       # The Swift the app is built and tested with. A newer image default could build differently, so it's named.
       - name: Xcode 16.4
@@ -58,6 +92,10 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: The app's own tests
+        if: steps.published.outputs.skip != 'true'
+        run: swift test --package-path widgets/mac
+
       # prepack builds the app with widgets/mac/scripts/assemble.sh and refuses one without both architectures, a valid
       # ad-hoc signature, or this version.
       - name: Build and pack the app
@@ -71,46 +109,36 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: sh mac-app/check-tarball.sh "$TARBALL"
 
+      # For a tarball, pnpm hands it to npm unchanged: no repacking, no scripts.
       - name: Publish
-        if: steps.published.outputs.skip != 'true'
+        if: github.event_name == 'push' && steps.published.outputs.skip != 'true'
         run: pnpm publish "$TARBALL" --access public --no-git-checks --tag beta
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # The one npm serves, checked the same way, before the cli is allowed to name it.
       - name: The published app is the one checked
+        if: github.event_name == 'push'
         run: |
           version=$(node -p "require('./mac-app/package.json').version")
           mkdir -p "$RUNNER_TEMP/served"
           for attempt in $(seq 1 60); do
-            if served=$(cd "$RUNNER_TEMP/served" && npm pack "@cello-protocol/mac-app@$version" 2>/dev/null | tail -1) && [ -n "$served" ]; then
+            if served=$(cd "$RUNNER_TEMP/served" && npm pack "@cello-protocol/mac-app@$version" 2>"$RUNNER_TEMP/pack-error" | tail -1) && [ -n "$served" ]; then
               sh mac-app/check-tarball.sh "$RUNNER_TEMP/served/$served"
               exit $?
             fi
-            echo "@cello-protocol/mac-app@$version isn't served yet (attempt $attempt of 60)"
+            echo "@cello-protocol/mac-app@$version isn't served yet (attempt $attempt of 60): $(grep -m1 'npm error' "$RUNNER_TEMP/pack-error" || true)"
             sleep 10
           done
           echo "FAIL: @cello-protocol/mac-app@$version is missing after 10 minutes. Re-run this job: it skips publishing a version that's there."
           exit 1
 
   publish:
-    name: Publish to npm (beta)
+    name: Publish the cli to npm (beta)
     needs: mac-app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: The package may be published, and the tag matches its version
-        run: |
-          if [ "$(node -p "require('./package.json').private === true")" = "true" ]; then
-            echo "FAIL: package.json still says private: true. Removing it is the last step before going public."
-            exit 1
-          fi
-          want="v$(node -p "require('./package.json').version")"
-          if [ "$GITHUB_REF_NAME" != "$want" ]; then
-            echo "FAIL: the tag is $GITHUB_REF_NAME, but package.json says $want."
-            exit 1
-          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -123,11 +151,6 @@ jobs:
           run_install: false
 
       - run: pnpm install --frozen-lockfile
-      # Empty shipped list or empty Concierge address, or a list the production roots didn't sign: refused before anything is built.
-      - run: node tools/check-release.ts
-      - run: pnpm run test
-      - run: pnpm run lint
-      - run: pnpm run typecheck
       - run: pnpm run build
 
       # v1 once shipped a package holding one file where the last held 128, with every test green.
@@ -154,6 +177,7 @@ jobs:
           fi
 
       - name: Publish
+        if: github.event_name == 'push'
         run: pnpm publish --access public --no-git-checks --tag beta
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -161,6 +185,7 @@ jobs:
       # Asks for the exact version in the registry's time map, because a dist-tag read can be stale.
       # npm can take minutes to list an accepted upload, so a 60-second wait failed good releases on v1.
       - name: The version is on the registry
+        if: github.event_name == 'push'
         run: |
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
