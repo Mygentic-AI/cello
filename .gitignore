@@ -4,3 +4,23 @@ dist/
 .DS_Store
 .claude/
 __pycache__/
+
+# Secrets and key material: never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# CELLO's own data folder, if a test or run is pointed inside the repo
+.cello/
+
+# Build and test output
+coverage/
+*.tsbuildinfo
+
+# Editors
+.vscode/
+.idea/
