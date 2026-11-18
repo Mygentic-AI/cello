@@ -204,10 +204,11 @@ EOF
     echo "Ann and Rex already have a Mac route with no app, so notify says queued. Don't run the install command on this run."
   else
     cat <<EOF
-To put the app on this Mac against this throwaway CELLO, from $here:
-  CELLO_HOME=$home node src/cli.ts notifier-add mac --app widgets/mac/build/CELLO.app --agent Ann
-  CELLO_HOME=$home node src/cli.ts notifier-add mac --same-as Ann --agent Rex
+To put the app on this Mac against this throwaway CELLO:
+  CELLO_HOME="$home" node "$here/src/cli.ts" notifier-add mac --app "$here/widgets/mac/build/CELLO.app" --agent Ann
+  CELLO_HOME="$home" node "$here/src/cli.ts" notifier-add mac --same-as Ann --agent Rex
 EOF
+    [ -d "$here/widgets/mac/build/CELLO.app" ] || echo "No CELLO.app is built yet: run widgets/mac/scripts/assemble.sh first."
     if [ -s "$run/before" ] && grep -q '=1' "$run/before"; then
       echo
       echo "Warning: this Mac already has $( grep -q 'app_before=1' "$run/before" && echo "$app_path ")$( grep -q 'launch_before=1' "$run/before" && echo "and $launch_file")."
@@ -286,8 +287,12 @@ down() {
   kill_ours "$issuer_shell" "issuer-service.ts"
   kill_ours "$issuer" "issuer-service.ts"
   if [ -f "$run/server.env" ] && [ -d "$server_copy" ]; then
-    compose down -v --remove-orphans --rmi local > "$run/docker-down.log" 2>&1 || { tail -20 "$run/docker-down.log" >&2; echo "docker compose down failed; see $run/docker-down.log." >&2; }
-    echo "Removed the Docker project $COMPOSE_PROJECT_NAME, its volumes and its images."
+    if compose down -v --remove-orphans --rmi local > "$run/docker-down.log" 2>&1; then
+      echo "Removed the Docker project $COMPOSE_PROJECT_NAME, its volumes and its images."
+    else
+      tail -20 "$run/docker-down.log" >&2
+      echo "docker compose down failed; see $run/docker-down.log." >&2
+    fi
   fi
   rm -f "$run/pids"
   echo "The run folder stays for its logs: $run. Remove it with: rm -rf $run"
