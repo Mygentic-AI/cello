@@ -166,9 +166,10 @@ export class Notifiers {
     const stop = reader.signal;
     let retry = FIRST_RETRY_MS;
     // So typing "/" in the chat offers /agents. It's only a hint: the command works typed in full without it.
-    const first = this.#holders().find((h) => h.botId === botId);
-    if (first) {
-      setCommands(this.#telegram, first.token, [{ command: "agents", description: "Choose which agent your messages go to" }])
+    // The newest token, as the reader uses, since an older one may have been replaced at BotFather.
+    const newest = this.#holders().filter((h) => h.botId === botId).at(-1);
+    if (newest) {
+      setCommands(this.#telegram, newest.token, [{ command: "agents", description: "Choose which agent your messages go to" }])
         .catch((err: unknown) => logEvent("notifier.commands_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) }));
     }
     while (!stop.aborted) {
@@ -315,6 +316,8 @@ export class Notifiers {
       await sendButtons(this.#telegram, here.token, here.chat, "Who should your messages go to? Pick one. Replying to a message always goes to whoever sent it.", buttons, true);
     } catch (err: unknown) {
       logEvent("notifier.answer_failed", { bot: here.botId, message: err instanceof Error ? err.message : String(err) });
+      // /agents has no other answer, so say something rather than leave the person wondering.
+      await this.#answer(here, `The list of agents couldn't be sent. Send /agents again. Agents in this chat: ${buttons.map((b) => b.text).join(", ")}.`, true);
     }
   }
 
