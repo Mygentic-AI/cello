@@ -14,8 +14,88 @@ on:
     tags: ['v*']
 
 jobs:
+  # The prebuilt Mac app, @cello-protocol/mac-app, which the cli names as an optional dependency at exactly this version.
+  # It goes first, so the cli is never on npm naming an app that isn't. Only a Mac can build it: macOS runners are free for
+  # a public repo. Its first run on a runner is the first proof the app builds there.
+  mac-app:
+    name: Publish the Mac app to npm (beta)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches both packages' version
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          mac="v$(node -p "require('./mac-app/package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$want" ] || [ "$mac" != "$want" ]; then
+            echo "FAIL: the tag is $GITHUB_REF_NAME, package.json says $want and mac-app/package.json says $mac. All three must match."
+            exit 1
+          fi
+
+      # The Swift the app is built and tested with. A newer image default could build differently, so it's named.
+      - name: Xcode 16.4
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app || { echo "FAIL: this runner image has no Xcode 16.4. Pick the one the app is tested with."; ls -d /Applications/Xcode*; exit 1; }
+          xcrun swiftc --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      # A re-run after the cli job failed finds this version already published, and a version is never published twice.
+      - name: Is this version already on npm?
+        id: published
+        run: |
+          version=$(node -p "require('./mac-app/package.json').version")
+          if npm view "@cello-protocol/mac-app@$version" version >/dev/null 2>&1; then
+            echo "@cello-protocol/mac-app@$version is already on npm, so it isn't built or published again."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # prepack builds the app with widgets/mac/scripts/assemble.sh and refuses one without both architectures, a valid
+      # ad-hoc signature, or this version.
+      - name: Build and pack the app
+        if: steps.published.outputs.skip != 'true'
+        working-directory: mac-app
+        run: |
+          packed=$(pnpm pack --pack-destination "$RUNNER_TEMP" | tail -1)
+          echo "TARBALL=$packed" >> "$GITHUB_ENV"
+
+      - name: The tarball holds the whole app, runnable and signed, and nothing else
+        if: steps.published.outputs.skip != 'true'
+        run: sh mac-app/check-tarball.sh "$TARBALL"
+
+      - name: Publish
+        if: steps.published.outputs.skip != 'true'
+        run: pnpm publish "$TARBALL" --access public --no-git-checks --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The one npm serves, checked the same way, before the cli is allowed to name it.
+      - name: The published app is the one checked
+        run: |
+          version=$(node -p "require('./mac-app/package.json').version")
+          mkdir -p "$RUNNER_TEMP/served"
+          for attempt in $(seq 1 60); do
+            if served=$(cd "$RUNNER_TEMP/served" && npm pack "@cello-protocol/mac-app@$version" 2>/dev/null | tail -1) && [ -n "$served" ]; then
+              sh mac-app/check-tarball.sh "$RUNNER_TEMP/served/$served"
+              exit $?
+            fi
+            echo "@cello-protocol/mac-app@$version isn't served yet (attempt $attempt of 60)"
+            sleep 10
+          done
+          echo "FAIL: @cello-protocol/mac-app@$version is missing after 10 minutes. Re-run this job: it skips publishing a version that's there."
+          exit 1
+
   publish:
     name: Publish to npm (beta)
+    needs: mac-app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +139,17 @@ jobs:
           echo "$shipped of $built built files are in the tarball"
           if [ "$built" -eq 0 ] || [ "$shipped" -lt "$built" ]; then
             echo "FAIL: packing dropped files, so nothing was published."
+            exit 1
+          fi
+          # The app is its own package. The cli must name it at its own version, never workspace:*, and never carry it.
+          named=$(tar -xzOf "$packed" package/package.json | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).optionalDependencies?.['@cello-protocol/mac-app'] ?? 'missing'))")
+          version=$(node -p "require('./package.json').version")
+          if [ "$named" != "$version" ]; then
+            echo "FAIL: the packed cli names @cello-protocol/mac-app as '$named', not $version."
+            exit 1
+          fi
+          if tar tzf "$packed" | grep -q 'CELLO\.app/'; then
+            echo "FAIL: the cli tarball carries the Mac app, which belongs in @cello-protocol/mac-app."
             exit 1
           fi
 

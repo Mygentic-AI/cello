@@ -1,4 +1,4 @@
-# Moves @cello-protocol/cli from `beta` to `latest`.
+# Moves @cello-protocol/cli, and the Mac app of the same version, from `beta` to `latest`.
 #
 # CI publishes to `beta`, and the install route (`npm i -g @cello-protocol/cli@latest`) reads `latest`, so a release isn't delivered
 # until this runs. Doing it by hand from a laptop needs a local token that expires silently.
@@ -43,7 +43,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           CONFIRM: ${{ inputs.confirm_version }}
-        run: npm dist-tag add "@cello-protocol/cli@$CONFIRM" latest
+        # The cli names the Mac app at its exact version, so this tag is only for anyone reading npm. The app goes first.
+        run: |
+          npm dist-tag add "@cello-protocol/mac-app@$CONFIRM" latest
+          npm dist-tag add "@cello-protocol/cli@$CONFIRM" latest
 
       # npm's CDN can lag a just-set dist-tag, so this retries rather than failing a promotion that took.
       - name: latest resolves to the promoted version

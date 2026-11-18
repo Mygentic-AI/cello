@@ -25,6 +25,8 @@ echo "PRE-TAG GATE: testing $sha, version $version"
 if [ "$(node -p "require('./package.json').private === true")" = "true" ]; then echo "PRE-TAG GATE: FAILED, package.json says private: true." >&2; exit 1; fi
 latest="$(npm view @cello-protocol/cli versions --json 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const v=JSON.parse(d);console.log((Array.isArray(v)?v:[v]).includes(process.argv[1])?'taken':'free')}catch{console.log('free')}})" "$version")"
 if [ "$latest" = "taken" ]; then echo "PRE-TAG GATE: FAILED, @cello-protocol/cli@$version is already on npm. A version is never reused." >&2; exit 1; fi
+mac_version="$(node -p "require('./mac-app/package.json').version")"
+if [ "$mac_version" != "$version" ]; then echo "PRE-TAG GATE: FAILED, mac-app/package.json is $mac_version and package.json is $version. Bump both." >&2; exit 1; fi
 
 step() { echo; echo "-- $1"; shift; "$@" || { echo "PRE-TAG GATE: FAILED at '$*' on $sha. Nothing recorded." >&2; exit 1; }; }
 step "install (frozen lockfile, as CI)" pnpm install --frozen-lockfile
@@ -33,6 +35,14 @@ step "build" pnpm run build
 step "typecheck" pnpm run typecheck
 step "lint" pnpm run lint
 step "test, the whole suite" pnpm run test
+# The publish workflow builds the Mac app on a macOS runner. Building and checking it here first catches a break before the tag.
+if [ "$(uname -s)" = "Darwin" ]; then
+  macpack="$(mktemp -d)"
+  step "the Mac app builds and packs whole" sh -c "cd mac-app && pnpm pack --pack-destination '$macpack' >/dev/null && sh ./check-tarball.sh '$macpack'/cello-protocol-mac-app-$version.tgz"
+  rm -rf "$macpack"
+else
+  echo; echo "-- the Mac app isn't built here: it needs a Mac. The publish workflow builds it on a macOS runner."
+fi
 
 if [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse HEAD)" != "$sha" ]; then
   echo "PRE-TAG GATE: FAILED, the tree or HEAD changed while the gate ran. Nothing recorded." >&2
