@@ -17,6 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     private let firstRunModel = FirstRunModel()
     private var launch = LaunchInfo(celloHome: (NSHomeDirectory() as NSString).appendingPathComponent(".cello"), start: nil)
     private var ticker: Timer?
+    private var clickAway: ClickAway!
+    private var mouseWatchers: [Any] = []
+    // The look last put on the mark. The mark is only touched when it changes: resizing the item the panel hangs from,
+    // on every redraw, is the likeliest reason the panel stopped closing on an outside click.
+    private var shownLook: Look?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         var unreadable = false
@@ -47,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         // The panel follows its content's size, so it grows with what's waiting and with a long reply.
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
+        clickAway = ClickAway(start: { [weak self] in self?.watchMouse() }, stop: { [weak self] in self?.unwatchMouse() })
+        clickAway.close = { [weak self] in self?.popover.performClose(nil) }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.clickAway.appDeactivated()
+        }
 
         banners.onOpenPanel = { [weak self] in self?.showPanel() }
         banners.onPick = { [weak self] id, choice in self?.pickFromBanner(id, choice) }
@@ -63,7 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     // MARK: ControllerDelegate
 
     func stateChanged(_ controller: Controller) {
-        if let button = statusItem.button { MenuBarIcon.apply(controller.state.look(at: Date()), to: button) }
+        let look = controller.state.look(at: Date())
+        if let button = statusItem.button, look != shownLook {
+            shownLook = look
+            MenuBarIcon.apply(look, to: button)
+        }
         firstRunModel.agents = controller.state.agents.map(\.name)
         panel.refresh()
     }
@@ -109,13 +123,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
     }
 
+    // Clicks in other apps, on the desktop or in another of this app's windows close the panel. Mouse clicks elsewhere
+    // need no Accessibility permission to watch; only keys would.
+    private func watchMouse() {
+        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: clicks, handler: { [weak self] _ in self?.clickAway.click(.elsewhere) }) {
+            mouseWatchers.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: clicks, handler: { [weak self] event in
+            self?.clickAway.click(self?.place(of: event) ?? .insidePanel)
+            return event
+        }) {
+            mouseWatchers.append(local)
+        }
+    }
+
+    private func unwatchMouse() {
+        for watcher in mouseWatchers { NSEvent.removeMonitor(watcher) }
+        mouseWatchers = []
+    }
+
+    // Within this app, only a click in one of its own titled windows, such as first run, counts as outside. A menu
+    // opened from the panel, like Settings, has no title bar and is part of it.
+    private func place(of event: NSEvent) -> ClickPlace {
+        guard let window = event.window else { return .insidePanel }
+        if window === statusItem.button?.window { return .onMark }
+        if window === popover.contentViewController?.view.window { return .insidePanel }
+        return window.styleMask.contains(.titled) ? .elsewhere : .insidePanel
+    }
+
     func popoverDidShow(_ notification: Notification) {
+        clickAway.panelShown()
         controller.panelOpened()
         // Ages tick over while it's open.
         ticker = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.panel.refresh() }
     }
 
     func popoverDidClose(_ notification: Notification) {
+        clickAway.panelClosed()
         ticker?.invalidate()
         ticker = nil
     }

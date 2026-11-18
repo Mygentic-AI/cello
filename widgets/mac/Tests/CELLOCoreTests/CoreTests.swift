@@ -638,3 +638,39 @@ final class PanelSizeTests: XCTestCase {
         XCTAssertEqual(PanelSize.listHeight(content: 900, chrome: 400, screen: 500), PanelSize.smallestList)
     }
 }
+
+final class ClickAwayTests: XCTestCase {
+    // The owner's repro: it closed until a button inside it was clicked, and after that an outside click did nothing.
+    func testAnOutsideClickClosesThePanelAfterAClickInsideItAndAfterTheMarkChanged() {
+        var started = 0, stopped = 0, closed = 0
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 })
+        away.close = { closed += 1 }
+        away.panelShown()
+        away.click(.insidePanel)      // answered Yes
+        away.click(.insidePanel)      // and picked a pause in Settings
+        XCTAssertEqual(closed, 0)
+        XCTAssertTrue(away.watching, "a click inside never stops the watch")
+        away.click(.elsewhere)
+        XCTAssertEqual(closed, 1)
+        away.panelClosed()
+        XCTAssertEqual([started, stopped], [1, 1])
+    }
+
+    func testTheWatchStartsAgainEachTimeThePanelOpensAndIsIdleWhileItIsShut() {
+        var started = 0, stopped = 0, closed = 0
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 })
+        away.close = { closed += 1 }
+        away.click(.elsewhere)
+        away.appDeactivated()
+        XCTAssertEqual(closed, 0, "nothing to close while shut")
+        for _ in 0..<3 {
+            away.panelShown()
+            away.panelShown()          // shown twice, as from a banner while open: one watch
+            away.click(.onMark)        // the mark's own click toggles it; the watch leaves it alone
+            away.appDeactivated()      // another app came forward
+            away.panelClosed()
+            away.panelClosed()
+        }
+        XCTAssertEqual([started, stopped, closed], [3, 3, 3])
+    }
+}
