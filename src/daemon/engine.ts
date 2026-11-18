@@ -81,6 +81,7 @@ import { MAX_PRESENTED_SIGNALS, PresentedTooMany, checkEncryptionKey, openFromKe
 import type { ChannelHost } from "./channels.ts";
 import type { NotifierHost } from "./notifiers.ts";
 import { PlainTextServer, formatAddress, parseAddress, serverUrlFrom } from "./address.ts";
+import type { DiscoveryHooks } from "./discovery.ts";
 import { type ConnectedServer, ServerLink, ServerRefused, ServerUnreachable } from "./link.ts";
 import { logEvent } from "./log.ts";
 import { OutboundRateLimiter } from "./rate-limit.ts";
@@ -2582,6 +2583,16 @@ export class Engine {
     const seeds = generateIdentitySeeds();
     const signer = await signerFromSeeds(seeds);
     return this.#enrollExisting(this.#newAgent(newName, seeds, signer, true), code);
+  }
+
+  // What discovery.ts needs from here: calls to this agent's own server as the agent, its key, the screen, and the server's address.
+  discoveryHost(): Omit<DiscoveryHooks, "channelSigner"> {
+    return {
+      call: (agentHex, method, params) => this.#publicSignalCall(agentHex, undefined, method, (agent) => ({ agent: toB64(agent.signer.id), ...params })),
+      agentSigner: (agentHex) => this.#requireAgent(agentHex).signer,
+      screen: (agentHex, scope, senderHex, text) => this.channelHost().screen(agentHex, scope, 0, senderHex, text),
+      serverUrl: () => this.#url,
+    };
   }
 
   // What channels.ts needs from here. It shares an agent's keys and the server link, and nothing about any conversation.

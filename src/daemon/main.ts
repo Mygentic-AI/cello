@@ -10,6 +10,7 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, ONCE_WRITTEN, type Signal } from "./engine.ts";
 import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
+import { Discovery } from "./discovery.ts";
 import { requirePerson as requirePersonFor } from "./errors.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
@@ -70,6 +71,7 @@ function ring(agentHex: string, bell: Doorbell): void {
 
 const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
+const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex) });
 const notifiers = new Notifiers(store, engine.notifierHost());
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
@@ -337,6 +339,19 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.presentedSignals(named(params), text(params, "session_id"));
     case "signals_lookup":
       return engine.wallet.lookup(acting(params), text(params, "address"));
+    case "discover_agents":
+    case "discover_channels": {
+      const options = { query: optionalText(params, "query"), tags: optionalText(params, "tags"), match: optionalText(params, "match"), cursor: optionalText(params, "cursor"), limit: typeof params["limit"] === "number" ? params["limit"] : undefined };
+      return discovery.search(acting(params), method === "discover_agents" ? "agent" : "channel", options);
+    }
+    case "listing_publish":
+      return discovery.publish(acting(params), { channel: optionalText(params, "channel"), name: text(params, "name"), description: optionalText(params, "description"), tags: optionalText(params, "tags"), language: optionalText(params, "language") });
+    case "listing_renew":
+      return discovery.renew(acting(params), optionalText(params, "channel"));
+    case "listing_unpublish":
+      return discovery.unpublish(acting(params), optionalText(params, "channel"));
+    case "listing_show":
+      return discovery.show(acting(params), optionalText(params, "channel"));
     case "issuer_trust": {
       const agent = named(params);
       if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);

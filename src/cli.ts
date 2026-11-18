@@ -489,8 +489,10 @@ async function issuerListSignCommand(args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
   const [first, ...rest] = process.argv.slice(2);
-  // cello signals list is the same operation as cello signals-list, which is what its tool is named after.
-  const [command, args] = first === "signals" && rest[0] && !rest[0].startsWith("-") ? [`signals-${rest[0]}`, rest.slice(1)] : [first, rest];
+  // cello signals list is the same operation as cello signals-list, which is what its tool is named after. Likewise cello discover agents
+  // and cello listing publish.
+  const grouped = (first === "signals" || first === "discover" || first === "listing") && rest[0] && !rest[0].startsWith("-");
+  const [command, args] = grouped ? [`${first}-${rest[0]}`, rest.slice(1)] : [first, rest];
   if (!command || command === "--help" || command === "-h" || command === "help") {
     const named = command === "help" ? OPERATIONS.find((candidate) => candidate.command === args[0]) : undefined;
     process.stdout.write(named ? commandHelp(named) : overview());
