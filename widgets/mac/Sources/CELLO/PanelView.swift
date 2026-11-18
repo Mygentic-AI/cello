@@ -321,7 +321,9 @@ struct PanelView: View {
                 VStack(spacing: PanelLayout.choiceGap) {
                     ForEach(Array(item.choices.enumerated()), id: \.offset) { index, label in
                         Button { model.pick(item, index) } label: {
-                            Text(label).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).frame(height: PanelLayout.choiceHeight)
+                            // A short choice is one 28-point row; a long one wraps to a second line rather than losing its end.
+                            Text(label).font(.system(size: 13, weight: .medium)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4).frame(minHeight: PanelLayout.choiceHeight)
                                 .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
                                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.gray.opacity(0.3)))
                                 .contentShape(Rectangle())
