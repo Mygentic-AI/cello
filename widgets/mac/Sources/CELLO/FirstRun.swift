@@ -6,6 +6,8 @@ import SwiftUI
 final class FirstRunModel: ObservableObject {
     @Published var agents: [String] = []
     @Published var openAtLogin = true
+    // Whether macOS will show its notification prompt after Turn on. Not when it was answered before.
+    @Published var macOSWillAsk = true
     var onTurnOn: (_ openAtLogin: Bool) -> Void = { _ in }
 }
 
@@ -19,7 +21,9 @@ struct FirstRunView: View {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64)
             Text(Copy.firstRunTitle).font(.system(size: 20, weight: .bold)).multilineTextAlignment(.center)
             Text(Copy.firstRunBody(model.agents)).font(.system(size: 13)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-            Text(Copy.firstRunNext).font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            if model.macOSWillAsk {
+                Text(Copy.firstRunNext).font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
             // A Focus holds every app's notifications back unless the person lets that app through. No app can add
             // itself, so this opens the place to do it.
             VStack(spacing: 6) {

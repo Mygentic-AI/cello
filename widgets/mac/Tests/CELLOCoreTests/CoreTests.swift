@@ -761,3 +761,24 @@ final class FocusTests: XCTestCase {
         XCTAssertEqual(Copy.focusSettingsURL, "x-apple.systempreferences:com.apple.Focus-Settings.extension")
     }
 }
+
+final class PermissionTests: XCTestCase {
+    func testOnlyAFreshInstallIsAskedAndSettingsIsOfferedOnlyWhenNotificationsWereTurnedOff() {
+        XCTAssertEqual(Permissions.step(.notAsked), .askSystem)
+        XCTAssertEqual(Permissions.step(.allowed), .nothingToAsk)
+        XCTAssertEqual(Permissions.step(.denied), .settingsOnly)
+    }
+
+    // The one path that opened System Settings by itself was the login item's, inside Turn on. Settings now opens only
+    // from a button the person clicks.
+    func testNothingOpensSystemSettingsWithoutAClick() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Sources/CELLO").standardized
+        let login = try String(contentsOf: app.appendingPathComponent("LoginItem.swift"), encoding: .utf8)
+        let set = login.components(separatedBy: "static func set(").last ?? ""
+        XCTAssertFalse(set.contains("openSystemSettings"), "turning the login item on must not open System Settings")
+        let delegate = try String(contentsOf: app.appendingPathComponent("AppDelegate.swift"), encoding: .utf8)
+        XCTAssertFalse(delegate.contains("openSettings()"), "the app opens Settings only from the panel's buttons")
+        XCTAssertEqual(delegate.components(separatedBy: "requestPermission(").count - 1, 1, "the system prompt is asked for in one place")
+        XCTAssertTrue(delegate.contains("case .askSystem: self?.banners.requestPermission(done)"))
+    }
+}

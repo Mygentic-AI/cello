@@ -70,6 +70,12 @@ public enum Copy {
     public static let focusOpen = "Open Focus settings"
     // System Settings › Focus, the list of Focuses. There's no link to one Focus's allowed apps.
     public static let focusSettingsURL = "x-apple.systempreferences:com.apple.Focus-Settings.extension"
+    // Notifications turned off for CELLO: macOS never asks again, so System Settings is the only way back.
+    public static let notificationsOff = "Notifications are off for CELLO, so questions only show here."
+    public static let openNotificationSettings = "Open Notifications settings"
+    public static let notificationSettingsURL = "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.celloprotocol.cello"
+    public static let loginItemNeedsOK = "Open CELLO when I log in is waiting for your OK in System Settings."
+    public static let openLoginItems = "Open Login Items"
     public static func joinedTitle(_ agent: String) -> String { "\(agent) can reach you here now" }
     // The design's line, with the agent's name for "her", since the app can't know an agent's pronoun.
     public static func joinedBody(_ agent: String) -> String { "Not you? Open CELLO › Settings to remove \(agent)." }

@@ -20,6 +20,25 @@ final class Banners: NSObject, UNUserNotificationCenterDelegate {
         register(UNNotificationCategory(identifier: Self.summaryCategory, actions: [UNNotificationAction(identifier: Self.openAction, title: Copy.openCello, options: [.foreground])], intentIdentifiers: []))
     }
 
+    // Where notifications stand, without asking. Only notAsked gets the system prompt; once denied, macOS never shows
+    // it again and System Settings is the only way back.
+    func permission(_ done: @escaping (NotificationPermission) -> Void) {
+        center.getNotificationSettings { settings in
+            let permission: NotificationPermission
+            switch settings.authorizationStatus {
+            case .notDetermined: permission = .notAsked
+            case .denied: permission = .denied
+            default: permission = .allowed
+            }
+            DispatchQueue.main.async { done(permission) }
+        }
+    }
+
+    static func openSettings() {
+        guard let url = URL(string: Copy.notificationSettingsURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func requestPermission(_ done: @escaping (Bool) -> Void) {
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             DispatchQueue.main.async { done(granted) }

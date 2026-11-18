@@ -160,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
 
     func popoverDidShow(_ notification: Notification) {
         clickAway.panelShown()
+        refreshSettingsLines()
         controller.panelOpened()
         // Ages tick over while it's open.
         ticker = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.panel.refresh() }
@@ -199,14 +200,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     private func showFirstRun() {
         firstRunModel.agents = controller.state.agents.map(\.name)
         firstRunModel.onTurnOn = { [weak self] openAtLogin in self?.turnOn(openAtLogin: openAtLogin) }
+        // "Next, macOS asks…" only when it will.
+        banners.permission { [weak self] permission in self?.firstRunModel.macOSWillAsk = Permissions.step(permission) == .askSystem }
         firstRun.show(firstRunModel)
     }
 
+    // Asks macOS only when it hasn't been asked, so a fresh install gets the system's prompt and nothing else.
+    private func askPermission(_ done: @escaping (Bool) -> Void) {
+        banners.permission { [weak self] permission in
+            switch Permissions.step(permission) {
+            case .askSystem: self?.banners.requestPermission(done)
+            case .nothingToAsk: done(true)
+            // Denied before: macOS won't ask again. The panel says so, with the button to System Settings.
+            case .settingsOnly: done(false)
+            }
+        }
+    }
+
+    // What the panel says about the Mac's own settings: notifications off, or open at login waiting for an OK.
+    private func refreshSettingsLines() {
+        panel.loginNeedsOK = LoginItem.needsApproval
+        banners.permission { [weak self] permission in self?.panel.notificationsOff = permission == .denied }
+    }
+
     private func turnOn(openAtLogin: Bool) {
-        banners.requestPermission { [weak self] granted in
+        askPermission { [weak self] granted in
             guard let self else { return }
             log.info("notifications allowed: \(granted, privacy: .public)")
             if openAtLogin, let problem = LoginItem.set(true) { log.error("login item: \(problem, privacy: .public)") }
+            self.refreshSettingsLines()
             UserDefaults.standard.set(true, forKey: turnedOnKey)
             self.firstRun.close()
             if granted {

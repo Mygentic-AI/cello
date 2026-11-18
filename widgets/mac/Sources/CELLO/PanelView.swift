@@ -12,6 +12,9 @@ final class PanelModel: ObservableObject {
     @Published var messageAgent = ""
     @Published var messageLine: String?
     @Published var loginItemOn = LoginItem.isOn
+    // The Mac's own settings standing in the way: notifications turned off, or open at login waiting for an OK.
+    @Published var notificationsOff = false
+    @Published var loginNeedsOK = false
     // The height of the screen the panel opens on, set each time it opens.
     @Published var screenHeight: Double = 900
     var onQuit: () -> Void = {}
@@ -66,6 +69,7 @@ final class PanelModel: ObservableObject {
     func setLoginItem(_ on: Bool) {
         if let problem = LoginItem.set(on) { onProblem(problem) }
         loginItemOn = LoginItem.isOn
+        loginNeedsOK = LoginItem.needsApproval
     }
 }
 
@@ -107,6 +111,8 @@ struct PanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if case let .unreachable(why) = state.connection { unreachable(why) }
+                    if model.notificationsOff { settingsLine(Copy.notificationsOff, button: Copy.openNotificationSettings) { Banners.openSettings() } }
+                    if model.loginNeedsOK { settingsLine(Copy.loginItemNeedsOK, button: Copy.openLoginItems) { LoginItem.openSettings() } }
                     // Answered here a moment ago: the card says so for a few seconds, then folds into Earlier today.
                     ForEach(Array(state.justAnswered(now: now).enumerated()), id: \.offset) { _, line in answeredCard(line) }
                     if state.waiting.isEmpty {
@@ -175,6 +181,17 @@ struct PanelView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(Copy.settings)
+    }
+
+    // A setting on the Mac that's in the way, with the one button that opens it. Opened only when the person clicks.
+    private func settingsLine(_ line: String, button: String, open: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(line).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+            Button(button, action: open)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
     private func unreachable(_ why: Unreachable) -> some View {
