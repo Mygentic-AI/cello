@@ -787,6 +787,9 @@ final class FocusTests: XCTestCase {
         XCTAssertTrue(firstRun.contains("Copy.focusSettingsURL"))
         // The extension macOS 14 and later registers for System Settings › Focus.
         XCTAssertEqual(Copy.focusSettingsURL, "x-apple.systempreferences:com.apple.Focus-Settings.extension")
+        // The gear menu has the same way there, for someone who closed first run without it.
+        let panel = try String(contentsOf: app.appendingPathComponent("PanelView.swift"), encoding: .utf8)
+        XCTAssertTrue(panel.contains("Button(Copy.focusMenu) { FocusSettings.open() }"))
     }
 }
 

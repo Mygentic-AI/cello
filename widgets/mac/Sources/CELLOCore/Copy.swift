@@ -68,6 +68,8 @@ public enum Copy {
     public static let focusTitle = "Let questions through Focus?"
     public static let focusBody = "When a Focus is on, macOS holds CELLO back. To let questions through, choose the Focus in Focus settings and add CELLO to its allowed apps. News always waits."
     public static let focusOpen = "Open Focus settings"
+    // The gear menu's way to the same setting, for someone who skipped it at first run.
+    public static let focusMenu = "Let questions through Focus…"
     // System Settings › Focus, the list of Focuses. There's no link to one Focus's allowed apps.
     public static let focusSettingsURL = "x-apple.systempreferences:com.apple.Focus-Settings.extension"
     // Notifications turned off for CELLO: macOS never asks again, so System Settings is the only way back.

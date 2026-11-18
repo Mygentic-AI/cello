@@ -260,6 +260,7 @@ struct PanelView: View {
             Divider()
             Toggle(Copy.openAtLogin, isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) }))
             Button(Copy.addOrRemoveAgents) { model.showAgents() }
+            Button(Copy.focusMenu) { FocusSettings.open() }
             Divider()
             Button(Copy.quit) { model.onQuit() }
             Button(Copy.removeMenu) { model.onRemove() }
