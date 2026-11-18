@@ -674,7 +674,7 @@ final class ClickAwayTests: XCTestCase {
     // The owner's repro: it closed until a button inside it was clicked, and after that an outside click did nothing.
     func testAnOutsideClickClosesThePanelAfterAClickInsideItAndAfterTheMarkChanged() {
         var started = 0, stopped = 0, closed = 0
-        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 })
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 }, now: { 0 })
         away.close = { closed += 1 }
         away.panelShown()
         away.click(.insidePanel)      // answered Yes
@@ -689,7 +689,7 @@ final class ClickAwayTests: XCTestCase {
 
     func testTheWatchStartsAgainEachTimeThePanelOpensAndIsIdleWhileItIsShut() {
         var started = 0, stopped = 0, closed = 0
-        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 })
+        let away = ClickAway(start: { started += 1 }, stop: { stopped += 1 }, presses: { 0 }, now: { 0 })
         away.close = { closed += 1 }
         away.click(.elsewhere)
         away.appDeactivated()
@@ -711,7 +711,7 @@ final class ClickAwayTests: XCTestCase {
     func testAPanelABannerOpenedOutlastsTheFrontBeingHandedBack() {
         var pressed: UInt64 = 40
         var closed = 0
-        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed }, now: { 0 })
         away.close = { if away.mayClose() { closed += 1 } }
         pressed += 1                  // the click on the banner, before it opens anything
         away.openingFromBanner()
@@ -729,7 +729,7 @@ final class ClickAwayTests: XCTestCase {
     func testTheWatchDoesNotAskToCloseOnTheHandBack() {
         var pressed: UInt64 = 3
         var asked = 0
-        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed }, now: { 0 })
         away.close = { asked += 1 }
         away.openingFromBanner()
         away.panelShown()
@@ -740,10 +740,27 @@ final class ClickAwayTests: XCTestCase {
         XCTAssertEqual(asked, 1)
     }
 
+    // If the press count never moves, the hold still ends: the panel can't stick open.
+    func testTheHoldEndsByItselfAfterTheLimitEvenWithNoPressCounted() {
+        var clock: TimeInterval = 100
+        var asked = 0
+        let away = ClickAway(start: {}, stop: {}, presses: { 0 }, now: { clock })
+        away.close = { asked += 1 }
+        away.openingFromBanner()
+        away.panelShown()
+        clock += 0.062                // the hand-back
+        away.appDeactivated()
+        XCTAssertEqual(asked, 0)
+        clock = 100 + ClickAway.holdLimit
+        XCTAssertTrue(away.mayClose())
+        away.appDeactivated()
+        XCTAssertEqual(asked, 1)
+    }
+
     func testAfterAPressABannerPanelClosesWhenAnotherAppComesForward() {
         var pressed: UInt64 = 0
         var closed = 0
-        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed }, now: { 0 })
         away.close = { if away.mayClose() { closed += 1 } }
         away.openingFromBanner()
         away.panelShown()
@@ -757,7 +774,7 @@ final class ClickAwayTests: XCTestCase {
     // The hold is for that one opening. Opened from the mark next, it closes on deactivation as before.
     func testTheHoldEndsWhenThePanelClosesAndNeverTouchesAMarkOpen() {
         var closed = 0
-        let away = ClickAway(start: {}, stop: {}, presses: { 7 })
+        let away = ClickAway(start: {}, stop: {}, presses: { 7 }, now: { 0 })
         away.close = { if away.mayClose() { closed += 1 } }
         away.openingFromBanner()
         away.panelShown()

@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         // The panel follows its content's size, so it grows with what's waiting and with a long reply.
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
-        clickAway = ClickAway(start: { [weak self] in self?.watchMouse() }, stop: { [weak self] in self?.unwatchMouse() }, presses: pressesSoFar)
+        clickAway = ClickAway(start: { [weak self] in self?.watchMouse() }, stop: { [weak self] in self?.unwatchMouse() }, presses: pressesSoFar, now: { ProcessInfo.processInfo.systemUptime })
         clickAway.close = { [weak self] in self?.popover.performClose(nil) }
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.clickAway.appDeactivated()
@@ -187,7 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     // Every close passes here, the transient popover's own included, so a panel a banner just opened outlasts the
     // front being handed back.
     func popoverShouldClose(_ popover: NSPopover) -> Bool {
-        clickAway.mayClose()
+        let may = clickAway.mayClose()
+        if !may { log.info("panel kept open: opened from a banner, nothing pressed since") }
+        return may
     }
 
     func popoverDidShow(_ notification: Notification) {
