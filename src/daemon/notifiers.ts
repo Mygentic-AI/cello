@@ -7,6 +7,7 @@ import { NOTIFIER_TYPES, type NotifierTypeName, notifierType } from "../notifier
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import { type ChoiceOutcome, type Delivered, DeliveryError, type NotifierAdapter, type NotifierContext, type NotifierHost, type Outgoing, type Settled, type StoredNotifier } from "./notifier-adapter.ts";
+import { MacNotifier } from "./notifier-mac.ts";
 import { TelegramNotifier } from "./notifier-telegram.ts";
 import type { Store } from "./store.ts";
 import { TELEGRAM, type TelegramEndpoint } from "./telegram.ts";
@@ -87,7 +88,8 @@ export class Notifiers {
   readonly #host: NotifierHost;
   readonly #adapters: ReadonlyMap<string, NotifierAdapter>;
 
-  constructor(store: Store, host: NotifierHost, telegram: TelegramEndpoint = TELEGRAM) {
+  // operatorSocket is where the Mac app's door listens. Left out, there's no door, and a mac notifier can't be added.
+  constructor(store: Store, host: NotifierHost, telegram: TelegramEndpoint = TELEGRAM, operatorSocket?: string) {
     this.#store = store;
     this.#host = host;
     dropTypeCheck(store);
@@ -100,6 +102,7 @@ export class Notifiers {
     // One adapter for every registered type: a type missing here doesn't compile.
     const adapters: Record<NotifierTypeName, NotifierAdapter> = {
       telegram: new TelegramNotifier(this.#context("telegram"), telegram),
+      mac: new MacNotifier(this.#context("mac"), operatorSocket),
     };
     this.#adapters = new Map(Object.entries(adapters));
   }

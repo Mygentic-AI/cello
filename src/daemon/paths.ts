@@ -17,6 +17,11 @@ export function socketPath(home = celloHome(), platform: NodeJS.Platform = proce
   return join(home, "daemon.sock");
 }
 
+// The operator's door, for the CELLO app on a Mac (operator-door.ts). None on Windows, where the app doesn't run.
+export function operatorSocketPath(home = celloHome(), platform: NodeJS.Platform = process.platform): string | undefined {
+  return platform === "win32" ? undefined : join(home, "operator.sock");
+}
+
 // The old version used the same naming, with a second pipe for its gateway. Setup probes both to see if it's running.
 export function windowsPipe(home: string, name: "daemon" | "gateway"): string {
   const canonical = win32.resolve(home).toLowerCase().replace(/\//g, "\\");

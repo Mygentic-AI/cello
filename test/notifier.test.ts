@@ -15,6 +15,8 @@ import { Store } from "../src/daemon/store.ts";
 import { TelegramError, sendText } from "../src/daemon/telegram.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
 import { NOTIFIER_TYPES, addCommand } from "../src/notifier-types.ts";
+import { StandInMacApp } from "../live/stand-in-mac-app.ts";
+import { existsSync } from "node:fs";
 
 const TOKEN = "123456:secret-bot-token";
 const AGENT = "07".repeat(32);
@@ -129,7 +131,7 @@ after(() => {
   for (const server of servers) server.close();
 });
 
-function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds: number }, seen: Set<string>): Notifiers {
+function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds: number }, seen: Set<string>, operatorSocket?: string): Notifiers {
   const notifiers = new Notifiers(store, {
     agentName: (agent) => NAMES[agent] as string,
     screenOutbound: (_agent, text) => {
@@ -149,15 +151,17 @@ function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds
       handed.push({ agent, session: sessionId ? Buffer.from(sessionId).toString("hex") : null, text, via });
       return "stored";
     },
-  }, at);
+  }, at, operatorSocket);
   running.push(notifiers);
   return notifiers;
 }
 
-function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }): { notifiers: Notifiers; store: Store; seen: Set<string> } {
+function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, withDoor = false): { notifiers: Notifiers; store: Store; seen: Set<string>; door: string } {
   for (const earlier of running) earlier.stop();
   running.length = 0;
-  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notifier-")), "cello.db"));
+  const folder = mkdtempSync(join(tmpdir(), "cello-notifier-"));
+  const door = join(folder, "operator.sock");
+  const store = new Store(join(folder, "cello.db"));
   store.insertAgent(new Uint8Array(Buffer.from(AGENT, "hex")), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(2));
   store.insertAgent(new Uint8Array(Buffer.from(AGENT2, "hex")), "Bea", new Uint8Array(32).fill(3), new Uint8Array(32).fill(4));
   sent.length = 0;
@@ -175,7 +179,7 @@ function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = 
   gone = new Set();
   storeFailures = 0;
   const seen = new Set<string>();
-  return { notifiers: open(store, at, seen), store, seen };
+  return { notifiers: open(store, at, seen, withDoor ? door : undefined), store, seen, door };
 }
 
 async function until(what: string, check: () => boolean): Promise<void> {
@@ -781,15 +785,15 @@ test("a row of a type this version doesn't know is named in the list and as a fa
   const { notifiers, store } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   // Only a newer version could write this row.
-  store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "mac", "mac", "{}", Date.now() + 1);
+  store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "pager", "pager", "{}", Date.now() + 1);
   const listed = notifiers.list(AGENT) as { notifiers: { notifier: string; problem?: string }[] };
-  assert.match(listed.notifiers.find((n) => n.notifier === "mac")?.problem ?? "", /can't use a mac notifier/);
+  assert.match(listed.notifiers.find((n) => n.notifier === "pager")?.problem ?? "", /can't use a pager notifier/);
   const answer = await notifiers.notify(AGENT, {}) as { sent: boolean; notifiers: string[]; failed?: { notifier: string; message: string }[] };
   assert.deepEqual([answer.sent, answer.notifiers], [true, ["telegram"]]);
-  assert.match(answer.failed?.find((f) => f.notifier === "mac")?.message ?? "", /can't use a mac notifier\. Upgrade CELLO/);
+  assert.match(answer.failed?.find((f) => f.notifier === "pager")?.message ?? "", /can't use a pager notifier\. Upgrade CELLO/);
   const added = await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" }) as { told_existing: string[]; could_not_tell?: { notifier: string }[] };
-  assert.deepEqual([added.told_existing, added.could_not_tell?.map((c) => c.notifier)], [["telegram"], ["mac"]]);
-  await assert.rejects(notifiers.notify(AGENT, { notifier: "mac" }), refusal("notify_failed"));
+  assert.deepEqual([added.told_existing, added.could_not_tell?.map((c) => c.notifier)], [["telegram"], ["pager"]]);
+  await assert.rejects(notifiers.notify(AGENT, { notifier: "pager" }), refusal("notify_failed"));
 });
 
 test("notifier-add's help lists the types, a type's help shows only its own options, and an unknown type is a usage mistake", () => {
@@ -809,5 +813,103 @@ test("notifier-add's help lists the types, a type's help shows only its own opti
   assert.ok(!telegram.out.includes("  --same-as "), "the shared options are only named");
   const bogus = cli(["notifier-add", "bogus", "-h"]);
   assert.equal(bogus.status, 2);
-  assert.match(bogus.out, /has no type bogus\. Types: telegram/);
+  assert.match(bogus.out, /has no type bogus\. Types: telegram, mac/);
+  // The Mac has no options of its own, and its page says how to finish in the app.
+  const mac = cli(["notifier-add", "mac", "-h"]);
+  assert.equal(mac.status, 0);
+  assert.ok(mac.out.includes("Open CELLO on this Mac") && !mac.out.includes("--bot-token"), mac.out);
+});
+
+// The Mac app beside Telegram. The live test proves the door with a real daemon. Only here, beside the stand-in Telegram,
+// can a choice made on one be shown to settle the other.
+async function withMac(): Promise<{ notifiers: Notifiers; store: Store; door: string }> {
+  const made = setup(undefined, true);
+  made.notifiers.start();
+  await until("the operator's door to open", () => existsSync(made.door));
+  return made;
+}
+
+test("the Mac gets the agent's words whole while Telegram gets them screened, and each new route is told of the other", async () => {
+  const { notifiers, door } = await withMac();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  const mac = await notifiers.add(AGENT, { type: "mac" }) as { told_existing: string[]; app: string };
+  assert.deepEqual([mac.told_existing, mac.app], [["telegram"], "not open"]);
+  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Ann: mac, the CELLO app on this Mac\./);
+  await assert.rejects(notifiers.add(AGENT, { type: "mac", name: "second" }), refusal("notifier_exists"));
+
+  const { app } = await StandInMacApp.open(door);
+  app.autoAck = true;
+  // Telegram added after the Mac is announced on the Mac.
+  await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" });
+  await app.waitFor((f) => f["op"] === "notification" && /A new notifier was added for your agent Ann: work/.test(String(f["text"])), "the Mac to hear of the new Telegram route");
+  // Another agent joins with no secret, and the app hears so.
+  await notifiers.add(AGENT2, { type: "mac", same_as: AGENT });
+  await app.waitFor((f) => f["op"] === "agent_added" && f["agent_id"] === AGENT2 && f["agent"] === "Bea", "Bea to join");
+
+  screened.length = 0;
+  const answer = await notifiers.notify(AGENT, { kind: "request", text: "May I share sk-live-abc with them?", notifier: "telegram" }) as { sent: unknown };
+  assert.equal(answer.sent, true);
+  assert.equal(sent.at(-1)?.text, "Your agent Ann has a request for you:\n\nMay I share [REDACTED] with them?");
+  const both = await notifiers.notify(AGENT, { kind: "request", text: "May I share sk-live-abc with them?" }) as { sent: unknown; notifiers: string[] };
+  assert.deepEqual([both.sent, both.notifiers.sort()], [true, ["mac", "telegram", "work"]]);
+  const shown = await app.waitFor((f) => f["op"] === "notification" && f["kind"] === "request", "the request on the Mac");
+  assert.equal(shown["text"], "May I share sk-live-abc with them?", "the Mac's copy never left the machine, so it isn't screened");
+  assert.equal(sent.at(-1)?.text, "Your agent Ann has a request for you:\n\nMay I share [REDACTED] with them?");
+
+  // Only the Mac: nothing leaves the machine, so nothing is screened.
+  screened.length = 0;
+  await notifiers.notify(AGENT, { text: "Mac only, sk-live-abc", choices: "Yes|No", notifier: "mac" });
+  assert.deepEqual(screened, []);
+  await app.close();
+});
+
+test("a choice made on the Mac settles Telegram, and a tap in Telegram settles the Mac, answered once", async () => {
+  const { notifiers, door } = await withMac();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT, { type: "mac" });
+  const { app } = await StandInMacApp.open(door);
+  app.autoAck = true;
+  const session = "c1".repeat(16);
+
+  await notifiers.notify(AGENT, { kind: "request", text: "Send the contract?", choices: "Yes|No", session_id: session });
+  const onMac = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Send the contract?", "the question on the Mac");
+  assert.deepEqual(onMac["choices"], ["Yes", "No"]);
+  const inTelegram = sent.at(-1) as Sent;
+  const picked = await app.request({ op: "pick", id: onMac["id"], choice: 1 });
+  assert.deepEqual([picked["ok"], picked["said"]], [true, "Passed to Ann."]);
+  assert.deepEqual(handed, [{ agent: AGENT, session, text: "No", via: "mac" }]);
+  await until("Telegram's buttons to come off", () => edits.some((e) => e.message_id === inTelegram.message_id && e.buttons === 0));
+  await until("Telegram to be told quietly", () => sent.some((s) => s.text === "Answered on another of Ann's notifiers: No." && s.silent));
+  await app.waitFor((f) => f["op"] === "settled" && f["id"] === onMac["id"] && f["here"] === true && f["label"] === "No", "the Mac to be settled too");
+  taps(55, inTelegram.message_id, "choice:0");
+  await until("the late tap to be answered", () => tapAnswers.includes("Already answered: No."));
+
+  await notifiers.notify(AGENT, { kind: "request", text: "And the invoice?", choices: "Yes|No", session_id: session });
+  const second = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "And the invoice?", "the second question on the Mac");
+  const secondInTelegram = sent.at(-1) as Sent;
+  taps(55, secondInTelegram.message_id, "choice:0");
+  const settled = await app.waitFor((f) => f["op"] === "settled" && f["id"] === second["id"], "Telegram's tap to settle the Mac");
+  assert.deepEqual([settled["label"], settled["where"], settled["here"]], ["Yes", "Telegram", false]);
+  const late = await app.request({ op: "pick", id: second["id"], choice: 1 });
+  assert.deepEqual([late["ok"], late["error"], late["message"]], [false, "already_answered", "Already answered: Yes."]);
+  assert.deepEqual(handed.map((h) => h.text), ["No", "Yes"], "each question reached the agent once");
+  await app.close();
+});
+
+test("the Mac keeps a plain message a day and a question until it's answered, and the app gets what's kept on connecting", async () => {
+  const { notifiers, store, door } = await withMac();
+  await notifiers.add(AGENT, { type: "mac" });
+  const kept = await notifiers.notify(AGENT, { text: "Old news" }) as { sent: unknown; queued_note: string };
+  assert.equal(kept.sent, "queued");
+  assert.match(kept.queued_note, /hasn't seen this yet.*Don't send it again/);
+  await notifiers.notify(AGENT, { kind: "request", text: "Still waiting?" });
+  store.prepare("UPDATE mac_queue SET sent_at = ?").run(Date.now() - 25 * 60 * 60_000);
+  const { app } = await StandInMacApp.open(door);
+  await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Still waiting?", "the question kept past a day");
+  assert.ok(!app.frames.some((f) => f["text"] === "Old news"), "a day-old message isn't kept");
+  const emptied = store.prepare("SELECT text FROM mac_queue WHERE kind = 'message'").get() as { text: string };
+  assert.equal(emptied.text, "", "its words are gone from the database too");
+  const question = app.frames.find((f) => f["text"] === "Still waiting?") as Record<string, unknown>;
+  assert.ok(Number(question["age_seconds"]) >= 25 * 60 * 60);
+  await app.close();
 });

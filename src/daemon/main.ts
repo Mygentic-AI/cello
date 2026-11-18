@@ -15,7 +15,8 @@ import { requirePerson as requirePersonFor } from "./errors.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
-import { celloHome, databasePath, endpointIsFile, holdsOldVersion, ipcKeyPath, oldVersionMessage, socketPath } from "./paths.ts";
+import { celloHome, databasePath, endpointIsFile, holdsOldVersion, ipcKeyPath, oldVersionMessage, operatorSocketPath, socketPath } from "./paths.ts";
+import { TELEGRAM } from "./telegram.ts";
 import { Store } from "./store.ts";
 
 const home = celloHome();
@@ -71,7 +72,7 @@ function ring(agentHex: string, bell: Doorbell): void {
 
 const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
-const notifiers = new Notifiers(store, engine.notifierHost());
+const notifiers = new Notifiers(store, engine.notifierHost(), TELEGRAM, operatorSocketPath(home));
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
 mainThreadDelay.enable();

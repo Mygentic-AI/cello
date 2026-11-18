@@ -24,6 +24,19 @@ export const NOTIFIER_TYPES = [
       { name: "chat_id", kind: "string", description: "The id of the chat to write to. Left out: the chat that wrote to the bot last." },
     ],
   },
+  {
+    name: "mac",
+    label: "Mac",
+    summary: "The CELLO app on this Mac: banners and a menu-bar panel, where the person answers with a click or by typing.",
+    setup: "It needs nothing secret: one CELLO app serves every agent on this Mac, and the person allows it once in the app. Your words reach it in full, without the outbound screen, because nothing leaves this machine. If the app is closed, the Mac is asleep or the person paused it, notify answers sent: \"queued\" and the app shows it when it's back: never send it again. same_as works as for any type. To stop, the person removes it in the app, which takes it off every agent, or you run notifier-remove for one agent.",
+    steps: [
+      "Run: cello notifier-add mac --agent <name>. For each further agent: cello notifier-add mac --same-as <first agent> --agent <name>.",
+      "Open CELLO on this Mac and click Allow. One Allow covers every agent on this Mac.",
+    ],
+    // TODO(mac app): --build (compile it from widgets/mac) and --app <path> (one built by hand) come with the app itself,
+    // with the default that copies the prebuilt app to ~/Applications. Until then this registers the route only.
+    params: [],
+  },
 ] as const satisfies readonly NotifierType[];
 
 export type NotifierTypeName = (typeof NOTIFIER_TYPES)[number]["name"];
