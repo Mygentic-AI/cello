@@ -3,7 +3,7 @@
 // own project name and port, so it can run beside other live tests. No model turns: it doesn't prove a doorbell wakes a session.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { after, before, test } from "node:test";
@@ -16,7 +16,9 @@ const repo = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? join(repo, "..", "cello-server");
 const port = process.env["CELLO_INSTALL_PORT"] ?? "18095";
 const url = `ws://127.0.0.1:${port}/v1`;
-const TESTS = 5;
+// The prebuilt Mac app is its own package, built and installed only on a Mac.
+const onMac = process.platform === "darwin";
+const TESTS = onMac ? 6 : 5;
 
 // Short, because a daemon's socket path has a length limit of about 104 bytes here.
 const work = realpathSync(mkdtempSync(join(tmpdir(), "cello-inst-")));
@@ -30,6 +32,7 @@ const mcpBinary = join(prefix, "bin", "cello-mcp");
 const compose = { ...process.env, COMPOSE_PROJECT_NAME: process.env["CELLO_INSTALL_PROJECT"] ?? "cello-install", CELLO_PORT: port, POSTGRES_PASSWORD: randomHex(), CELLO_APP_PASSWORD: randomHex() };
 
 let tarball = "";
+let macTarball = "";
 let passed = 0;
 
 function randomHex(): string {
@@ -111,14 +114,24 @@ before(async () => {
   const up = spawnSync("docker", ["compose", "up", "-d", "--build", "--wait", "server"], { cwd: serverDir, env: compose, encoding: "utf8" });
   if (up.status !== 0) throw new Error(`the server didn't start. Is Docker running?\n${up.stderr}`);
 
-  // prepack builds here, so what's packed can't be an old dist.
-  must(hostTool("npm"), ["pack", "--pack-destination", work], { cwd: repo, env: { PATH: hostPath(dirname(hostTool("npm"))), HOME: process.env["HOME"] ?? home } });
+  // prepack builds here, so what's packed can't be an old dist. pnpm packs, as the publish workflow does: it writes the Mac
+  // app's workspace:* as its exact version, where npm pack would ship it raw.
+  const packEnv = { PATH: hostPath(dirname(hostTool("pnpm")), dirname(hostTool("npm"))), HOME: process.env["HOME"] ?? home };
+  must(hostTool("pnpm"), ["pack", "--pack-destination", work], { cwd: repo, env: packEnv });
   const packed = readdirSync(work).filter((name) => name.endsWith(".tgz"));
   assert.equal(packed.length, 1, `expected one tarball, found ${packed.join(", ")}`);
   tarball = join(work, packed[0] as string);
+  const toInstall = [tarball];
+  if (onMac) {
+    // Its prepack builds CELLO.app from widgets/mac, which takes a minute.
+    const macDir = join(work, "mac");
+    must(hostTool("pnpm"), ["pack", "--pack-destination", macDir], { cwd: join(repo, "mac-app"), env: packEnv });
+    macTarball = join(macDir, readdirSync(macDir).find((name) => name.endsWith(".tgz")) as string);
+    toInstall.unshift(macTarball);
+  }
 
   // With an empty cache, this is the wait a new user has.
-  const seconds = installTimed(["-g", "--prefix", prefix, tarball], cwd);
+  const seconds = installTimed(["-g", "--prefix", prefix, ...toInstall], cwd);
   process.stdout.write(`Install with an empty npm cache: ${seconds} s. Installed size: ${sizeMegabytes(packageDir)} MB. Tarball: ${Math.round(statSync(tarball).size / 1024)} KB.\n`);
 }, { timeout: 600_000 });
 
@@ -159,7 +172,9 @@ test("the tarball holds compiled code and the plugin, and no source, tests or li
   ].sort();
   assert.deepEqual(listing, expected, "the tarball holds exactly one compiled file and its types per source file, plus these");
 
-  const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { private?: boolean; engines?: { node?: string }; bin?: Record<string, string> };
+  const manifest = JSON.parse(execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" })) as { version: string; private?: boolean; engines?: { node?: string }; bin?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  // The Mac app is never in this tarball, and is named at exactly this release's version.
+  assert.deepEqual(manifest.optionalDependencies, { "@cello-protocol/mac-app": manifest.version });
   // The package is no longer private: only a pushed tag publishes it, and the publish workflow refuses a build with no shipped list or Concierge address.
   assert.notEqual(manifest.private, true, "release-path made the package publishable, and a private flag would block the first release");
   const workflow = readFileSync(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
@@ -226,6 +241,34 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   assert.equal(reportG["root"], reportH["root"]);
   const transcript = ok(["transcript", session, "--agent", "Gail"]) as { entries: { text?: string }[] };
   assert.deepEqual(transcript.entries.slice(0, 4).map((e) => e.text), ["first", "second", "still with you", "that's all"]);
+  passed++;
+});
+
+// The default notifier-add mac, with no --build or --app, from what npm installed. Everything lands in the test's own home,
+// and `open` is a stand-in that only records, so nothing shows on the screen of the Mac running this.
+test("notifier-add mac takes the app from the installed mac package, copies it runnable and signed, and only then opens it", { skip: !onMac && "the Mac app installs only on a Mac" }, () => {
+  const shims = join(work, "shims");
+  const openLog = join(work, "opened.txt");
+  mkdirSync(shims, { recursive: true });
+  writeFileSync(join(shims, "open"), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${openLog}'\n`, { mode: 0o755 });
+  const installedApp = join(prefix, "lib", "node_modules", "@cello-protocol", "mac-app", "CELLO.app");
+  assert.ok(existsSync(installedApp), "npm installed the mac package beside the cli");
+
+  const run = spawnSync("cello", ["notifier-add", "mac", "--agent", "Gail"], { encoding: "utf8", cwd, env: { ...installedEnv(), PATH: `${shims}${delimiter}${installedEnv()["PATH"]}` } });
+  assert.equal(run.status, 0, `notifier-add mac failed: ${run.stderr}`);
+  const answer = JSON.parse(run.stdout) as { added?: boolean; app_install?: { app: string; copied: boolean; opened: boolean } };
+  const target = join(home, "Applications", "CELLO.app");
+  assert.deepEqual([answer.added, answer.app_install?.app, answer.app_install?.copied, answer.app_install?.opened], [true, target, true, true], run.stdout);
+  assert.match(run.stderr, /^CELLO will:/, "each step is said on stderr first");
+  assert.equal(readFileSync(openLog, "utf8").trim(), target, "the stand-in open was asked to open the copied app, once");
+
+  const binary = join(target, "Contents", "MacOS", "CELLO");
+  assert.ok(readFileSync(binary).equals(readFileSync(join(installedApp, "Contents", "MacOS", "CELLO"))), "the copy is the packaged app");
+  assert.notEqual(statSync(binary).mode & 0o111, 0, "and it's executable, so macOS would start it");
+  assert.equal(spawnSync("codesign", ["--verify", "--strict", target]).status, 0, "its signature survived npm and the copy");
+  assert.deepEqual(execFileSync("lipo", ["-archs", binary], { encoding: "utf8" }).trim().split(" ").sort(), ["arm64", "x86_64"]);
+  assert.doesNotMatch(execFileSync("xattr", ["-lr", target], { encoding: "utf8" }), /com\.apple\.quarantine/, "npm sets no quarantine flag");
+  ok(["notifier-remove", "mac", "--agent", "Gail"]);
   passed++;
 });
 
