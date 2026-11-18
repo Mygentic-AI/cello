@@ -51,6 +51,8 @@ export class StandInMacApp {
 
   // A raw line, which need not be JSON or anything the door takes.
   write(line: string): void {
+    // A frame can still arrive after this side has closed. Answering it then would be writing to a closed socket.
+    if (this.#socket.writableEnded || this.#socket.destroyed) return;
     this.#socket.write(`${line}\n`);
   }
 

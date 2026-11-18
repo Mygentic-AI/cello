@@ -856,10 +856,11 @@ test("the Mac gets the agent's words whole while Telegram gets them screened, an
   assert.equal(shown["text"], "May I share sk-live-abc with them?", "the Mac's copy never left the machine, so it isn't screened");
   assert.equal(sent.at(-1)?.text, "Your agent Ann has a request for you:\n\nMay I share [REDACTED] with them?");
 
-  // Only the Mac: nothing leaves the machine, so nothing is screened.
+  // Only the Mac: nothing leaves the machine, so nothing is screened. Once the app says it's on screen, it's sent.
   screened.length = 0;
-  await notifiers.notify(AGENT, { text: "Mac only, sk-live-abc", choices: "Yes|No", notifier: "mac" });
+  const macOnly = await notifiers.notify(AGENT, { text: "Mac only, sk-live-abc", choices: "Yes|No", notifier: "mac" }) as { sent: unknown };
   assert.deepEqual(screened, []);
+  assert.equal(macOnly.sent, true);
   await app.close();
 });
 
