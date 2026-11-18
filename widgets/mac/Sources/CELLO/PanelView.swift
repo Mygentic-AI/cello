@@ -112,7 +112,6 @@ struct PanelView: View {
         }
         .frame(width: 392)
         .background(Color(nsColor: .windowBackgroundColor))
-        .id(model.revision)
     }
 
     private func header(_ state: AppState, now: Date) -> some View {

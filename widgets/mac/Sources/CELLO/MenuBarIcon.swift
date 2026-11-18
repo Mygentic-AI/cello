@@ -20,33 +20,38 @@ enum MenuBarIcon {
         button.appearsDisabled = false
         button.title = ""
         button.imagePosition = .imageOnly
+        button.image = image(for: look)
         switch look {
-        case .plain:
-            button.image = mark
-            button.setAccessibilityLabel(Copy.lookPlain)
-        case .news:
-            button.image = withDot()
-            button.setAccessibilityLabel(Copy.lookNews)
-        case .waiting:
-            button.image = filled()
-            button.setAccessibilityLabel(Copy.lookWaiting)
+        case .plain: button.setAccessibilityLabel(Copy.lookPlain)
+        case .news: button.setAccessibilityLabel(Copy.lookNews)
+        case .waiting: button.setAccessibilityLabel(Copy.lookWaiting)
         case .paused:
-            button.image = mark
             button.appearsDisabled = true
             button.title = " " + Copy.pausedWord
             button.imagePosition = .imageLeading
             button.setAccessibilityLabel(Copy.lookPaused)
-        case .unreachable:
-            button.image = struck()
-            button.setAccessibilityLabel(Copy.lookUnreachable)
+        case .unreachable: button.setAccessibilityLabel(Copy.lookUnreachable)
         }
     }
 
-    // The mark in one colour: drawn, then filled where it's opaque.
-    private static func drawMark(in rect: NSRect, color: NSColor, alpha: CGFloat = 1) {
-        mark.draw(in: rect, from: .zero, operation: .sourceOver, fraction: alpha)
-        color.withAlphaComponent(alpha).set()
-        rect.fill(using: .sourceAtop)
+    static func image(for look: Look) -> NSImage {
+        switch look {
+        case .plain, .paused: return mark
+        case .news: return withDot()
+        case .waiting: return filled()
+        case .unreachable: return struck()
+        }
+    }
+
+    // The mark in one colour, on its own canvas first, so the fill touches only the mark and not what's behind it.
+    private static func drawMark(in rect: NSRect, color: NSColor) {
+        let tinted = NSImage(size: rect.size, flipped: false) { canvas in
+            mark.draw(in: canvas)
+            color.set()
+            canvas.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(in: rect)
     }
 
     private static func withDot() -> NSImage {
