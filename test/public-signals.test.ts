@@ -162,7 +162,7 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
   return { wallet: new Wallet(store, hooks), signals: new SignalStore(store), store };
 }
 
-test("a public signal that a newer one replaces comes off the server by itself, and a lookup stops returning it", async () => {
+test("a public signal that a renewal replaces stays public through the renewal: the newer one takes its place on the server", async () => {
   const server = fakeServer();
   const notes: string[] = [];
   const a = walletOn(server, ann, notes);
@@ -177,8 +177,10 @@ test("a public signal that a newer one replaces comes off the server by itself, 
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "marked for taking back, not left reading as public and current");
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
-  assert.deepEqual(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals, [], "the old signal is no longer returned");
-  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0, "the newer one isn't public until its owner says so");
+  // A renewal of a public signal stays public (Andre, 18 November), so a listing doesn't drop out of search at every renewal.
+  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 1, "the renewal took the old one's place");
+  assert.deepEqual([...server.held.keys()], [toHex(fill(42, 16))], "the server holds the newer one, not the old");
+  assert.equal(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals.length, 1);
   a.store.close();
   b.store.close();
 });
@@ -212,7 +214,7 @@ test("when taking a replaced signal back fails it is said loudly once, stays mar
   assert.equal(server.held.size, 1);
   server.failing.on = false;
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
-  assert.equal(server.held.size, 0);
+  assert.deepEqual([...server.held.keys()], [toHex(fill(52, 16))], "once the server is back, the renewal is public in the old one's place");
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
   a.store.close();
 });

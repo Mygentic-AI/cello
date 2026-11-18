@@ -227,7 +227,20 @@ export class Wallet {
     let left = 0;
     for (const row of waiting) {
       try {
-        await this.#hooks.unpublishFromServer(agentHex, readSignedSignal(new Uint8Array(row.file)).envelope.signal_id);
+        // A renewal of a public signal stays public (Andre, 18 November): the owner already chose to show that signal, and a listing
+        // would otherwise drop out of search at every renewal. Publishing the newer one replaces the older on the server in one step.
+        const successor = this.#signals.list(fromHex(agentHex)).find((r) => r.status === "active" && r.public === 0 && r.consent_state === CONSENT_ACCEPTED
+          && r.type === row.type && r.issuer_pubkey === row.issuer_pubkey && r.subject_kind === row.subject_kind && (r.expires_at === null || r.expires_at > nowSec()));
+        const oldId = readSignedSignal(new Uint8Array(row.file)).envelope.signal_id;
+        if (successor) {
+          const displaced = (await this.#hooks.publishToServer(agentHex, new Uint8Array(successor.file))).map((id) => toHex(id));
+          this.#signals.setPublic(fromHex(agentHex), successor.signal_hash, true);
+          logEvent("signal.public.published", { agent: agentHex, signal: successor.signal_hash, reason: "renewed" });
+          // An older server takes nothing down by itself, so the old one is taken back as before.
+          if (!displaced.includes(toHex(oldId))) await this.#hooks.unpublishFromServer(agentHex, oldId);
+        } else {
+          await this.#hooks.unpublishFromServer(agentHex, oldId);
+        }
         this.#signals.setPublic(fromHex(agentHex), row.signal_hash, false);
         this.#warned.delete(row.signal_hash);
         logEvent("signal.public.withdrawn", { agent: agentHex, signal: row.signal_hash, reason: "replaced" });
