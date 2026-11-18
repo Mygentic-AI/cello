@@ -35,8 +35,8 @@ export interface NotifierContext {
   // Every agent's notifiers of this type, oldest first.
   rows(): StoredNotifier[];
   // A choice made on a message one of these notifiers sent. remoteId is the id deliver returned for it, holds says which
-  // notifiers the person who chose may answer for, and reply says a line back to them.
-  choose(remoteId: string, holds: (agentHex: string, name: string) => boolean, index: number | undefined, sourceId: string, reply: (line: string) => Promise<void>): Promise<void>;
+  // notifiers the person who chose may answer for, and settle says a line back to them.
+  choose(remoteId: string, holds: (agentHex: string, name: string) => boolean, index: number | undefined, sourceId: string, settle: (line: string) => Promise<void>): Promise<void>;
 }
 
 // What a new notifier stores, and says about itself, once the service has accepted it.

@@ -8,6 +8,7 @@ import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { spawnSync } from "node:child_process";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Notifiers } from "../src/daemon/notifiers.ts";
 import { Store } from "../src/daemon/store.ts";
@@ -773,4 +774,39 @@ test("notifier-add's tool is built from the registry: every type, and each type'
     assert.ok(op.description.includes(`For ${type.name}, `));
   }
   assert.deepEqual(op.params.filter((p) => p.forKinds === undefined).map((p) => p.name), ["type", "same_as", "name"]);
+});
+
+test("a row of a type this version doesn't know is named in the list and as a failed send, and never read as Telegram", async () => {
+  const { notifiers, store } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  // Only a newer version could write this row.
+  store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "mac", "mac", "{}", Date.now() + 1);
+  const listed = notifiers.list(AGENT) as { notifiers: { notifier: string; problem?: string }[] };
+  assert.match(listed.notifiers.find((n) => n.notifier === "mac")?.problem ?? "", /can't use a mac notifier/);
+  const answer = await notifiers.notify(AGENT, {}) as { sent: boolean; notifiers: string[]; failed?: { notifier: string; message: string }[] };
+  assert.deepEqual([answer.sent, answer.notifiers], [true, ["telegram"]]);
+  assert.match(answer.failed?.find((f) => f.notifier === "mac")?.message ?? "", /can't use a mac notifier\. Upgrade CELLO/);
+  const added = await notifiers.add(AGENT, { type: "telegram", name: "work", bot_token: TOKEN, chat_id: "77" }) as { told_existing: string[]; could_not_tell?: { notifier: string }[] };
+  assert.deepEqual([added.told_existing, added.could_not_tell?.map((c) => c.notifier)], [["telegram"], ["mac"]]);
+  await assert.rejects(notifiers.notify(AGENT, { notifier: "mac" }), refusal("notify_failed"));
+});
+
+test("notifier-add's help lists the types, a type's help shows only its own options, and an unknown type is a usage mistake", () => {
+  const cli = (args: string[]): { status: number | null; out: string } => {
+    const run = spawnSync(process.execPath, [join(import.meta.dirname, "..", "src", "cli.ts"), ...args], { encoding: "utf8", env: { ...process.env, CELLO_HOME: mkdtempSync(join(tmpdir(), "cello-help-")) } });
+    return { status: run.status, out: run.stdout + run.stderr };
+  };
+  const all = cli(["notifier-add", "-h"]);
+  assert.equal(all.status, 0);
+  for (const type of NOTIFIER_TYPES) assert.ok(all.out.includes(`  ${type.name.padEnd(20)} ${type.summary}`));
+  assert.ok(all.out.includes("--same-as") && all.out.includes("--name") && all.out.includes("--agent"));
+  assert.ok(!all.out.includes("--bot-token") && !all.out.includes("--chat-id"), "a type's own options are on its own page");
+  assert.ok(all.out.includes("cello notifier-add <type> -h"));
+  const telegram = cli(["notifier-add", "telegram", "-h"]);
+  assert.equal(telegram.status, 0);
+  assert.ok(telegram.out.includes("  --bot-token") && telegram.out.includes("  --chat-id") && telegram.out.includes("@BotFather"));
+  assert.ok(!telegram.out.includes("  --same-as "), "the shared options are only named");
+  const bogus = cli(["notifier-add", "bogus", "-h"]);
+  assert.equal(bogus.status, 2);
+  assert.match(bogus.out, /has no type bogus\. Types: telegram/);
 });

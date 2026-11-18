@@ -64,7 +64,7 @@ export function withText(agentName: string, kind: Kind, text: string): string {
 interface NotifierRow { name: string; type: string; config: string; added_at: number }
 
 const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentHex, "hex"));
-const label = (type: string): string => notifierType(type)?.label ?? type;
+const serviceOf = (type: string): string => notifierType(type)?.label ?? type;
 // Only a database written by a newer version holds a type this one doesn't know. It's named, never read as another type.
 const unknownType = (type: string): string => `This version of CELLO can't use a ${type} notifier. Upgrade CELLO, or remove it with notifier-remove.`;
 
@@ -149,7 +149,7 @@ export class Notifiers {
   }
 
   // A choice made on one notifier, whatever its type. remoteId is the notifier's id for the message the choice was under,
-  // holds says which notifiers the person who chose may answer for, and reply says a line back to them.
+  // holds says which notifiers the person who chose may answer for, and settle says a line back to them.
   async #choose(remoteId: string, holds: (agentHex: string, name: string) => boolean, index: number | undefined, sourceId: string, settle: (line: string) => Promise<void>): Promise<void> {
     const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(remoteId) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; asked: string | null } | undefined;
     const sentBy = sent && Buffer.from(sent.agent_id).toString("hex");
@@ -292,7 +292,7 @@ export class Notifiers {
         if (!(err instanceof DeliveryError)) throw err;
         logEvent(err.maybeSent ? "notifier.unconfirmed" : "notifier.failed", { agent: agentHex, notifier: row.name, message: err.message });
         (err.maybeSent ? unconfirmed : failed).push({ notifier: row.name, message: err.message });
-        if (err.maybeSent) unconfirmedBy.add(label(row.type));
+        if (err.maybeSent) unconfirmedBy.add(serviceOf(row.type));
       }
     }
     if (reached.length === 0 && unconfirmed.length === 0) throw new LocalError("notify_failed", `Nobody was told. ${failed.map((f) => `${f.notifier}: ${f.message}`).join(" ")}`);
@@ -327,7 +327,7 @@ export class Notifiers {
       text = withText(agentName, kind, screened.text);
       report = screened.report;
       // The tightest limit among the notifiers it goes to.
-      const limit = rows.flatMap((row) => { const max = this.#adapters.get(row.type)?.maxChars; return max === undefined ? [] : [{ max, service: label(row.type) }]; }).sort((a, b) => a.max - b.max)[0];
+      const limit = rows.flatMap((row) => { const max = this.#adapters.get(row.type)?.maxChars; return max === undefined ? [] : [{ max, service: serviceOf(row.type) }]; }).sort((a, b) => a.max - b.max)[0];
       if (limit && text.length > limit.max) throw new LocalError("too_long", `Nobody was told: with its first line this is ${text.length} characters, and one ${limit.service} message holds ${limit.max}. Shorten it, or leave the text out to send the fixed line.`);
     }
     // Choices the person answers with one tap. They are the agent's words too, so they pass the same screen, together, and

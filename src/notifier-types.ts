@@ -1,5 +1,6 @@
 // The kinds of notifier, one entry each. The command line's help, the tool's schema and description, and the daemon's
-// checks are all built from this list. The daemon's code for each type is its adapter in src/daemon/notifiers.ts.
+// checks are all built from this list. The daemon's code for each type is its adapter, such as
+// src/daemon/notifier-telegram.ts, listed in the Notifiers constructor.
 import type { Kind } from "./ipc/operations.ts";
 
 export interface NotifierType extends Kind {
