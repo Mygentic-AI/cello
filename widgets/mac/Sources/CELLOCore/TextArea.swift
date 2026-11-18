@@ -19,8 +19,8 @@ public enum TextArea {
         return shift || option ? .newLine : .send
     }
 
-    // The box's height for what's in it: three lines empty, growing a line at a time, eight at most.
-    public static func height(contentHeight: Double, lineHeight: Double, inset: Double) -> Double {
+    // The box's height for what's in it: three lines empty (or minLines), growing a line at a time, eight at most.
+    public static func height(contentHeight: Double, lineHeight: Double, inset: Double, minLines: Int = TextArea.minLines) -> Double {
         let lo = lineHeight * Double(minLines)
         let hi = lineHeight * Double(maxLines)
         return min(max(contentHeight, lo), hi) + inset * 2

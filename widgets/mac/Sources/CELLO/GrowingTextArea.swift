@@ -1,4 +1,4 @@
-// A text box that starts three lines tall and grows as the person types. It's AppKit's own text view, so paste,
+// A text box that starts a few lines tall and grows as the person types. It's AppKit's own text view, so paste,
 // dictation, undo and input methods all work in it. What Return does is decided in CELLOCore (TextArea).
 import AppKit
 import CELLOCore
@@ -7,11 +7,16 @@ import SwiftUI
 struct GrowingTextArea: View {
     let placeholder: String
     @Binding var text: String
+    var minLines = TextArea.minLines
+    // Takes the typing focus as soon as it appears.
+    var focused = false
+    // Escape, when set. Unset, Escape goes on to the panel, which closes.
+    var onCancel: (() -> Void)?
     let onSubmit: () -> Void
     @State private var height: CGFloat = 0
 
     var body: some View {
-        TextAreaView(text: $text, height: $height, onSubmit: onSubmit)
+        TextAreaView(text: $text, height: $height, minLines: minLines, focused: focused, onCancel: onCancel, onSubmit: onSubmit)
             .frame(height: max(height, 1))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty {
@@ -30,6 +35,9 @@ private struct TextAreaView: NSViewRepresentable {
 
     @Binding var text: String
     @Binding var height: CGFloat
+    let minLines: Int
+    let focused: Bool
+    let onCancel: (() -> Void)?
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -51,7 +59,11 @@ private struct TextAreaView: NSViewRepresentable {
         view.backgroundColor = .textBackgroundColor
         view.textContainerInset = NSSize(width: 0, height: Self.inset)
         view.string = text
-        DispatchQueue.main.async { context.coordinator.measure(view) }
+        let focused = self.focused
+        DispatchQueue.main.async {
+            context.coordinator.measure(view)
+            if focused { view.window?.makeFirstResponder(view) }
+        }
         return scroll
     }
 
@@ -78,6 +90,11 @@ private struct TextAreaView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            // Escape while an input method is composing belongs to it, like Return.
+            if selector == #selector(NSResponder.cancelOperation(_:)), let cancel = parent.onCancel, !textView.hasMarkedText() {
+                cancel()
+                return true
+            }
             guard selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) else { return false }
             let flags = NSApp.currentEvent?.modifierFlags ?? []
             let option = flags.contains(.option) || selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))
@@ -98,7 +115,7 @@ private struct TextAreaView: NSViewRepresentable {
             layout.ensureLayout(for: container)
             let used = layout.usedRect(for: container).height
             let line = layout.defaultLineHeight(for: TextAreaView.font)
-            let next = CGFloat(TextArea.height(contentHeight: Double(used), lineHeight: Double(line), inset: Double(TextAreaView.inset)))
+            let next = CGFloat(TextArea.height(contentHeight: Double(used), lineHeight: Double(line), inset: Double(TextAreaView.inset), minLines: parent.minLines))
             if abs(next - parent.height) > 0.5 { parent.height = next }
         }
     }

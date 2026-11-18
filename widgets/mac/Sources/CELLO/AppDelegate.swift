@@ -180,6 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         clickAway.panelClosed()
         // It opens again on what's waiting, not on the list of agents.
         panel.showingAgents = false
+        // An empty composer folds back to one line; one with words in it stays open on them.
+        if panel.messageText.isEmpty { panel.composing = false }
         ticker?.invalidate()
         ticker = nil
     }

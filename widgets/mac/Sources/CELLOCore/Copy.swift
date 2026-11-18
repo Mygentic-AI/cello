@@ -84,7 +84,8 @@ public enum Copy {
     public static func waitingHeader(_ count: Int) -> String { "WAITING FOR YOU · \(count)" }
     public static let nothingWaiting = "Nothing needs you right now."
     public static let earlierToday = "EARLIER TODAY"
-    public static let messageAnAgent = "MESSAGE AN AGENT"
+    public static let messageAnAgent = "Message an agent…"
+    public static let closeComposer = "Close"
     public static let to = "To"
     public static let typeAMessage = "Type a message…"
     public static let orAnswer = "Or answer in your own words"

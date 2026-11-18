@@ -11,6 +11,8 @@ final class PanelModel: ObservableObject {
     @Published var messageText = ""
     @Published var messageAgent = ""
     @Published var messageLine: String?
+    // "Message an agent…" is one line until clicked, so a question's choices and reply box get the room.
+    @Published var composing = false
     @Published var loginItemOn = LoginItem.isOn
     // The Mac's own settings standing in the way: notifications turned off, or open at login waiting for an OK.
     @Published var notificationsOff = false
@@ -59,8 +61,17 @@ final class PanelModel: ObservableObject {
         controller.message(messageAgent, text: text) { [weak self] ok, line in
             guard let self else { return }
             self.messageLine = line
-            if ok { self.messageText = "" }
+            // Sent: it folds back to one line, with the line saying where it went. Not sent: it stays open on the draft.
+            if ok {
+                self.messageText = ""
+                self.composing = false
+            }
         }
+    }
+
+    func openComposer() {
+        messageLine = nil
+        composing = true
     }
 
     func showAgents() {
@@ -142,7 +153,7 @@ struct PanelView: View {
             header(state, now: now).measured($headerHeight)
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: PanelLayout.listSpacing) {
                     if model.showingAgents {
                         agentsList(state)
                     } else {
@@ -150,7 +161,7 @@ struct PanelView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                .padding(.vertical, PanelLayout.listPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .measured($listContent)
             }
@@ -228,13 +239,13 @@ struct PanelView: View {
 
     private func header(_ state: AppState, now: Date) -> some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 24, height: 24).clipShape(RoundedRectangle(cornerRadius: 6))
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: PanelLayout.headerIcon, height: PanelLayout.headerIcon).clipShape(RoundedRectangle(cornerRadius: 6))
             Text(Copy.appName).font(.system(size: 15, weight: .bold))
             Spacer()
             settings(state, now: now)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, PanelLayout.headerPadding)
     }
 
     private func settings(_ state: AppState, now: Date) -> some View {
@@ -295,7 +306,7 @@ struct PanelView: View {
     }
 
     private func card(_ item: Item, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: PanelLayout.cardSpacing) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title(item)).font(.system(size: 14, weight: .bold))
                 Spacer()
@@ -306,28 +317,31 @@ struct PanelView: View {
             }
             Text(item.text).font(.system(size: 13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if item.kind == .request && !item.choices.isEmpty {
-                VStack(spacing: 6) {
+                VStack(spacing: PanelLayout.choiceGap) {
                     ForEach(Array(item.choices.enumerated()), id: \.offset) { index, label in
                         Button { model.pick(item, index) } label: {
-                            Text(label).font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 32)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.3)))
+                            Text(label).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).frame(height: PanelLayout.choiceHeight)
+                                .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.gray.opacity(0.3)))
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .help(label)
                     }
                 }
             }
             if item.kind != .test {
+                let underChoices = item.kind == .request && !item.choices.isEmpty
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.kind == .request && !item.choices.isEmpty ? Copy.orAnswer : Copy.replyLabel).font(.system(size: 12)).foregroundColor(muted)
-                    GrowingTextArea(placeholder: Copy.typeTo(item.agent), text: Binding(get: { model.drafts[item.id] ?? "" }, set: { model.drafts[item.id] = $0 })) { model.reply(item) }
+                    Text(underChoices ? Copy.orAnswer : Copy.replyLabel).font(.system(size: 12)).foregroundColor(muted)
+                    GrowingTextArea(placeholder: Copy.typeTo(item.agent), text: Binding(get: { model.drafts[item.id] ?? "" }, set: { model.drafts[item.id] = $0 }), minLines: underChoices ? PanelLayout.replyLinesUnderChoices : TextArea.minLines) { model.reply(item) }
                 }
             }
             if let problem = model.problems[item.id] {
                 Text(problem).font(.system(size: 12)).foregroundColor(pink)
             }
         }
-        .padding(12)
+        .padding(PanelLayout.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .textBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.gray.opacity(0.2)))
@@ -344,25 +358,37 @@ struct PanelView: View {
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.gray.opacity(0.2)))
     }
 
+    // One line, "Message an agent…", until clicked. Open: who to, and the box. Escape or a sent message folds it back.
     private func messageBox(_ state: AppState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(Copy.messageAnAgent).font(.system(size: 12, weight: .semibold)).foregroundColor(muted)
             if state.agents.isEmpty {
                 Text(Copy.noAgentsYet).font(.system(size: 13)).foregroundColor(muted)
+            } else if model.composing {
+                HStack {
+                    Picker(Copy.to, selection: $model.messageAgent) {
+                        ForEach(state.agents, id: \.agentID) { agent in Text(agent.name).tag(agent.agentID) }
+                    }
+                    .fixedSize()
+                    Spacer()
+                    Button { model.composing = false } label: { Image(systemName: "chevron.down") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(Copy.closeComposer)
+                }
+                GrowingTextArea(placeholder: Copy.typeAMessage, text: $model.messageText, focused: true, onCancel: { model.composing = false }) { model.sendMessage() }
             } else {
-                Picker(Copy.to, selection: $model.messageAgent) {
-                    ForEach(state.agents, id: \.agentID) { agent in Text(agent.name).tag(agent.agentID) }
+                Button { model.openComposer() } label: {
+                    Text(Copy.messageAnAgent).font(.system(size: 13)).foregroundColor(muted)
+                        .frame(maxWidth: .infinity, minHeight: PanelLayout.line13 + 4, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
-                .fixedSize()
-                GrowingTextArea(placeholder: Copy.typeAMessage, text: $model.messageText) { model.sendMessage() }
-                if let line = model.messageLine {
-                    Text(line).font(.system(size: 12)).foregroundColor(muted)
-                }
+                .buttonStyle(.plain)
+            }
+            if let line = model.messageLine, !state.agents.isEmpty {
+                Text(line).font(.system(size: 12)).foregroundColor(muted).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
+        .padding(.vertical, PanelLayout.composerPadding)
         .background(Color(nsColor: .underPageBackgroundColor))
     }
 }

@@ -636,6 +636,35 @@ final class PanelSizeTests: XCTestCase {
         // A tiny screen still leaves the list room to scroll.
         XCTAssertEqual(PanelSize.listHeight(content: 900, chrome: 400, screen: 500), PanelSize.smallestList)
     }
+
+    // A question with eight choices, the card's reply box under them, and the composer closed, fits without scrolling.
+    // The text heights in the sum are the system font's line heights, not read from a drawn panel, so the margin is small
+    // by design: an eye on the real panel is the last word.
+    func testEightChoicesAndTheReplyBoxFitOnALaptopScreen() {
+        // The owner's MacBook Pro: 982 high, less a 33-point menu bar and a 79-point Dock, as macOS logged it.
+        let owners = 870.0
+        // A 13-inch MacBook Air at its default size: 956 high, less the menu bar and the Dock.
+        let air = 840.0
+        func fits(_ screen: Double, questionLines: Int) -> Bool {
+            let whole = PanelLayout.oneQuestion(choices: 8, questionLines: questionLines, talkingTo: true)
+            let list = whole - PanelLayout.chrome
+            return PanelSize.listHeight(content: list, chrome: PanelLayout.chrome, screen: screen) == list
+        }
+        XCTAssertTrue(fits(owners, questionLines: 2), "\(PanelLayout.oneQuestion(choices: 8, questionLines: 2, talkingTo: true)) against \(owners * PanelSize.screenShare)")
+        XCTAssertTrue(fits(air, questionLines: 1), "\(PanelLayout.oneQuestion(choices: 8, questionLines: 1, talkingTo: true)) against \(air * PanelSize.screenShare)")
+        // Still easy to hit with a mouse.
+        XCTAssertGreaterThanOrEqual(PanelLayout.choiceHeight, 28)
+    }
+
+    // The sum above is only worth something if the panel is drawn from the same numbers.
+    func testThePanelIsDrawnFromTheNumbersTheSumUses() throws {
+        let panel = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Sources/CELLO/PanelView.swift").standardized
+        let text = try String(contentsOf: panel, encoding: .utf8)
+        for name in ["choiceHeight", "choiceGap", "cardPadding", "cardSpacing", "listPadding", "listSpacing", "headerPadding", "headerIcon", "composerPadding", "replyLinesUnderChoices"] {
+            XCTAssertTrue(text.contains("PanelLayout.\(name)"), "PanelView doesn't use PanelLayout.\(name)")
+        }
+        XCTAssertFalse(text.contains("MESSAGE AN AGENT"))
+    }
 }
 
 final class ClickAwayTests: XCTestCase {
