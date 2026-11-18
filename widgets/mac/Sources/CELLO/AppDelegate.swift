@@ -99,7 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         case let .withdraw(itemID):
             banners.withdraw(itemID)
         case let .joined(agent):
-            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody(agent.name), breaksThrough: false)
+            // Active, Focus or not: it's the Mac's only warning that a tricked agent added itself.
+            banners.postQuiet(title: Copy.joinedTitle(agent.name), body: Copy.joinedBody(agent.name))
         case .ack:
             break
         }

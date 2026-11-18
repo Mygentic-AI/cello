@@ -105,13 +105,13 @@ final class Banners: NSObject, UNUserNotificationCenterDelegate {
     }
 
     // A banner about the app itself, with no sound: an agent joined, an answer didn't go, the first hello.
-    // breaksThrough: false for news about the app, such as an agent joining, which waits through a Focus like any news.
-    func postQuiet(title: String, body: String, sound: Bool = false, breaksThrough: Bool = true) {
+    // Every one of these is about something the person did or must know, such as an agent joining, so none is passive.
+    func postQuiet(title: String, body: String, sound: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = sound ? .default : nil
-        content.interruptionLevel = Self.level(breaksThrough)
+        content.interruptionLevel = .active
         add(UUID().uuidString, content) { _ in }
     }
 
