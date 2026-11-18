@@ -941,6 +941,9 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   const thirdInTelegram = sent.at(-1) as Sent;
   const typed = await app.request({ op: "reply", ref: "typed-lunch-1", id: third["id"], text: "Make it one o'clock." });
   assert.equal(typed["ok"], true);
+  // The same reply sent again, as after a dropped connection: it was the first answer, so it's never called a follow-up.
+  const retried = await app.request({ op: "reply", ref: "typed-lunch-1", id: third["id"], text: "Make it one o'clock." });
+  assert.deepEqual([retried["ok"], retried["already"], retried["follow_up"], retried["said"]], [true, true, undefined, undefined]);
   await until("Telegram's buttons to come off after a typed answer", () => edits.some((e) => e.message_id === thirdInTelegram.message_id && e.buttons === 0));
   await until("Telegram to say it was answered", () => sent.some((s) => s.text === "Answered on another of Ann's notifiers: a typed answer."));
   taps(55, thirdInTelegram.message_id, "choice:0");

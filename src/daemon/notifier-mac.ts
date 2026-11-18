@@ -277,7 +277,10 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       this.#done(target.queueId);
     }
     const name = this.#ctx.host.agentName(target.agentHex);
-    return { fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(first === undefined ? {} : { follow_up: true, first_answer: first, said: followUpLine(first, name) }), ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } };
+    // "already" is this same reply sent again, and the answer found first may be its own, so it isn't called a follow-up.
+    // Telegram likewise says nothing on a reply it already passed on.
+    const followUp = first !== undefined && outcome === "stored";
+    return { fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(followUp ? { follow_up: true, first_answer: first, said: followUpLine(first, name) } : {}), ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } };
   }
 
   #pause(request: Record<string, unknown>): Promise<DoorReply> {
