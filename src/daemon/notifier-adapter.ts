@@ -40,6 +40,9 @@ export interface NotifierContext {
   // A choice made on a message one of these notifiers sent. remoteId is the id deliver returned for it, holds says which
   // notifiers the person who chose may answer for, and settle says a line back to them.
   choose(remoteId: string, holds: (agentHex: string, name: string) => boolean, index: number | undefined, sourceId: string, settle: (line: string) => Promise<void>): Promise<ChoiceOutcome>;
+  // A question answered in the person's own words, under the message with that remoteId. If it offered choices, it now
+  // counts as answered everywhere, and the other copies are settled.
+  answeredInWords(remoteId: string): Promise<void>;
 }
 
 // How a choice ended: handed to the agent, or why not.

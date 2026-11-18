@@ -51,6 +51,9 @@ export const NOTIFY_KINDS = ["message", "request"] as const;
 type Kind = (typeof NOTIFY_KINDS)[number];
 
 const MAX_CHOICES = 8;
+// What notifications.chosen holds when the person typed their answer rather than choosing, and how that's said.
+const TYPED = -1;
+const TYPED_LABEL = "a typed answer";
 const MAX_CHOICE_CHARS = 40;
 const NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 
@@ -114,7 +117,21 @@ export class Notifiers {
       rows: () => (this.#store.prepare("SELECT agent_id, name, config FROM notifiers WHERE type = ? ORDER BY added_at, name").all(type) as { agent_id: Uint8Array; name: string; config: string }[])
         .map((row): StoredNotifier => ({ agentHex: Buffer.from(row.agent_id).toString("hex"), name: row.name, config: row.config })),
       choose: (remoteId, holds, index, sourceId, reply) => this.#choose(remoteId, holds, index, sourceId, reply),
+      answeredInWords: (remoteId) => this.#answeredInWords(remoteId),
     };
+  }
+
+  // A typed answer to a question with choices. Marked as chosen with TYPED, so a later tap anywhere is told it's answered,
+  // and every copy, this one included, is settled.
+  async #answeredInWords(remoteId: string): Promise<void> {
+    const sent = this.#store.prepare("SELECT id, agent_id, notifier, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(remoteId) as { id: number; agent_id: Uint8Array; notifier: string; asked: string | null } | undefined;
+    if (!sent || sent.asked === null) return;
+    // Checked and marked with nothing awaited between, so a tap in the same moment finds one or the other.
+    if (this.#store.prepare("SELECT 1 FROM notifications WHERE asked = ? AND chosen IS NOT NULL LIMIT 1").get(sent.asked)) return;
+    this.#store.prepare("UPDATE notifications SET chosen = ? WHERE asked = ?").run(TYPED, sent.asked);
+    const agentHex = Buffer.from(sent.agent_id).toString("hex");
+    const type = this.#rows(agentHex).find((row) => row.name === sent.notifier)?.type;
+    await this.#settleAsked(sent.asked, sent.id, { label: TYPED_LABEL, agentName: this.#host.agentName(agentHex), where: type === undefined ? sent.notifier : serviceOf(type), notifier: sent.notifier });
   }
 
   // Starts listening for the operator's replies, on every type.
@@ -170,7 +187,7 @@ export class Notifiers {
     // One question may have gone out on several notifiers. It's answered once, whichever chat the tap came from.
     const answered = this.#store.prepare("SELECT chosen FROM notifications WHERE asked = ? AND chosen IS NOT NULL LIMIT 1").get(sent.asked) as { chosen: number } | undefined;
     if (answered) {
-      await settle(`Already answered: ${choices[answered.chosen] ?? "another choice"}.`);
+      await settle(`Already answered: ${answered.chosen === TYPED ? TYPED_LABEL : choices[answered.chosen] ?? "another choice"}.`);
       return "already_answered";
     }
     const outcome = this.#host.fromOperator(holder.agentHex, sent.session_id, label, holder.name, sourceId);

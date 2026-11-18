@@ -230,7 +230,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     return { fields: { said } };
   }
 
-  #reply(request: Record<string, unknown>): Promise<DoorReply> {
+  async #reply(request: Record<string, unknown>): Promise<DoorReply> {
     const ref = request["ref"];
     if (typeof ref !== "string" || !REF_RULE.test(ref)) throw new LocalError("bad_request", "A reply needs ref: the app's own id for it, 8 to 64 letters, digits, dashes or underscores, so it reaches the agent once even if sent again.");
     const raw = request["text"];
@@ -252,9 +252,13 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     }
     const outcome = this.#ctx.host.fromOperator(target.agentHex, target.session, text, target.notifier, `mac:reply:${ref}`);
     if (outcome === "no_agent") throw new LocalError("no_agent", "The agent this was for is no longer on this machine, so it wasn't passed on.");
-    if (target.queueId !== undefined) this.#done(target.queueId);
+    if (target.queueId !== undefined) {
+      // Typed under a question with choices: answered everywhere, so the phone's buttons go too.
+      await this.#ctx.answeredInWords(remoteOf(target.queueId));
+      this.#done(target.queueId);
+    }
     const name = this.#ctx.host.agentName(target.agentHex);
-    return Promise.resolve({ fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } });
+    return { fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } };
   }
 
   #pause(request: Record<string, unknown>): Promise<DoorReply> {

@@ -894,6 +894,18 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   const late = await app.request({ op: "pick", id: second["id"], choice: 1 });
   assert.deepEqual([late["ok"], late["error"], late["message"]], [false, "already_answered", "Already answered: Yes."]);
   assert.deepEqual(handed.map((h) => h.text), ["No", "Yes"], "each question reached the agent once");
+
+  // Typed on the Mac under a question with choices: answered everywhere, so a later tap on the phone hands nothing over.
+  await notifiers.notify(AGENT, { kind: "request", text: "Lunch at noon?", choices: "Yes|No", session_id: session });
+  const third = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Lunch at noon?", "the third question on the Mac");
+  const thirdInTelegram = sent.at(-1) as Sent;
+  const typed = await app.request({ op: "reply", ref: "typed-lunch-1", id: third["id"], text: "Make it one o'clock." });
+  assert.equal(typed["ok"], true);
+  await until("Telegram's buttons to come off after a typed answer", () => edits.some((e) => e.message_id === thirdInTelegram.message_id && e.buttons === 0));
+  await until("Telegram to say it was answered", () => sent.some((s) => s.text === "Answered on another of Ann's notifiers: a typed answer."));
+  taps(55, thirdInTelegram.message_id, "choice:0");
+  await until("the tap after a typed answer to be refused", () => tapAnswers.includes("Already answered: a typed answer."));
+  assert.deepEqual(handed.map((h) => h.text), ["No", "Yes", "Make it one o'clock."]);
   await app.close();
 });
 
