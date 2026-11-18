@@ -222,7 +222,8 @@ public final class Controller {
             guard let self else { return }
             if reply.ok {
                 self.replyRefs.removeValue(forKey: key)
-                self.run(self.state.answered(itemID, what: item.kind == .request ? Copy.youAnswered : Copy.youReplied, now: self.now()))
+                // Answered on another device first: CELLO says it went as a follow-up, and that's the line kept.
+                self.run(self.state.answered(itemID, what: reply.string("said") ?? (item.kind == .request ? Copy.youAnswered : Copy.youReplied), now: self.now()))
                 self.changed()
                 done(nil)
             } else {

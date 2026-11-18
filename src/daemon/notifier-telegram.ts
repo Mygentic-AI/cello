@@ -2,7 +2,7 @@
 // one reader per bot however many notifiers use it, because Telegram allows a bot only one.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
-import type { Connected, Delivered, NotifierAdapter, NotifierContext, Outgoing, Settled, StoredNotifier } from "./notifier-adapter.ts";
+import { type Connected, type Delivered, type NotifierAdapter, type NotifierContext, type Outgoing, type Settled, type StoredNotifier, followUpLine, followUpText } from "./notifier-adapter.ts";
 import { TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendButtons, sendText, setCommands, thumbsUp, updatesFrom } from "./telegram.ts";
 
 // A pick made with /agents, kept in the notifications table as its own kind. A button carries "pick:" and the start of the
@@ -280,7 +280,9 @@ export class TelegramNotifier implements NotifierAdapter {
       target = { holder: first, sessionId: null };
     }
     const agentHex = target.holder.agentHex;
-    const outcome = this.#ctx.host.fromOperator(agentHex, target.sessionId, text, target.holder.name, `telegram:${botId}:${update.update_id}`);
+    // Already answered, here or on another notifier: still passed on, as a follow-up that says what came first.
+    const earlier = target.answers === undefined ? undefined : this.#ctx.priorAnswer(target.answers);
+    const outcome = this.#ctx.host.fromOperator(agentHex, target.sessionId, earlier === undefined ? text : followUpText(earlier, text), target.holder.name, `telegram:${botId}:${update.update_id}`);
     // A typed reply to a question with choices answers it everywhere: its buttons go, here and on every other notifier.
     // Also when it was handed over before a restart, since the buttons may still be showing.
     if (outcome !== "no_agent" && target.answers !== undefined) await this.#ctx.answeredInWords(target.answers);
@@ -291,6 +293,10 @@ export class TelegramNotifier implements NotifierAdapter {
       return;
     }
     const name = this.#ctx.host.agentName(agentHex);
+    if (earlier !== undefined) {
+      await this.#answer(here, followUpLine(earlier, name), true);
+      return;
+    }
     if (!this.#ctx.host.reachable(agentHex)) {
       await this.#answer(here, `Passed to ${name}. No session is holding ${name} right now, so it will see this when one next reads.`, true);
       return;

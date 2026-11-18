@@ -934,6 +934,28 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   taps(55, fourthInTelegram.message_id, "choice:1");
   await until("a tap after the typed answer to be refused", () => tapAnswers.filter((t) => t === "Already answered: a typed answer.").length === 2);
   assert.equal(handed.length, 4, "one answer per question, however it was given");
+
+  // Typed after the question was answered on the other device: a follow-up, the same on both. Picked on the Mac, then
+  // typed in Telegram as a reply to it.
+  await notifiers.notify(AGENT, { kind: "request", text: "Wine?", choices: "Red|White", session_id: session });
+  const wine = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Wine?", "the wine question");
+  const wineInTelegram = sent.at(-1) as Sent;
+  assert.equal((await app.request({ op: "pick", id: wine["id"], choice: 1 }))["ok"], true);
+  says(55, "Actually make it red.", wineInTelegram.message_id);
+  await until("the follow-up from Telegram", () => handed.length === 6);
+  assert.deepEqual(handed.slice(4).map((h) => [h.text, h.session, h.via]), [
+    ["White", session, "mac"],
+    ["A follow-up from your operator, who already answered this question (first answer: White): Actually make it red.", session, "telegram"],
+  ]);
+  await until("Telegram to say it went as a follow-up", () => sent.some((s) => s.text === "Already answered: White. Passed to Ann as a follow-up." && s.silent));
+  // Tapped in Telegram, then typed on the Mac.
+  await notifiers.notify(AGENT, { kind: "request", text: "Dessert?", choices: "Cake|Fruit", session_id: session });
+  const dessert = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Dessert?", "the dessert question");
+  taps(55, (sent.at(-1) as Sent).message_id, "choice:0");
+  await app.waitFor((f) => f["op"] === "settled" && f["id"] === dessert["id"], "the tap to settle the Mac");
+  const macMore = await app.request({ op: "reply", ref: "dessert-more-1", id: dessert["id"], text: "Small slice." });
+  assert.deepEqual([macMore["ok"], macMore["follow_up"], macMore["said"]], [true, true, "Already answered: Cake. Passed to Ann as a follow-up."]);
+  assert.equal(handed.at(-1)?.text, "A follow-up from your operator, who already answered this question (first answer: Cake): Small slice.");
   await app.close();
 });
 

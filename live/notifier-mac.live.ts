@@ -189,7 +189,7 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   const typed = await app.request({ op: "reply", ref: "reply-thursday-1", id: named["id"], text: "Yes, but only after 2pm." });
   assert.deepEqual([typed["ok"], typed["passed_to"]], [true, "Ann"]);
   const resent = await app.request({ op: "reply", ref: "reply-thursday-1", id: named["id"], text: "Yes, but only after 2pm." });
-  assert.equal(resent["ok"], false, "the notification it answered is no longer waiting");
+  assert.deepEqual([resent["ok"], resent["already"]], [true, true], "the same reply sent again reaches the agent once");
   assert.deepEqual(operatorReplies("Ann", "ann-shell").map((r) => [r.text, r.session_id, r.via]), [["Yes, but only after 2pm.", session, "mac"]]);
 
   // 7b. A typed answer to a question with choices answers it: a pick afterwards is refused, and the agent gets one answer.
@@ -202,6 +202,10 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   const lateRoom = await app.request({ op: "pick", id: rooms["id"], choice: 0 });
   assert.deepEqual([lateRoom["ok"], lateRoom["error"]], [false, "already_answered"]);
   assert.deepEqual(operatorReplies("Ann", "ann-shell").map((r) => r.text), ["Neither, use the café."]);
+  // Typed again after it's answered: a follow-up, saying what came first, and the person is told so.
+  const more = await app.request({ op: "reply", ref: "typed-room-0002", id: rooms["id"], text: "And book it for six." });
+  assert.deepEqual([more["ok"], more["follow_up"], more["first_answer"], more["said"]], [true, true, "a typed answer", "Already answered: a typed answer. Passed to Ann as a follow-up."]);
+  assert.deepEqual(operatorReplies("Ann", "ann-shell").map((r) => [r.text, r.session_id]), [["A follow-up from your operator, who already answered this question (first answer: a typed answer): And book it for six.", session]]);
 
   // 8. A plain message to an agent the person picks, about no session. One that doesn't reach them here is refused.
   const plain = await app.request({ op: "reply", ref: "plain-to-bea-1", agent: beaId, text: "Bea, book the room for Friday." });

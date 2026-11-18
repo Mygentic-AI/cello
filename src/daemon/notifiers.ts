@@ -118,7 +118,18 @@ export class Notifiers {
         .map((row): StoredNotifier => ({ agentHex: Buffer.from(row.agent_id).toString("hex"), name: row.name, config: row.config })),
       choose: (remoteId, holds, index, sourceId, reply) => this.#choose(remoteId, holds, index, sourceId, reply),
       answeredInWords: (remoteId) => this.#answeredInWords(remoteId),
+      priorAnswer: (remoteId) => this.#priorAnswer(remoteId),
     };
+  }
+
+  // What the question under this message was answered with, as this message showed its choices.
+  #priorAnswer(remoteId: string): string | undefined {
+    const sent = this.#store.prepare("SELECT choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(remoteId) as { choices: string | null; asked: string | null } | undefined;
+    if (!sent || sent.asked === null) return undefined;
+    const answered = this.#store.prepare("SELECT chosen FROM notifications WHERE asked = ? AND chosen IS NOT NULL LIMIT 1").get(sent.asked) as { chosen: number } | undefined;
+    if (!answered) return undefined;
+    if (answered.chosen === TYPED) return TYPED_LABEL;
+    return (sent.choices ? JSON.parse(sent.choices) as string[] : [])[answered.chosen] ?? "another choice";
   }
 
   // A typed answer to a question with choices. Marked as chosen with TYPED, so a later tap anywhere is told it's answered,

@@ -43,7 +43,15 @@ export interface NotifierContext {
   // A question answered in the person's own words, under the message with that remoteId. If it offered choices, it now
   // counts as answered everywhere, and the other copies are settled.
   answeredInWords(remoteId: string): Promise<void>;
+  // The answer the question under that message already has, from any notifier, or undefined. A typed reply to one that
+  // has an answer is passed on as a follow-up. Read with nothing awaited before the hand-over, so it can't go stale.
+  priorAnswer(remoteId: string): string | undefined;
 }
+
+// A typed reply to a question already answered: it still reaches the agent, saying what came first, and the person is told.
+// The same words on every notifier.
+export const followUpText = (first: string, text: string): string => `A follow-up from your operator, who already answered this question (first answer: ${first}): ${text}`;
+export const followUpLine = (first: string, agentName: string): string => `Already answered: ${first}. Passed to ${agentName} as a follow-up.`;
 
 // How a choice ended: handed to the agent, or why not.
 export type ChoiceOutcome = "passed" | "not_waiting" | "not_a_choice" | "already_answered" | "no_agent";

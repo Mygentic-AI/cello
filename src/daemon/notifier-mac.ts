@@ -4,7 +4,7 @@
 // message's until a day after it was shown, then empties them, as operator_messages does once a reply is read.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
-import { DeliveryError } from "./notifier-adapter.ts";
+import { DeliveryError, followUpLine, followUpText } from "./notifier-adapter.ts";
 import type { ChoiceOutcome, Connected, Delivered, NotifierAdapter, NotifierContext, Outgoing, Settled, StoredNotifier } from "./notifier-adapter.ts";
 import { type DoorConnection, type DoorHandler, type DoorReply, OperatorDoor, type OperatorOp } from "./operator-door.ts";
 
@@ -253,7 +253,9 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     let target: { agentHex: string; notifier: string; session: Uint8Array | null; queueId?: number };
     if (request["id"] !== undefined) {
       const id = this.#idIn(request);
-      const row = this.#row(id);
+      // Answered or settled already is fine, as replying to an old message in Telegram is: it still names the agent and
+      // the session. Only a notification whose agent no longer reaches the Mac is gone.
+      const row = this.#ctx.store.prepare("SELECT agent_id, notifier, session_id FROM mac_queue WHERE id = ?").get(id) as Pick<QueueRow, "agent_id" | "notifier" | "session_id"> | undefined;
       const agentHex = row && hexOf(row.agent_id);
       if (!row || agentHex === undefined || !this.#holds(agentHex, row.notifier)) throw new LocalError("not_waiting", "That notification is gone, so the reply wasn't passed on.");
       target = { agentHex, notifier: row.notifier, session: row.session_id, queueId: id };
@@ -263,7 +265,9 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       if (!theirs) throw new LocalError("no_such_agent", "Name the agent by its agent_id, one that reaches you here. subscribe lists them.");
       target = { agentHex: theirs.agentHex, notifier: theirs.name, session: null };
     }
-    const outcome = this.#ctx.host.fromOperator(target.agentHex, target.session, text, target.notifier, `mac:reply:${ref}`);
+    // Already answered, here or on another notifier: still passed on, as a follow-up that says what came first, as Telegram does.
+    const first = target.queueId === undefined ? undefined : this.#ctx.priorAnswer(remoteOf(target.queueId));
+    const outcome = this.#ctx.host.fromOperator(target.agentHex, target.session, first === undefined ? text : followUpText(first, text), target.notifier, `mac:reply:${ref}`);
     if (outcome === "no_agent") throw new LocalError("no_agent", "The agent this was for is no longer on this machine, so it wasn't passed on.");
     if (target.queueId !== undefined) {
       // Typed under a question with choices: answered everywhere, so the phone's buttons go too.
@@ -271,7 +275,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       this.#done(target.queueId);
     }
     const name = this.#ctx.host.agentName(target.agentHex);
-    return { fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } };
+    return { fields: { passed_to: name, agent_id: target.agentHex, already: outcome === "already", ...(first === undefined ? {} : { follow_up: true, first_answer: first, said: followUpLine(first, name) }), ...(this.#ctx.host.reachable(target.agentHex) ? {} : { note: `No session is holding ${name} right now, so it will see this when one next reads.` }) } };
   }
 
   #pause(request: Record<string, unknown>): Promise<DoorReply> {
