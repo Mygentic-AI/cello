@@ -69,6 +69,14 @@ export const ERROR_CODES = [
   "issuer_list_not_configured",
   "issuer_list_expired",
   "issuer_list_invalid",
+  "not_a_partner",
+  "unknown_listing",
+  "not_listing_owner",
+  "listing_stale",
+  "listing_name_reserved",
+  "listing_needs_usage",
+  "listing_blocked",
+  "listing_suspended",
   "internal_error",
 ] as const;
 

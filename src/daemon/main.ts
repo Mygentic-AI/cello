@@ -1,4 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
+import { doorbellWarning } from "./doorbell-warning.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { HELLO_METHOD, daemonProof, ipcHandshakeRequired, newIpcKey } from "../ipc/handshake.ts";
@@ -11,6 +12,7 @@ import type { IpcNotification, IpcRequest, IpcResponse } from "../ipc/protocol.t
 import { CONFIG_SERVER_URL, type Doorbell, Engine, LocalError, ONCE_WRITTEN, type Signal } from "./engine.ts";
 import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
+import { Discovery } from "./discovery.ts";
 import { requirePerson as requirePersonFor } from "./errors.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
@@ -72,6 +74,7 @@ function ring(agentHex: string, bell: Doorbell): void {
 
 const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
+const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex), lookupSignals: (agentHex, address) => engine.wallet.lookup(agentHex, address) });
 const notifiers = new Notifiers(store, engine.notifierHost(), TELEGRAM, operatorSocketPath(home));
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
@@ -112,6 +115,12 @@ function acting(params: Record<string, unknown>): string {
   const agent = engine.resolveAgent(text(params, "agent"));
   takeHold(agent, text(params, "caller"), params["force"] === true);
   return agent;
+}
+
+// A send or a new session from a session no doorbell reaches says so, or it talks and never hears the replies.
+function withDoorbellWarning<T>(answer: T, agentHex: string, params: Record<string, unknown>): T {
+  const warning = doorbellWarning(listeners.get(agentHex) ?? [], text(params, "caller"), engine.agentName(agentHex));
+  return warning && answer && typeof answer === "object" ? { ...answer, doorbell_warning: warning } : answer;
 }
 
 // Naming an agent is enough for what doesn't speak for it in a conversation, such as its wallet and its notifiers: no hold is taken.
@@ -339,6 +348,31 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.presentedSignals(named(params), text(params, "session_id"));
     case "signals_lookup":
       return engine.wallet.lookup(acting(params), text(params, "address"));
+    case "discover_agents":
+    case "discover_channels": {
+      const options = { query: optionalText(params, "query"), tags: optionalText(params, "tags"), match: optionalText(params, "match"), cursor: optionalText(params, "cursor"), limit: typeof params["limit"] === "number" ? params["limit"] : undefined };
+      return discovery.search(acting(params), method === "discover_agents" ? "agent" : "channel", options);
+    }
+    case "listing_publish":
+      return discovery.publish(acting(params), { channel: optionalText(params, "channel"), name: text(params, "name"), description: optionalText(params, "description"), tags: optionalText(params, "tags"), language: optionalText(params, "language") });
+    case "listing_renew":
+      return discovery.renew(acting(params), optionalText(params, "channel"));
+    case "listing_unpublish":
+      return discovery.unpublish(acting(params), optionalText(params, "channel"));
+    case "listing_show": {
+      // The owner's own view. An agent that isn't on this machine gets pointed to the command that shows anyone's listing.
+      const named = text(params, "agent");
+      try {
+        engine.resolveAgent(named);
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
+        if (/^[0-9a-f]{64}(@.+)?$/.test(named)) throw new LocalError("not_your_agent", `listing show is for agents on this machine, and ${named} isn't one. To see another agent's listing and its signals: cello discover show ${named}`);
+        throw new LocalError("unknown_agent", `No agent on this machine is called ${named}: check the name with cello agents. To see another agent's listing and its signals, use its address: cello discover show <address>`);
+      }
+      return discovery.show(acting(params), optionalText(params, "channel"));
+    }
+    case "discover_show":
+      return discovery.showOne(acting(params), text(params, "target"));
     case "issuer_trust": {
       const agent = named(params);
       if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);
@@ -373,12 +407,15 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return { released: true, agent_id: agent };
     }
     case "initiate_session": {
-      const answer = await engine.initiate(acting(params), text(params, "target"), params);
+      const agent = acting(params);
+      const answer = withDoorbellWarning(await engine.initiate(agent, text(params, "target"), params), agent, params);
       const onceWritten = (answer as { [ONCE_WRITTEN]?: () => void })[ONCE_WRITTEN];
       return onceWritten ? new AfterWrite(answer, onceWritten) : answer;
     }
-    case "send":
-      return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
+    case "send": {
+      const agent = acting(params);
+      return withDoorbellWarning(await engine.send(agent, text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params), agent, params);
+    }
     case "receive": {
       const agent = acting(params);
       return delivered(params, agent, engine.receive(agent, params["session_id"] === undefined ? undefined : text(params, "session_id")));

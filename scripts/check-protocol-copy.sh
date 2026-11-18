@@ -13,3 +13,12 @@ if ! diff -r "$client/src/protocol" "$server/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from the client's. In cello-server, run scripts/sync-protocol.sh, then commit both." >&2
   exit 1
 fi
+# The server also runs the deterministic half of the inbound screen on discovery listings. Its sync script names which files it copies,
+# so this checks every file the server holds, and the list lives in one place.
+for copy in "$server"/src/screener/*.ts; do
+  f=$(basename "$copy")
+  if ! cmp -s "$client/src/screener/$f" "$copy"; then
+    echo "The server's screener copy of $f differs from the client's. In cello-server, run scripts/sync-protocol.sh, then commit both." >&2
+    exit 1
+  fi
+done

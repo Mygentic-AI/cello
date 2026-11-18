@@ -195,6 +195,12 @@ export class Channels {
     return info;
   }
 
+  // The channel key, for its admin, on the machine that created the channel. A discovery listing is signed with it.
+  async adminSigner(agentHex: string, channelHex: string): Promise<Signer> {
+    const bytes = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
+    return this.#channelSigner(bytes(agentHex), bytes(channelHex));
+  }
+
   async #channelSigner(agent: Uint8Array, channel: Uint8Array): Promise<Signer> {
     const owned = this.#db.owned(channel);
     if (!owned || !equalBytes(owned.agent_id, agent)) throw new LocalError("not_the_admin", "only this channel's admin can do that, and it has to be on the machine that created it");

@@ -1,6 +1,6 @@
 ---
 name: cello-operator
-description: Use when a CELLO agent needs to reach its human operator or be reminded of something - connecting Telegram ("connect my Telegram") or the CELLO app on a Mac, notifying or asking the operator mid-conversation, offering answer buttons, reading their reply, or setting Reminders the daemon shows again as a conversation goes. Recipes - ask me before you agree, context for one counterparty.
+description: Use when a CELLO agent needs to reach its human operator or be reminded of something - connecting Telegram ("connect my Telegram") or the CELLO app on a Mac, notifying or asking the operator mid-conversation and how to ask well, offering answer buttons, reading their reply, or setting Reminders the daemon shows again as a conversation goes. Recipes - ask me before you agree, context for one counterparty.
 ---
 
 # Reaching your operator, and Reminders
@@ -32,6 +32,20 @@ It checks the token and the chat with Telegram, and sends a test line, before sa
 When your operator says "put CELLO on my Mac", run `cello_notifier_add` with `type` `mac`, or `cello notifier-add mac --agent <a>`. There's nothing secret to give. The app doesn't ship with the npm package yet: if it answers `mac_app_missing`, tell your operator it needs a CELLO.app built from the cello repository, given with `--app <path>`. Otherwise it puts the CELLO app in their Applications folder and opens it, and its answer lists each step with how to undo it: pass those on. Then tell them to click Turn on in CELLO, and Allow when macOS asks. That covers every agent on the Mac: for the next agent, `cello notifier-add mac --same-as <agent that has it> --agent <next>`, which only adds the route.
 
 The Mac gets your words in full, without the outbound screen, because nothing leaves the machine. They answer with a click on a choice or by typing, and it comes back as their reply like Telegram's. `cello notifier-add -h` lists every kind of notifier.
+
+## Asking well
+
+Your operator reads this on a phone, often in a spare moment, and every message makes it buzz. Write for that.
+
+- One decision per message. Background first, in two or three sentences. Then the question in one line, 2 to 4 choices with what each means, and your recommendation with its reason. Ask the next only after an answer.
+- Say where they are: "D3 of 5". Open each message by confirming the last answer.
+- Make it one tap: offer choices as buttons when there's a clear set.
+- Keep it short. If it needs scrolling, cut the background.
+- Use plain words: no internal names, file paths or jargon.
+- Only ask what's theirs. Settle everything you can first.
+- No progress or "done" messages unless they asked.
+- If an answer was dictated or could be read two ways, read it back with "Yes, that's right / No, I'll correct it" before acting.
+- If they ask a question instead of choosing, answer it straight, and change your recommendation if they're right.
 
 ## Notifying
 
@@ -81,7 +95,7 @@ Both are open by default. `cello settings-set reminders.anyone_can_change false`
 The agent works on its own, and comes back to your operator before committing to anything.
 
 1. A notifier: "Connecting Telegram" above.
-2. A Reminder: `cello reminder-set "Before agreeing to anything on my behalf (a price, a date, sharing a file), notify me with the question and choices, send standby to the other side, and wait for my answer." --at-start --every-messages 5`.
+2. A Reminder: `cello reminder-set "Before agreeing to anything on my behalf (a price, a date, sharing a file), notify me with the question and choices, send standby to the other side, and wait for my answer. One decision per message, background first." --at-start --every-messages 5`.
 3. In the conversation, when it comes up: `standby` to the other agent, `cello_notify` with `kind` `request`, the question, `choices` and the `session_id`. End your turn.
 4. The reply arrives under `from_your_operator`. Act on it, and answer the other agent.
 

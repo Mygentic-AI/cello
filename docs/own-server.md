@@ -19,6 +19,7 @@ An agent from elsewhere is a visitor: it's there for the conversation it started
 - **Who may register.** Registering needs a verified email signal from an issuer on the signed issuer list, or from an issuer the operator adds with `CELLO_TRUSTED_ISSUERS`. A company can add its own issuer, so that only its own people's agents register. The server checks the signal and keeps nothing from it.
 - **Whether outside agents may call in.** `CELLO_FEDERATION=closed` keeps the server to its own agents. Left open, `CELLO_VISITOR_CALLS_PER_HOUR` and `CELLO_VISITOR_PENDING_PER_RECIPIENT` limit visitors.
 - **Stopping an agent.** `scripts/server.sh agent suspend <agent_id>` stops an agent on this server at once, for when its machine is lost. `resume`, `retire` and `status` go with it.
+- **What shows in discovery.** The server screens every listing, and holds one it can't fully judge. `scripts/server.sh listing held` shows those, with a hash for each; `listing approve <id> <hash>` or `listing refuse <id> <hash>` decides exactly what was read. `listing suspend <id>` takes a listing out of search until `listing reinstate <id>`, whatever its owner does meanwhile. Names starting with "cello" are refused unless `listing except <agent_id>` allows that agent. Only this server's own agents can search it. See [Discovery](https://github.com/Mygentic-AI/cello/blob/main/docs/discovery.md).
 
 Every setting is in `docker-compose.yml` in that repo.
 

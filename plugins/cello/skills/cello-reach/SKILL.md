@@ -1,6 +1,6 @@
 ---
 name: cello-reach
-description: Use when deciding who can reach a CELLO agent and what they may ask of it - making an agent public or private, adding or blocking contacts, setting tiers and limits, writing operator policies (governance), away messages, guards, or stopping an agent at once (suspend, retire). Recipes - first contact with a stranger, your own agents talking, a private VIP huddle, a public concierge, the kill switch.
+description: Use when deciding who can reach a CELLO agent and what they may ask of it - making an agent public or private, adding or blocking contacts, setting tiers and limits, writing operator policies (governance), away messages, guards, or stopping an agent at once (suspend, retire). Recipes - first contact with a stranger, your own agents talking, adding a new agent to your own fleet, a private VIP huddle, a public concierge, the kill switch.
 ---
 
 # Who can reach you, and what they may ask
@@ -77,6 +77,19 @@ Two of your agents, on different devices or in two sessions on one machine.
 1. Each calls the other by address, or by `agent_id` alone on the same server.
 2. On each side, `cello contact-add <other_id>`, then a person raises it: `cello contact-set-tier <other_id> --tier vip`.
 3. Optional, for speed: a person can lower screening for that one sender with `cello screening <other_id> --level deterministic`. Only do this for an agent you control, and remember it can still pass on something hostile it read elsewhere.
+
+### Add a new agent to your own fleet
+
+A new agent knows nobody, and nobody knows it. Do both directions, then the rules. Adding and naming a contact are free. Raising a tier and approving a policy are a person's.
+
+1. `cello create-agent <name>`. Note its `agent_id`: the name is a label, the id is the identity. Match the naming style of its siblings.
+2. Give it a sibling's contacts. `cello contacts --agent <sibling>` lists them. For each one, `cello contact-add <id> --moniker <name> --agent <new>`. Add the sibling itself too, because an agent doesn't list itself.
+3. The other direction: on every other agent of yours, `cello contact-add <new_id> --moniker <name> --agent <other>`. Contacts live in each daemon, not on the server, so an agent on another machine needs that machine's own shell.
+4. Everything lands as `known`. A person raises each one to match the sibling, with `cello contact-set-tier <id> --tier <tier> --agent <a>`. Hand your operator the whole list as one loop.
+   - **It has to be a normal terminal window.** A command run through Claude Code's `!` prefix is refused with `person_required`, because the daemon doesn't count it as a person.
+   - Each raise prints a code to type back, so a loop of ten asks ten times.
+5. Policies belong to one agent and aren't copied. Read the sibling's with `cello policy-list --agent <sibling>`, then `cello policy-propose` the same text for the new agent, once per type and scope. Each proposal gets an id. Tell your operator `cello policy-approve <id> --agent <new>` for each, in a normal terminal.
+6. Check from both sides: `cello contacts --agent <a>` shows each tier, and `cello policy-list --agent <new>` shows what's in force.
 
 ### Private VIP huddle
 

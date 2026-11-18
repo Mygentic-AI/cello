@@ -105,6 +105,23 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   const refused = await two.tool("cello_use_agent", { agent: hostileName });
   assert.deepEqual([refused["isError"], refused["error"]], [true, "agent_held"]);
 
+  // A session that never took its agent can still start a session as it, and is told no doorbell will reach it.
+  const three = new ClaudeSession();
+  sessions.push(three);
+  await three.start();
+  // Cy calls Dee, whom nobody listens for, so the rest of this test's doorbells are untouched.
+  const cy = await three.tool("cello_create_agent", { name: "Cy" });
+  const dee = await three.tool("cello_create_agent", { name: "Dee" });
+  cli("enroll-existing", "Cy");
+  cli("enroll-existing", "Dee");
+  await until("Cy and Dee online", () => (JSON.parse(cli("status")) as { agents: { name: string; online: boolean }[] }).agents.filter((a) => a.name === "Cy" || a.name === "Dee").every((a) => a.online));
+  const deaf = await three.tool("cello_initiate_session", { agent: "Cy", target: dee["agent_id"] });
+  assert.match(deaf["doorbell_warning"] as string, /^This session isn't set to be woken for Cy/);
+  await three.tool("cello_use_agent", { agent: "Cy" });
+  const heard = await three.tool("cello_send", { agent: "Cy", session_id: deaf["session_id"], text: "now I'll hear you", signal: "over" });
+  assert.equal(heard["doorbell_warning"], undefined, "a session that took its agent isn't warned");
+  assert.ok(cy["agent_id"]);
+
   const started = await one.tool("cello_initiate_session", { target: ben["agent_id"] });
   assert.equal(started["state"], "active");
   const sessionId = started["session_id"] as string;

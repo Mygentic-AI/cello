@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { encodeCbor } from "../src/protocol/cbor.ts";
 import { toHex } from "../src/protocol/encode.ts";
+import { signalSlot } from "../src/protocol/listing.ts";
 import { signerFromSeeds } from "../src/protocol/identity.ts";
 import { randomBytes, webcrypto } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519.js";
@@ -43,7 +44,7 @@ function setup(read: () => Uint8Array[], failing = false): { wallet: Wallet; sig
     notify: () => undefined,
     roots: () => { throw new RootKeysNotConfigured("these tests have no root keys, so there is no list and no recognised issuer"); },
     shippedList: null,
-    publishToServer: async (_agent, file) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.published.push(file); },
+    publishToServer: async (_agent, file) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.published.push(file); return []; },
     unpublishFromServer: async (_agent, id) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.unpublished.push(id); },
     readPublic: async () => ({ target: toHex(ann.id), files: read() }),
     usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
@@ -132,8 +133,8 @@ test("a server that can't be reached changes nothing here: a signal isn't marked
 });
 
 // A server that remembers what is published, so a lookup after a change sees what a real one would.
-function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean } } {
-  return { held: new Map(), failing: { on: false } };
+function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean }; refusing: { code: string | null } } {
+  return { held: new Map(), failing: { on: false }, refusing: { code: null } };
 }
 
 function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array }, notes: string[] = [], shippedList: string | null = null, roots: WalletHooks["roots"] = () => { throw new RootKeysNotConfigured("none"); }): { wallet: Wallet; signals: SignalStore; store: Store } {
@@ -145,7 +146,16 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
     notify: (_agent, text) => { notes.push(text); },
     roots,
     shippedList,
-    publishToServer: async (_agent, file) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file); },
+    // Like the real server: one signal per listing slot, so a newer one there takes the older down and says which.
+    publishToServer: async (_agent, file) => {
+      if (server.failing.on) throw new LocalError("server_unreachable", "down");
+      if (server.refusing.code) throw new LocalError(server.refusing.code, "the server refused it.");
+      const slot = signalSlot(readSignedSignal(file).envelope.type);
+      const displaced = slot === null ? [] : [...server.held].filter(([, held]) => signalSlot(readSignedSignal(held).envelope.type) === slot).map(([id]) => id);
+      for (const id of displaced) server.held.delete(id);
+      server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file);
+      return displaced.map((id) => new Uint8Array(Buffer.from(id, "hex")));
+    },
     unpublishFromServer: async (_agent, id) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.delete(toHex(id)); },
     readPublic: async () => ({ target: toHex(owner.id), files: [...server.held.values()] }),
     usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
@@ -153,7 +163,7 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
   return { wallet: new Wallet(store, hooks), signals: new SignalStore(store), store };
 }
 
-test("a public signal that a newer one replaces comes off the server by itself, and a lookup stops returning it", async () => {
+test("a public signal that a renewal replaces stays public through the renewal: the newer one takes its place on the server", async () => {
   const server = fakeServer();
   const notes: string[] = [];
   const a = walletOn(server, ann, notes);
@@ -168,10 +178,55 @@ test("a public signal that a newer one replaces comes off the server by itself, 
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "marked for taking back, not left reading as public and current");
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
-  assert.deepEqual(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals, [], "the old signal is no longer returned");
-  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0, "the newer one isn't public until its owner says so");
+  // A renewal of a public signal stays public (Andre, 18 November), so a listing doesn't drop out of search at every renewal.
+  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 1, "the renewal took the old one's place");
+  assert.deepEqual([...server.held.keys()], [toHex(fill(42, 16))], "the server holds the newer one, not the old");
+  assert.equal(((await b.wallet.lookup(toHex(bea.id), toHex(ann.id))) as { signals: unknown[] }).signals.length, 1);
   a.store.close();
   b.store.close();
+});
+
+test("when the server takes a signal down because a newer one fills its listing slot, the wallet stops calling it public", async () => {
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const anon = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github_anon", signal_id: fill(61, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), anon.hash);
+  const identified = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github_id", signal_id: fill(62, 16), issued_at: NOW - 10 }));
+  assert.deepEqual(await a.wallet.publish(toHex(ann.id), identified.hash), { signal_hash: identified.hash, public: true, replaced: [anon.hash] });
+  assert.equal(a.signals.get(ann.id, anon.hash)?.public, 0);
+  assert.equal(server.held.size, 1);
+  a.store.close();
+});
+
+test("renewing one public endorsement never makes public another endorsement from the same issuer that the owner kept private", async () => {
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const shown = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(71, 16), issued_at: NOW - 300, payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  await a.wallet.publish(toHex(ann.id), shown.hash);
+  const kept = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(72, 16), issued_at: NOW - 5, payload: new Uint8Array(encodeCbor({ claim: "Bob vouches for Ann" })) }));
+  const renewal = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(73, 16), issued_at: NOW - 10, supersedes_hash: Buffer.from(shown.hash, "hex"), payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
+  assert.deepEqual([...server.held.keys()], [toHex(fill(73, 16))], "only Carol's renewal is public");
+  assert.equal(a.signals.get(ann.id, kept.hash)?.public, 0, "Bob's endorsement stays private");
+  assert.equal(a.signals.get(ann.id, renewal.hash)?.public, 1);
+  a.store.close();
+});
+
+test("a renewal the server refuses to make public still has the old one taken back, and the owner is told why", async () => {
+  const server = fakeServer();
+  const notes: string[] = [];
+  const a = walletOn(server, ann, notes);
+  const old = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(81, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), old.hash);
+  server.refusing.code = "over_quota";
+  const newer = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(82, 16), issued_at: NOW - 10 }));
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0, "nothing left to retry forever");
+  assert.equal(server.held.size, 0, "the old one is no longer public");
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
+  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0] as string, /refused to make the renewal public: the server refused it\./);
+  a.store.close();
 });
 
 test("when taking a replaced signal back fails it is said loudly once, stays marked, and is retried until the server takes it", async () => {
@@ -185,13 +240,13 @@ test("when taking a replaced signal back fails it is said loudly once, stays mar
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
   assert.equal(notes.length, 1, "told once, not on every try");
-  assert.match(notes[0] as string, /taking it back from the server failed/);
+  assert.match(notes[0] as string, /making its renewal public failed/);
   assert.match(notes[0] as string, /still public/);
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "still marked, because the server still shows it");
   assert.equal(server.held.size, 1);
   server.failing.on = false;
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
-  assert.equal(server.held.size, 0);
+  assert.deepEqual([...server.held.keys()], [toHex(fill(52, 16))], "once the server is back, the renewal is public in the old one's place");
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
   a.store.close();
 });
@@ -211,7 +266,7 @@ test("a public signal the wallet no longer holds can still be taken back by its 
   a.store.close();
 });
 
-test("a lookup of a verified issuer's signal shows no payload, in the answer or in the words a person reads", async () => {
+test("a lookup of a verified issuer's signal shows its claim and nothing else of its payload, in the answer and in the words a person reads", async () => {
   const SECRET = "PAYLOAD-TEXT-7731-that-must-not-appear";
   const p256 = async (name: "enclave" | "kms"): Promise<{ key: RootKey; sign: RootSigner }> => {
     const pair = (await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
@@ -231,15 +286,19 @@ test("a lookup of a verified issuer's signal shows no payload, in the answer or 
   const server = fakeServer();
   const a = walletOn(server, ann);
   const b = walletOn(server, ann, [], list, () => roots);
-  const mine = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "employer", issuer_address: "trust.example.com", payload: new Uint8Array(encodeCbor({ claim: SECRET, detail: SECRET })), signal_id: fill(71, 16) }));
+  // What the signal says, its claim, is shown (Andre, 18 November: a reader must see what matters). Nothing else in the payload is.
+  const CLAIM = "Owns the GitHub account ann-example, held since Mar 2019.";
+  const mine = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "employer", issuer_address: "trust.example.com", payload: new Uint8Array(encodeCbor({ claim: CLAIM, detail: SECRET })), signal_id: fill(71, 16) }));
   await a.wallet.publish(toHex(ann.id), mine.hash);
 
   const result = await b.wallet.lookup(toHex(bea.id), toHex(ann.id)) as { signals: Record<string, unknown>[] };
   assert.equal(result.signals[0]?.["issuer_standing"], "recognised", "this must be a verified issuer for the test to mean anything");
   assert.equal(result.signals[0]?.["counts_as_verified"], true);
+  assert.equal(result.signals[0]?.["claim"], CLAIM, "the claim is shown");
+  assert.ok(publicSignalsText(result as never).includes(CLAIM), "and a person reads it");
   assert.equal(Object.hasOwn(result.signals[0] as object, "payload"), false);
   assert.ok(!JSON.stringify(result).includes("payload"), "no payload key anywhere in the answer");
-  assert.ok(!JSON.stringify(result).includes(SECRET), "no payload text anywhere in the answer");
+  assert.ok(!JSON.stringify(result).includes(SECRET), "no other payload field anywhere in the answer");
   assert.ok(!publicSignalsText(result as never).includes(SECRET), "nor in the words a person reads");
   a.store.close();
   b.store.close();
