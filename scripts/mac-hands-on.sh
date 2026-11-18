@@ -272,7 +272,9 @@ down() {
       cello "$at" hands-on logout > /dev/null || true
       local n=0
       while alive "$pid" && [ "$n" -lt 40 ]; do n=$((n + 1)); sleep 0.25; done
-      echo "Stopped the daemon for $at (process $pid)."
+      # Still there after logout: the pid came from its own socket, and it's killed only if it runs this checkout's daemon.
+      if alive "$pid"; then kill_ours "$pid" "$here/src/daemon/main.ts"; sleep 1; fi
+      if alive "$pid"; then echo "The daemon for $at (process $pid) is STILL RUNNING." >&2; else echo "Stopped the daemon for $at (process $pid)."; fi
     fi
   done
   # A recorded daemon that somehow outlived logout, only if it still runs this checkout's daemon.
