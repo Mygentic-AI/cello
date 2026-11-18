@@ -102,11 +102,13 @@ public struct AppState {
 
     public mutating func receive(_ item: Item) -> [Effect] {
         stale.remove(item.id)
+        // An ack is a line with no answer. If the door says it's still unseen, that line never landed, so it goes again.
+        let lostAck = !item.shown && acked.contains(item.id)
         if item.shown { acked.insert(item.id) }
         if let at = waiting.firstIndex(where: { $0.id == item.id }) {
             // Sent again on reconnect. Already in the panel, and already bannered if it was going to be.
             waiting[at] = item
-            return []
+            return lostAck ? [.ack(itemID: item.id)] : []
         }
         waiting.append(item)
         waiting.sort { $0.id < $1.id }

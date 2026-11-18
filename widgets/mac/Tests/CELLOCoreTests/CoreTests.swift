@@ -244,6 +244,16 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(s.waiting.map(\.id), [2])
     }
 
+    func testAnAckTheDoorNeverGotIsSentAgainWhenItSaysTheOneIsStillUnseen() {
+        var s = live()
+        _ = s.receive(item(1))
+        s.markAcked(1)
+        s.disconnected()
+        s.subscribed(subscribeReply())
+        XCTAssertEqual(s.receive(item(1, shown: false)), [.ack(itemID: 1)], "the door restarted before the ack landed")
+        XCTAssertEqual(s.receive(item(1, shown: true)), [], "once it has it, nothing more")
+    }
+
     func testBeforeTurnOnNothingIsBanneredThenItAllComesAsOne() {
         var s = AppState(turnedOn: false)
         s.subscribed(subscribeReply())
