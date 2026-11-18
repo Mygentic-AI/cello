@@ -262,8 +262,15 @@ export class Notifiers {
         return;
       }
       // Kept beside the notifications, so a plain message finds the newest of the two. It names no session.
-      this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at) VALUES (?, ?, NULL, ?, ?, ?)").run(idOf(holder.agentHex), holder.name, PICK, `${botId}:${chat}:pick:${update.update_id}`, Date.now());
+      // The same tap read again after a restart is already there. Writing it again would make an old pick the newest row,
+      // and take plain messages back from an agent that has written since.
+      const remoteId = `${botId}:${chat}:pick:${update.update_id}`;
       const name = this.#host.agentName(holder.agentHex);
+      if (this.#store.prepare("SELECT 1 FROM notifications WHERE remote_id = ?").get(remoteId)) {
+        await settle(`Now talking to ${name}.`);
+        return;
+      }
+      this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at) VALUES (?, ?, NULL, ?, ?, ?)").run(idOf(holder.agentHex), holder.name, PICK, remoteId, Date.now());
       await settle(`Now talking to ${name}.`);
       await this.#answer({ ...holder, token }, `Now talking to ${name}. Your messages go to ${name} until another agent writes to you. Replying to a message always goes to whoever sent it.`, true);
       return;

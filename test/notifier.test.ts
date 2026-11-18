@@ -467,6 +467,28 @@ test("/agents offers each agent in the chat: picking one sends plain messages th
   assert.equal(handed.length, 2);
 });
 
+test("a pick read again after a restart doesn't take messages back from an agent that wrote since", async () => {
+  const { notifiers, store, seen } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  says(55, "/agents");
+  await until("the list of agents", () => sent.some((s) => s.buttons.some((b) => b.text === "Bea")));
+  const list = sent.find((s) => s.buttons.some((b) => b.text === "Bea")) as Sent;
+  taps(55, list.message_id, (list.buttons.find((b) => b.text === "Bea") as { callback_data: string }).callback_data);
+  await until("the pick confirmed", () => tapAnswers.includes("Now talking to Bea."));
+  await notifiers.notify(AGENT, { kind: "request" });
+  notifiers.stop();
+  // The daemon died after taking the pick and before saving its place, so the tap is read again.
+  store.setConfig("notifier.telegram.next_update.123456", "0");
+  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen);
+  again.start();
+  await until("the tap read again", () => tapAnswers.filter((t) => t === "Now talking to Bea.").length === 2);
+  says(55, "for Ann, who wrote after the pick");
+  await until("the plain message", () => handed.length === 1);
+  assert.equal(handed[0]?.agent, AGENT);
+  assert.equal(sent.filter((s) => s.text.startsWith("Now talking to Bea.")).length, 1, "the pick is confirmed in the chat once");
+});
+
 test("only the notifier's own private chat speaks as the operator, and a voice note is answered, never dropped", async () => {
   const { notifiers } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
