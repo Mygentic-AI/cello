@@ -281,6 +281,11 @@ function notSealedYet(reason: string): unknown {
   return { sealed: false, status: "not_sealed_yet", message: `This isn't sealed yet: ${reason}. The request is saved and retried by itself, and you'll get a notice.` };
 }
 
+// One catch-up page as the server sends it. asOf is absent from a server without bookmarks, which sends everything at once.
+interface CatchUpPage { sessions: SessionOnWire[]; asOf?: string; more?: boolean; after?: unknown }
+// A page holds up to 50 conversations, so this is 25,000 changed conversations in one catch-up before it gives up.
+const CATCH_UP_MAX_PAGES = 500;
+
 export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
@@ -895,17 +900,39 @@ export class Engine {
         }
         return;
       }
-      const listedAt = Date.now();
-      const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
+      // Catch up on what changed since the last complete catch-up with this server, a page at a time. The bookmark moves
+      // only once every conversation listed has been handled, so a crash or a failed update means it is listed again.
+      // A server without bookmarks answers once, with no asOf.
+      const bookmarkKey = `catch_up_since:${agent.hex}:${route.url}`;
+      const since = this.#store.getConfig(bookmarkKey) ?? null;
       const seen = new Set<string>();
-      for (const wire of listed.sessions) {
-        const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
-        const sessionHex = toHex(sessionId);
-        seen.add(sessionHex);
-        this.#background("session update", this.#lane(agent.hex, sessionHex, async () => {
-          await this.#onSessionWire(agent, wire, route);
-          this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
-        }));
+      const handled: Promise<unknown>[] = [];
+      let after: unknown;
+      let asOf: string | undefined;
+      for (let page = 0; ; page++) {
+        if (page >= CATCH_UP_MAX_PAGES) throw new Error(`catch-up passed ${CATCH_UP_MAX_PAGES} pages without finishing`);
+        const listedAt = Date.now();
+        const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id), since, ...(after === undefined ? {} : { after }) }) as CatchUpPage;
+        for (const wire of listed.sessions) {
+          const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
+          const sessionHex = toHex(sessionId);
+          seen.add(sessionHex);
+          const work = this.#lane(agent.hex, sessionHex, async () => {
+            await this.#onSessionWire(agent, wire, route);
+            this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
+          });
+          handled.push(work);
+          this.#background("session update", work);
+        }
+        asOf = listed.asOf;
+        if (asOf === undefined || listed.more !== true) break;
+        after = listed.after;
+      }
+      if (asOf !== undefined) {
+        const reached = asOf;
+        void Promise.allSettled(handled).then((results) => {
+          if (results.every((result) => result.status === "fulfilled")) this.#store.setConfig(bookmarkKey, reached);
+        });
       }
       // An offer written to disk just before a crash may never have reached the server.
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
