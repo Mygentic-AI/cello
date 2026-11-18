@@ -2,7 +2,7 @@
 // one reader per bot however many notifiers use it, because Telegram allows a bot only one.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
-import type { Connected, NotifierAdapter, NotifierContext } from "./notifier-adapter.ts";
+import type { Connected, Delivered, NotifierAdapter, NotifierContext, Outgoing, Settled, StoredNotifier } from "./notifier-adapter.ts";
 import { TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendButtons, sendText, setCommands, thumbsUp, updatesFrom } from "./telegram.ts";
 
 // A pick made with /agents, kept in the notifications table as its own kind. A button carries "pick:" and the start of the
@@ -37,6 +37,7 @@ function pause(ms: number, stop: AbortSignal): Promise<void> {
 export class TelegramNotifier implements NotifierAdapter {
   // Telegram's own limit for one message.
   readonly maxChars = 4096;
+  readonly local = false;
   readonly #ctx: NotifierContext;
   readonly #telegram: TelegramEndpoint;
   // One reader per bot, however many notifiers use it: Telegram allows a bot only one.
@@ -145,7 +146,8 @@ export class TelegramNotifier implements NotifierAdapter {
   }
 
   // Takes the buttons off one message this notifier sent, and says quietly what was decided.
-  async settle(configText: string, remoteId: string, line: string): Promise<void> {
+  async settle(configText: string, remoteId: string, settled: Settled): Promise<void> {
+    const line = settled.here ? `You chose: ${settled.label}. Passed to ${settled.agentName}.` : `Answered on another of ${settled.agentName}'s notifiers: ${settled.label}.`;
     const config = JSON.parse(configText) as TelegramConfig;
     const holder = { botId: botIdOf(config.bot_token), token: config.bot_token, chat: config.chat_number };
     const messageId = Number(remoteId.split(":").at(-1));
@@ -302,10 +304,10 @@ export class TelegramNotifier implements NotifierAdapter {
   }
 
   // The remote id is the bot's id, the chat's number and the message's, with colons.
-  async deliver(configText: string, text: string, choices: readonly string[]): Promise<string> {
-    const config = JSON.parse(configText) as TelegramConfig;
-    const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, text, choices);
-    return `${botIdOf(config.bot_token)}:${sent.chatId}:${sent.messageId}`;
+  async deliver(notifier: StoredNotifier, message: Outgoing): Promise<Delivered> {
+    const config = JSON.parse(notifier.config) as TelegramConfig;
+    const sent = await sendText(this.#telegram, config.bot_token, config.chat_id, message.line, message.choices);
+    return { remoteId: `${botIdOf(config.bot_token)}:${sent.chatId}:${sent.messageId}` };
   }
 
   show(configText: string): Record<string, unknown> {

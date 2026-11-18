@@ -139,6 +139,7 @@ function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds
       return Promise.resolve({ text: out, report: out === text ? {} : { redacted: ["secret"], message: "Parts of your message were replaced before sending." } });
     },
     reachable: (agent) => held.has(agent),
+    counterparty: () => undefined,
     tell: (agent, text) => { told.push({ agent, text }); },
     fromOperator: (agent, sessionId, text, via, sourceId) => {
       if (storeFailures > 0) { storeFailures -= 1; throw new Error("database is locked"); }

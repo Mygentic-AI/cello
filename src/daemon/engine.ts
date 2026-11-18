@@ -2626,6 +2626,14 @@ export class Engine {
       agentName: (agentHex) => this.#requireAgent(agentHex).name,
       screenOutbound: (agentHex, text, params, retry) => this.#screenOutbound(this.#requireAgent(agentHex), text, params, retry),
       reachable: (agentHex) => this.#events.reachable(agentHex),
+      // The owner's own name for them wins. Otherwise the name they gave themselves, raw, for the caller to mark as unchecked.
+      counterparty: (agentHex, sessionHex) => {
+        const agent = this.#agents.get(agentHex);
+        const local = agent && this.#store.session(agent.signer.id, new Uint8Array(Buffer.from(sessionHex, "hex")));
+        if (!agent || !local) return undefined;
+        const who = this.governance.contacts.who(agent.signer.id, local.counterparty_id, toHex(local.counterparty_id), local.counterparty_name || null);
+        return { agent_id: toHex(local.counterparty_id), name: who.named_by === "itself" ? local.counterparty_name : who.who, named_by: who.named_by };
+      },
       tell: (agentHex, text) => {
         const agent = this.#agents.get(agentHex);
         if (agent) this.#notify(agent, null, text);
