@@ -3,7 +3,7 @@
 // how to undo it, and then done, with no prompt, so an agent can run it: the person's click in the app is the real gate.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DaemonRefused } from "./ipc/client.ts";
@@ -130,10 +130,19 @@ export function install(params: Record<string, unknown>, env: MacAppEnv): Instal
   const copied = before === undefined || before !== fingerprint(source);
   if (copied) {
     mkdirSync(dirname(target), { recursive: true });
-    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
-    // ditto keeps the bundle and its signature exactly as built.
-    const ditto = env.run("ditto", [source, target]);
-    if (ditto.status !== 0) refuse("mac_app_copy_failed", `Copying CELLO to ${target} failed: ${ditto.stderr.trim() || `ditto exited with ${String(ditto.status)}`}. Nothing else was changed.`);
+    // Copied beside it first, so a copy that fails leaves the app that was there. ditto keeps the bundle and its
+    // signature exactly as built.
+    const incoming = `${target}.incoming-${process.pid}`;
+    rmSync(incoming, { recursive: true, force: true });
+    const ditto = env.run("ditto", [source, incoming]);
+    if (ditto.status !== 0) {
+      rmSync(incoming, { recursive: true, force: true });
+      refuse("mac_app_copy_failed", `Copying CELLO to ${target} failed: ${ditto.stderr.trim() || `ditto exited with ${String(ditto.status)}`}. Nothing was changed.`);
+    }
+    const outgoing = `${target}.outgoing-${process.pid}`;
+    if (existsSync(target)) renameSync(target, outgoing);
+    renameSync(incoming, target);
+    rmSync(outgoing, { recursive: true, force: true });
     say(before === undefined ? `Put CELLO in ${target}.` : `Replaced CELLO in ${target} with this version. If it was open, quit it in its Settings and open it again.`);
   } else {
     say(`CELLO is already in ${target}, this same version.`);

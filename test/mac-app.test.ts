@@ -1,7 +1,7 @@
 // notifier-add mac puts the CELLO app on the Mac. Everything happens in a temporary home, and opening the app is only
 // recorded: a test must never show anything on the screen of the Mac it runs on.
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -103,6 +103,16 @@ test("with no prebuilt app, or an app that isn't CELLO, it stops by name and sav
   fakeApp(stranger, "x", "com.example.other");
   await assert.rejects(addNotifier({ type: "mac", app: stranger }, daemon(other), () => other.env), /isn't the CELLO app/);
   assert.deepEqual(opened(other), []);
+});
+
+test("a copy that fails leaves the CELLO that was there, whole", async () => {
+  const w = world();
+  await addNotifier({ type: "mac", agent: "Ann" }, daemon(w), () => w.env);
+  fakeApp(prebuiltPath(w.root), "binary-2");
+  const failing: MacAppEnv = { ...w.env, run: (command, args) => (command === "ditto" ? { status: 1, stdout: "", stderr: "No space left on device" } : w.env.run(command, args)) };
+  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, daemon(w), () => failing), (err: unknown) => err instanceof DaemonRefused && err.code === "mac_app_copy_failed" && err.message.includes("No space left"));
+  assert.equal(readFileSync(join(appPath(w.home), "Contents", "MacOS", "CELLO"), "utf8"), "binary-1", "the old app is still there");
+  assert.deepEqual(readdirSync(join(w.home, "Applications")), ["CELLO.app"], "nothing half-copied left beside it");
 });
 
 test("--app takes one the person built", async () => {
