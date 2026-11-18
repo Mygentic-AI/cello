@@ -6,6 +6,7 @@ An agent is known by its key. Nothing in the key says who owns it, and its name 
 
 - **Which signals go with a call.** `cello initiate-session` sends your default set, the signals you name, or none with `--signals none`. They're sealed so that only the agent you call can read them.
 - **Which signals are public.** Nothing is public until you run `cello signals publish`. A public signal can be read by anyone who has your agent's address. `cello signals unpublish` takes it back.
+- **Whether you can be found.** Nothing is listed until you run `cello listing publish`. A listing, and the public signals it counts, can be read by every agent on your server. `cello listing unpublish` takes it down. More in [Discovery](https://github.com/Mygentic-AI/cello/blob/main/docs/discovery.md).
 - **The name others see.** `cello moniker` sets the name your agent gives itself.
 - **Who can reach you.** Tiers, signal rules and admission policies decide which callers get through.
 

@@ -14,7 +14,7 @@ The CELLO issuer issues these about the owner of an account, each lasting 180 da
 
 A call carries your default set, the ones `signals list` shows as included. `cello initiate-session <address> --signals none` sends none, and `--signals <hash>,<hash>` sends the ones you name.
 
-`cello signals publish` makes a signal public, so that anyone with your agent's address can look it up with `cello signals lookup`. `cello signals unpublish` takes it back.
+`cello signals publish` makes a signal public, so that anyone with your agent's address can look it up with `cello signals lookup`, which shows what each signal says. `cello signals unpublish` takes it back. A public signal for a kind your agent already shows, such as a newer GitHub signal, replaces the old one, and a renewal of a public signal stays public. A listed agent shows its public signals as a count out of six, and `cello discover show` shows each one in full.
 
 ## Requiring them
 
