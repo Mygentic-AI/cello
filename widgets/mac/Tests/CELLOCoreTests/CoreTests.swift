@@ -600,3 +600,28 @@ final class EditMenuTests: XCTestCase {
         XCTAssertTrue(text.contains("app.mainMenu = MainMenu.make()"), "main.swift must install the Edit menu")
     }
 }
+
+final class TextAreaTests: XCTestCase {
+    func testReturnSendsShiftOrOptionReturnStartsALineAndComposingTextKeepsIt() {
+        XCTAssertEqual(TextArea.onReturn(shift: false, option: false, composing: false), .send)
+        XCTAssertEqual(TextArea.onReturn(shift: true, option: false, composing: false), .newLine)
+        XCTAssertEqual(TextArea.onReturn(shift: false, option: true, composing: false), .newLine)
+        // Finishing a word in an input method must never send half an answer.
+        XCTAssertEqual(TextArea.onReturn(shift: false, option: false, composing: true), .leave)
+    }
+
+    func testTheBoxIsThreeLinesEmptyGrowsWithTheTextAndStopsAtEight() {
+        let line = 16.0
+        XCTAssertEqual(TextArea.height(contentHeight: 0, lineHeight: line, inset: 5), 3 * line + 10)
+        XCTAssertEqual(TextArea.height(contentHeight: 5 * line, lineHeight: line, inset: 5), 5 * line + 10)
+        XCTAssertEqual(TextArea.height(contentHeight: 40 * line, lineHeight: line, inset: 5), 8 * line + 10)
+    }
+
+    // Both boxes are the growing one: a single-line field is what the owner found too short.
+    func testTheReplyBoxAndTheMessageBoxAreBothTextAreas() throws {
+        let panel = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Sources/CELLO/PanelView.swift").standardized
+        let text = try String(contentsOf: panel, encoding: .utf8)
+        XCTAssertFalse(text.contains("TextField("), "no single-line field left in the panel")
+        XCTAssertEqual(text.components(separatedBy: "GrowingTextArea(").count - 1, 2)
+    }
+}

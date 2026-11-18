@@ -205,9 +205,7 @@ struct PanelView: View {
             if item.kind != .test {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.kind == .request && !item.choices.isEmpty ? Copy.orAnswer : Copy.replyLabel).font(.system(size: 12)).foregroundColor(muted)
-                    TextField(Copy.typeTo(item.agent), text: Binding(get: { model.drafts[item.id] ?? "" }, set: { model.drafts[item.id] = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { model.reply(item) }
+                    GrowingTextArea(placeholder: Copy.typeTo(item.agent), text: Binding(get: { model.drafts[item.id] ?? "" }, set: { model.drafts[item.id] = $0 })) { model.reply(item) }
                 }
             }
             if let problem = model.problems[item.id] {
@@ -237,15 +235,11 @@ struct PanelView: View {
             if state.agents.isEmpty {
                 Text(Copy.noAgentsYet).font(.system(size: 13)).foregroundColor(muted)
             } else {
-                HStack(spacing: 6) {
-                    Picker(Copy.to, selection: $model.messageAgent) {
-                        ForEach(state.agents, id: \.agentID) { agent in Text(agent.name).tag(agent.agentID) }
-                    }
-                    .fixedSize()
-                    TextField(Copy.typeAMessage, text: $model.messageText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { model.sendMessage() }
+                Picker(Copy.to, selection: $model.messageAgent) {
+                    ForEach(state.agents, id: \.agentID) { agent in Text(agent.name).tag(agent.agentID) }
                 }
+                .fixedSize()
+                GrowingTextArea(placeholder: Copy.typeAMessage, text: $model.messageText) { model.sendMessage() }
                 if let line = model.messageLine {
                     Text(line).font(.system(size: 12)).foregroundColor(muted)
                 }
