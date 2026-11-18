@@ -240,17 +240,24 @@ export class Notifiers {
   // One question is answered once, wherever it was shown.
   async #settleAsked(asked: string, tappedId: number, line: string, elsewhere: string): Promise<void> {
     const rows = this.#store.prepare("SELECT id, agent_id, notifier, remote_id FROM notifications WHERE asked = ?").all(asked) as { id: number; agent_id: Uint8Array; notifier: string; remote_id: string }[];
-    const holders = this.#holders();
     for (const row of rows) {
-      const holder = holders.find((h) => h.name === row.notifier && h.agentHex === Buffer.from(row.agent_id).toString("hex"));
-      const messageId = Number(row.remote_id.split(":").at(-1));
-      if (!holder || !Number.isInteger(messageId)) continue;
-      try {
-        await clearButtons(this.#telegram, holder.token, holder.chat, messageId);
-        await sendText(this.#telegram, holder.token, holder.chat, row.id === tappedId ? line : elsewhere, [], true);
-      } catch (err: unknown) {
-        logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
-      }
+      // Each through its own notifier, by that notifier's type. One that's gone since has nothing left to settle.
+      const notifier = this.#rows(Buffer.from(row.agent_id).toString("hex")).find((r) => r.name === row.notifier);
+      if (notifier) await this.#settleOn(notifier, row.remote_id, row.id === tappedId ? line : elsewhere);
+    }
+  }
+
+  // Takes the buttons off one message a notifier sent, and says quietly what was decided.
+  async #settleOn(row: NotifierRow, remoteId: string, line: string): Promise<void> {
+    const config = JSON.parse(row.config) as TelegramConfig;
+    const holder = { botId: botIdOf(config.bot_token), token: config.bot_token, chat: config.chat_number };
+    const messageId = Number(remoteId.split(":").at(-1));
+    if (!Number.isInteger(messageId)) return;
+    try {
+      await clearButtons(this.#telegram, holder.token, holder.chat, messageId);
+      await sendText(this.#telegram, holder.token, holder.chat, line, [], true);
+    } catch (err: unknown) {
+      logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -294,14 +301,21 @@ export class Notifiers {
       await this.#answer({ ...holder, token }, `Now talking to ${name}. Your messages go to ${name} until another agent writes to you. Replying to a message always goes to whoever sent it.`, true);
       return;
     }
-    const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${under.message_id}`) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; asked: string | null } | undefined;
-    const holder = sent && holders.find((h) => h.name === sent.notifier && h.agentHex === Buffer.from(sent.agent_id).toString("hex"));
+    const holds = (agentHex: string, name: string): boolean => holders.some((h) => h.name === name && h.agentHex === agentHex);
+    await this.#choose(`${botId}:${chat}:${under.message_id}`, holds, choiceIndex(tap.data), `telegram:${botId}:${update.update_id}`, settle);
+  }
+
+  // A choice made on one notifier, whatever its type. remoteId is the notifier's id for the message the choice was under,
+  // holds says which notifiers the person who chose may answer for, and reply says a line back to them.
+  async #choose(remoteId: string, holds: (agentHex: string, name: string) => boolean, index: number | undefined, sourceId: string, settle: (line: string) => Promise<void>): Promise<void> {
+    const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(remoteId) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; asked: string | null } | undefined;
+    const sentBy = sent && Buffer.from(sent.agent_id).toString("hex");
+    const holder = sent && sentBy !== undefined && holds(sentBy, sent.notifier) ? { agentHex: sentBy, name: sent.notifier } : undefined;
     const choices = sent?.choices ? JSON.parse(sent.choices) as string[] : [];
     if (!sent || !holder || sent.asked === null || choices.length === 0) {
       await settle("This is no longer waiting for an answer.");
       return;
     }
-    const index = choiceIndex(tap.data);
     const label = index === undefined ? undefined : choices[index];
     if (label === undefined) {
       await settle("That isn't one of the choices.");
@@ -313,7 +327,7 @@ export class Notifiers {
       await settle(`Already answered: ${choices[answered.chosen] ?? "another choice"}.`);
       return;
     }
-    const outcome = this.#host.fromOperator(holder.agentHex, sent.session_id, label, holder.name, `telegram:${botId}:${update.update_id}`);
+    const outcome = this.#host.fromOperator(holder.agentHex, sent.session_id, label, holder.name, sourceId);
     if (outcome === "no_agent") {
       await settle("The agent this was for is no longer on this machine.");
       return;
