@@ -1,4 +1,5 @@
 // The daemon: the local socket opens first, so a client never sees "failed" while it's coming up.
+import { doorbellWarning } from "./doorbell-warning.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { HELLO_METHOD, daemonProof, ipcHandshakeRequired, newIpcKey } from "../ipc/handshake.ts";
@@ -110,6 +111,12 @@ function acting(params: Record<string, unknown>): string {
   const agent = engine.resolveAgent(text(params, "agent"));
   takeHold(agent, text(params, "caller"), params["force"] === true);
   return agent;
+}
+
+// A send or a new session from a session no doorbell reaches says so, or it talks and never hears the replies.
+function withDoorbellWarning<T>(answer: T, agentHex: string, params: Record<string, unknown>): T {
+  const warning = doorbellWarning(listeners.get(agentHex) ?? [], text(params, "caller"), engine.agentName(agentHex));
+  return warning && answer && typeof answer === "object" ? { ...answer, doorbell_warning: warning } : answer;
 }
 
 // Naming an agent is enough for what doesn't speak for it in a conversation, such as its wallet and its notifiers: no hold is taken.
@@ -371,12 +378,15 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return { released: true, agent_id: agent };
     }
     case "initiate_session": {
-      const answer = await engine.initiate(acting(params), text(params, "target"), params);
+      const agent = acting(params);
+      const answer = withDoorbellWarning(await engine.initiate(agent, text(params, "target"), params), agent, params);
       const onceWritten = (answer as { [ONCE_WRITTEN]?: () => void })[ONCE_WRITTEN];
       return onceWritten ? new AfterWrite(answer, onceWritten) : answer;
     }
-    case "send":
-      return engine.send(acting(params), text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params);
+    case "send": {
+      const agent = acting(params);
+      return withDoorbellWarning(await engine.send(agent, text(params, "session_id"), text(params, "text"), params["signal"] as Signal, params["est_minutes"] as number | undefined, params["notice"] === true, params), agent, params);
+    }
     case "receive": {
       const agent = acting(params);
       return delivered(params, agent, engine.receive(agent, params["session_id"] === undefined ? undefined : text(params, "session_id")));
