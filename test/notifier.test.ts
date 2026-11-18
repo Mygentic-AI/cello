@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Notifiers } from "../src/daemon/notifiers.ts";
+import { operatorSocketPath } from "../src/daemon/paths.ts";
 import { Store } from "../src/daemon/store.ts";
 import { TelegramError, sendText } from "../src/daemon/telegram.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
@@ -830,12 +831,18 @@ async function withMac(): Promise<{ notifiers: Notifiers; store: Store; door: st
 }
 
 test("the Mac gets the agent's words whole while Telegram gets them screened, and each new route is told of the other", async () => {
-  const { notifiers, door } = await withMac();
+  let { notifiers, door } = await withMac();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   const mac = await notifiers.add(AGENT, { type: "mac" }) as { told_existing: string[]; app: string };
   assert.deepEqual([mac.told_existing, mac.app], [["telegram"], "not open"]);
   assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Ann: mac, the CELLO app on this Mac\./);
   await assert.rejects(notifiers.add(AGENT, { type: "mac", name: "second" }), refusal("notifier_exists"));
+  // Off a Mac there's no door, so it's refused by name rather than queued for ever.
+  assert.deepEqual([operatorSocketPath("/h", "linux"), operatorSocketPath("/h", "win32"), operatorSocketPath("/h", "darwin")], [undefined, undefined, "/h/operator.sock"]);
+  await assert.rejects(setup().notifiers.add(AGENT, { type: "mac" }), refusal("not_supported"));
+  ({ notifiers, door } = await withMac());
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT, { type: "mac" });
 
   const { app } = await StandInMacApp.open(door);
   app.autoAck = true;

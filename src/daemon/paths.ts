@@ -17,9 +17,10 @@ export function socketPath(home = celloHome(), platform: NodeJS.Platform = proce
   return join(home, "daemon.sock");
 }
 
-// The operator's door, for the CELLO app on a Mac (operator-door.ts). None on Windows, where the app doesn't run.
+// The operator's door, for the CELLO app on a Mac (operator-door.ts). Only on a Mac: anywhere else no app could ever
+// connect, and a mac notifier there would say "queued" for ever.
 export function operatorSocketPath(home = celloHome(), platform: NodeJS.Platform = process.platform): string | undefined {
-  return platform === "win32" ? undefined : join(home, "operator.sock");
+  return platform === "darwin" ? join(home, "operator.sock") : undefined;
 }
 
 // The old version used the same naming, with a second pipe for its gateway. Setup probes both to see if it's running.

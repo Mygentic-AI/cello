@@ -60,7 +60,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   #sweeper: NodeJS.Timeout | undefined;
   #resumer: NodeJS.Timeout | undefined;
 
-  // No socket path: no door, as on Windows, where the app doesn't run.
+  // No socket path: no door, as on any machine but a Mac.
   constructor(ctx: NotifierContext, socketPath: string | undefined) {
     this.#ctx = ctx;
     ctx.store.exec(SCHEMA);
