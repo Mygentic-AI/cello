@@ -119,6 +119,7 @@ export class Notifiers {
       choose: (remoteId, holds, index, sourceId, reply) => this.#choose(remoteId, holds, index, sourceId, reply),
       answeredInWords: (remoteId) => this.#answeredInWords(remoteId),
       priorAnswer: (remoteId) => this.#priorAnswer(remoteId),
+      addRoute: (agentHex) => this.add(agentHex, { type }),
     };
   }
 

@@ -15,6 +15,11 @@ final class PanelModel: ObservableObject {
     // The Mac's own settings standing in the way: notifications turned off, or open at login waiting for an OK.
     @Published var notificationsOff = false
     @Published var loginNeedsOK = false
+    // Settings › Add or remove agents: the panel shows the list of agents on this Mac in place of what's waiting.
+    @Published var showingAgents = false
+    @Published var others: [LocalAgent] = []
+    @Published var agentsLine: String?
+    @Published var agentProblems: [String: String] = [:]
     // The height of the screen the panel opens on, set each time it opens.
     @Published var screenHeight: Double = 900
     var onQuit: () -> Void = {}
@@ -55,6 +60,28 @@ final class PanelModel: ObservableObject {
             guard let self else { return }
             self.messageLine = line
             if ok { self.messageText = "" }
+        }
+    }
+
+    func showAgents() {
+        agentProblems = [:]
+        agentsLine = nil
+        showingAgents = true
+        loadAgents()
+    }
+
+    func loadAgents() {
+        controller.listAgents { [weak self] _, others, problem in
+            self?.others = others
+            self?.agentsLine = problem
+        }
+    }
+
+    func addAgent(_ agent: LocalAgent) {
+        agentProblems[agent.agentID] = nil
+        controller.addAgent(agent.agentID, name: agent.name) { [weak self] problem in
+            guard let self else { return }
+            if let problem { self.agentProblems[agent.agentID] = problem } else { self.loadAgents() }
         }
     }
 
@@ -110,6 +137,29 @@ struct PanelView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    if model.showingAgents {
+                        agentsList(state)
+                    } else {
+                        home(state, now: now)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .measured($listContent)
+            }
+            // As tall as what's in it, until the whole panel would pass two-thirds of the screen.
+            .frame(height: CGFloat(PanelSize.listHeight(content: Double(listContent), chrome: Double(headerHeight + boxHeight + 2), screen: model.screenHeight)))
+            Divider()
+            messageBox(state).measured($boxHeight)
+        }
+        .frame(width: 392)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    // Everything waiting, what was answered today, and anything on the Mac that's in the way.
+    @ViewBuilder
+    private func home(_ state: AppState, now: Date) -> some View {
                     if case let .unreachable(why) = state.connection { unreachable(why) }
                     if model.notificationsOff { settingsLine(Copy.notificationsOff, button: Copy.openNotificationSettings) { Banners.openSettings() } }
                     if model.loginNeedsOK { settingsLine(Copy.loginItemNeedsOK, button: Copy.openLoginItems) { LoginItem.openSettings() } }
@@ -128,19 +178,46 @@ struct PanelView: View {
                             Text(Copy.earlierLine(agent: line.agent, what: line.what, time: clock.string(from: line.at))).font(.system(size: 13))
                         }
                     }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .measured($listContent)
-            }
-            // As tall as what's in it, until the whole panel would pass two-thirds of the screen.
-            .frame(height: CGFloat(PanelSize.listHeight(content: Double(listContent), chrome: Double(headerHeight + boxHeight + 2), screen: model.screenHeight)))
-            Divider()
-            messageBox(state).measured($boxHeight)
+    }
+
+    // Every agent on this Mac: Remove for each that can reach the person here, Add for each that can't yet.
+    @ViewBuilder
+    private func agentsList(_ state: AppState) -> some View {
+        HStack {
+            Text(Copy.addOrRemoveAgents.replacingOccurrences(of: "…", with: "")).font(.system(size: 14, weight: .bold))
+            Spacer()
+            Button(Copy.done) { model.showingAgents = false }
         }
-        .frame(width: 392)
-        .background(Color(nsColor: .windowBackgroundColor))
+        if let line = model.agentsLine {
+            Text(line).font(.system(size: 12)).foregroundColor(pink)
+        }
+        Text(Copy.reachYouHere).font(.system(size: 12, weight: .semibold)).foregroundColor(muted)
+        if state.agents.isEmpty { Text(Copy.noAgentsYet).font(.system(size: 13)).foregroundColor(muted) }
+        ForEach(state.agents, id: \.agentID) { agent in
+            HStack {
+                Text(agent.name).font(.system(size: 13))
+                Spacer()
+                Button(Copy.removeRow) { model.onRemoveAgent(agent) }
+            }
+        }
+        Text(Copy.notYet).font(.system(size: 12, weight: .semibold)).foregroundColor(muted).padding(.top, 4)
+        let others = model.others.filter { other in !state.agents.contains { $0.agentID == other.agentID } }
+        if others.isEmpty && model.agentsLine == nil { Text(Copy.everyAgentIsHere).font(.system(size: 13)).foregroundColor(muted) }
+        ForEach(others, id: \.agentID) { agent in
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(agent.name).font(.system(size: 13))
+                    Spacer()
+                    // A locked agent takes a person at a terminal, so there's no button to press and be refused.
+                    if !agent.locked { Button(Copy.add) { model.addAgent(agent) } }
+                }
+                if agent.locked {
+                    Text(Copy.addLocked(agent.name)).font(.system(size: 12)).foregroundColor(muted).fixedSize(horizontal: false, vertical: true)
+                } else if let problem = model.agentProblems[agent.agentID] {
+                    Text(problem).font(.system(size: 12)).foregroundColor(pink).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     private func header(_ state: AppState, now: Date) -> some View {
@@ -165,12 +242,7 @@ struct PanelView: View {
             }
             Divider()
             Toggle(Copy.openAtLogin, isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) }))
-            // Each agent that can reach you here, and removing one alone, with a confirm.
-            Menu(Copy.agentsHere(state.agents.map(\.name))) {
-                ForEach(state.agents, id: \.agentID) { agent in
-                    Button(Copy.removeAgentMenu(agent.name)) { model.onRemoveAgent(agent) }
-                }
-            }
+            Button(Copy.addOrRemoveAgents) { model.showAgents() }
             Divider()
             Button(Copy.quit) { model.onQuit() }
             Button(Copy.removeMenu) { model.onRemove() }

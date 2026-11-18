@@ -2647,6 +2647,9 @@ export class Engine {
         this.#events.ring(agent.hex, { type: "operator_message", agent: agent.name, ...(sessionId ? { session_id: toHex(sessionId) } : {}) });
         return "stored";
       },
+      localAgents: () => [...this.#agents.values()].map((agent) => ({ agentHex: agent.hex, name: agent.name })),
+      // The same setting, read the same way, as the daemon's own notifier-add checks.
+      notifiersLocked: (agentHex) => this.governance.reach.setting(new Uint8Array(Buffer.from(agentHex, "hex")), "notifiers.anyone_can_change") !== "true",
     };
   }
 

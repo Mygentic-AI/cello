@@ -218,6 +218,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       case "resume": return this.#resume();
       case "remove": return this.#remove();
       case "remove_agent": return this.#removeAgent(request);
+      case "agents": return this.#listAgents();
+      case "add_agent": return this.#addAgent(request);
     }
   }
 
@@ -335,6 +337,30 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     for (const row of theirs) logEvent("notifier.removed", { agent, notifier: row.name, by: "operator_door" });
     this.#ctx.host.tell(agent, "Your operator took you off CELLO on their Mac, so notify no longer reaches them there. Their other notifiers are as they were.");
     return Promise.resolve({ fields: { removed: { agent_id: agent, agent: name } } });
+  }
+
+  // Settings' Add or remove agents: who reaches the Mac, and every other agent on this machine, each with its lock, so
+  // the app can say before a click that a locked one can't be added from there.
+  #listAgents(): Promise<DoorReply> {
+    const using = new Set(this.#ctx.rows().map((row) => row.agentHex));
+    const others = this.#ctx.host.localAgents().filter((agent) => !using.has(agent.agentHex))
+      .map((agent) => ({ agent_id: agent.agentHex, agent: agent.name, locked: this.#ctx.host.notifiersLocked(agent.agentHex) }));
+    return Promise.resolve({ fields: { agents: this.#agents(), others } });
+  }
+
+  // Adds the Mac for an agent on this machine, as notifier-add mac --route-only does, so the agent's other routes are told.
+  // A locked agent is refused here outright: anything running as the owner can open this socket, so it can't stand in
+  // for the person at a terminal that the lock asks for.
+  async #addAgent(request: Record<string, unknown>): Promise<DoorReply> {
+    const agent = request["agent"];
+    const theirs = typeof agent === "string" ? this.#ctx.host.localAgents().find((a) => a.agentHex === agent) : undefined;
+    if (!theirs) throw new LocalError("no_such_agent", "Name an agent on this machine by its agent_id. agents lists them.");
+    if (this.#ctx.host.notifiersLocked(theirs.agentHex)) {
+      throw new LocalError("notifiers_locked", `${theirs.name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be added for it from the app. A person at a terminal can: cello notifier-add mac --route-only --agent ${theirs.agentHex}`);
+    }
+    await this.#ctx.addRoute(theirs.agentHex);
+    logEvent("notifier.added_from_app", { agent: theirs.agentHex });
+    return { fields: { added: { agent_id: theirs.agentHex, agent: theirs.name } } };
   }
 
   #holds(agentHex: string, name: string): boolean {

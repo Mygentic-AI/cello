@@ -269,6 +269,26 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   const told = ok(["receive", "--agent", "Bea"], "bea-shell") as { notices?: { text: string }[] };
   assert.ok(told.notices?.some((n) => /took you off CELLO on their Mac/.test(n.text)), JSON.stringify(told.notices));
 
+  // 8d. Settings' Add or remove agents: Bea and Cy are on this Mac and not here. Cy's notifiers are locked, so the app
+  // can't add her and says so by name; Bea is added, quietly, since the person just chose her, and she's told on no
+  // other route because she has none.
+  ok(["settings-set", "notifiers.anyone_can_change", "false", "--agent", "Cy"], "cy-shell");
+  const listed = await app2.run({ do: "agents" });
+  assert.deepEqual([listed["ok"], listed["using"]], [true, ["Ann"]], JSON.stringify(listed));
+  assert.deepEqual((listed["others"] as { name: string; locked: boolean }[]).map((a) => [a.name, a.locked]).sort(), [["Bea", false], ["Cy", true]]);
+  const lockedCy = await app2.run({ do: "add_agent", agent: cyId, name: "Cy" });
+  assert.deepEqual([lockedCy["ok"], lockedCy["line"]], [false, "Cy is locked against changes from here, so it can only be added from Terminal on this Mac."]);
+  assert.deepEqual((ok(["notifier-list", "--agent", "Cy"]) as { notifiers: unknown[] }).notifiers, []);
+  const fromAdd = app2.events.length;
+  const addedBea = await app2.run({ do: "add_agent", agent: bea, name: "Bea" });
+  assert.equal(addedBea["ok"], true, JSON.stringify(addedBea));
+  assert.deepEqual(((await app2.run({ do: "state" }))["agents"] as { name: string }[]).map((a) => a.name), ["Ann", "Bea"]);
+  assert.equal((ok(["notifier-list", "--agent", "Bea"]) as { notifiers: { type: string }[] }).notifiers[0]?.type, "mac");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.ok(!app2.events.slice(fromAdd).some((e) => e["effect"] === "joined"), `no "Not you?" banner for the agent just added: ${JSON.stringify(app2.events.slice(fromAdd))}`);
+  const relisted = await app2.run({ do: "agents" });
+  assert.deepEqual([relisted["using"], (relisted["others"] as { name: string }[]).map((a) => a.name)], [["Ann", "Bea"], ["Cy"]]);
+
   // 9. Remove takes the Mac off every agent.
   assert.equal((await app2.run({ do: "remove" }))["ok"], true);
   for (const name of ["Ann", "Bea"]) assert.deepEqual((ok(["notifier-list", "--agent", name]) as { notifiers: unknown[] }).notifiers, []);

@@ -124,6 +124,8 @@ let told: { agent: string; text: string }[] = [];
 let held = new Set<string>();
 // Agents the daemon no longer has.
 let gone = new Set<string>();
+// Agents whose notifiers.anyone_can_change is off.
+let locked = new Set<string>();
 // How many times storing a reply fails before it works, to stand for a database that can't be written for a moment.
 let storeFailures = 0;
 const running: Notifiers[] = [];
@@ -152,6 +154,8 @@ function open(store: Store, at: { apiUrl: string; timeoutMs: number; pollSeconds
       handed.push({ agent, session: sessionId ? Buffer.from(sessionId).toString("hex") : null, text, via });
       return "stored";
     },
+    localAgents: () => [AGENT, AGENT2].filter((agent) => !gone.has(agent)).map((agentHex) => ({ agentHex, name: NAMES[agentHex] as string })),
+    notifiersLocked: (agent) => locked.has(agent),
   }, at, operatorSocket);
   running.push(notifiers);
   return notifiers;
@@ -178,6 +182,7 @@ function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = 
   told = [];
   held = new Set([AGENT, AGENT2]);
   gone = new Set();
+  locked = new Set();
   storeFailures = 0;
   const seen = new Set<string>();
   return { notifiers: open(store, at, seen, withDoor ? door : undefined), store, seen, door };
@@ -1063,6 +1068,38 @@ test("the app takes one agent off the Mac: it's told, the app hears it went, and
   await again.app.close();
   assert.ok(told.some((t) => t.agent === AGENT2 && /took you off CELLO on their Mac/.test(t.text)));
   assert.ok(!told.some((t) => t.agent === AGENT), "the other agent isn't told anything");
+  await app.close();
+});
+
+test("the app lists the agents on this machine and adds one to the Mac as notifier-add does, but never a locked one", async () => {
+  const { notifiers, door } = await withMac();
+  await notifiers.add(AGENT, { type: "mac" });
+  // Bea has Telegram already, so adding the Mac for her is told there, as any new route is.
+  await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  locked.add(AGENT2);
+  const { app } = await StandInMacApp.open(door);
+  const listed = await app.request({ op: "agents" });
+  assert.deepEqual([listed["ok"], (listed["agents"] as { agent: string }[]).map((a) => a.agent), listed["others"]], [true, ["Ann"], [{ agent_id: AGENT2, agent: "Bea", locked: true }]]);
+  // Locked: refused by name, nothing saved, nobody told. The door is no person at a terminal, whatever a caller claims.
+  const before = sent.length;
+  const refused = await app.request({ op: "add_agent", agent: AGENT2, person_confirmed: true });
+  assert.deepEqual([refused["ok"], refused["error"]], [false, "notifiers_locked"]);
+  assert.match(refused["message"] as string, /^Bea's notifiers are locked .*cello notifier-add mac --route-only --agent 0808/);
+  assert.deepEqual((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.map((n) => n.type), ["telegram"]);
+  assert.equal(sent.length, before);
+  const unknown = await app.request({ op: "add_agent", agent: "09".repeat(32) });
+  assert.deepEqual([unknown["ok"], unknown["error"]], [false, "no_such_agent"]);
+  // Unlocked: added through the shared add, so Telegram hears of it and the app hears she joined.
+  locked.delete(AGENT2);
+  const added = await app.request({ op: "add_agent", agent: AGENT2 });
+  assert.deepEqual([added["ok"], (added["added"] as { agent: string }).agent], [true, "Bea"]);
+  await app.waitFor((f) => f["op"] === "agent_added" && f["agent_id"] === AGENT2, "the app to hear Bea joined");
+  assert.deepEqual((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.map((n) => n.type).sort(), ["mac", "telegram"]);
+  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Bea: mac, the CELLO app on this Mac\./);
+  const again = await app.request({ op: "add_agent", agent: AGENT2 });
+  assert.deepEqual([again["ok"], again["error"]], [false, "notifier_exists"]);
+  const after = await app.request({ op: "agents" });
+  assert.deepEqual([(after["agents"] as { agent: string }[]).map((a) => a.agent), after["others"]], [["Ann", "Bea"], []]);
   await app.close();
 });
 

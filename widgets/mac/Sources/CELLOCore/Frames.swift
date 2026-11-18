@@ -81,6 +81,20 @@ public struct Agent: Equatable, Sendable {
     }
 }
 
+// An agent on this Mac that can't reach the person here yet. locked: its notifiers are locked, so only a person at a
+// terminal can add the Mac for it.
+public struct LocalAgent: Equatable, Sendable {
+    public let agentID: String
+    public let name: String
+    public let locked: Bool
+
+    public init(agentID: String, name: String, locked: Bool) {
+        self.agentID = agentID
+        self.name = name
+        self.locked = locked
+    }
+}
+
 // The answer to a request. fields holds whatever else the door said, such as passed_to or paused_until.
 public struct Reply: @unchecked Sendable {
     public let ref: String?
@@ -172,6 +186,14 @@ public enum FrameParser {
         }
     }
 
+    public static func others(_ value: Any?) -> [LocalAgent] {
+        guard let list = value as? [[String: Any]] else { return [] }
+        return list.compactMap { entry in
+            guard let id = entry["agent_id"] as? String else { return nil }
+            return LocalAgent(agentID: id, name: entry["agent"] as? String ?? id, locked: entry["locked"] as? Bool ?? false)
+        }
+    }
+
     public static func agents(_ value: Any?) -> [Agent] {
         guard let list = value as? [[String: Any]] else { return [] }
         return list.compactMap { entry in
@@ -231,6 +253,10 @@ public enum Request: Equatable, Sendable {
     case remove
     // Takes the Mac off one agent; the rest keep it.
     case removeAgent(agentID: String)
+    // Who reaches the Mac, and the other agents on it.
+    case agents
+    // Adds the Mac for an agent on this machine.
+    case addAgent(agentID: String)
 
     public var op: String {
         switch self {
@@ -243,6 +269,8 @@ public enum Request: Equatable, Sendable {
         case .resume: return "resume"
         case .remove: return "remove"
         case .removeAgent: return "remove_agent"
+        case .agents: return "agents"
+        case .addAgent: return "add_agent"
         }
     }
 
@@ -250,7 +278,7 @@ public enum Request: Equatable, Sendable {
         var o: [String: Any] = ["op": op, "ref": ref]
         switch self {
         case .hello: o["protocol"] = operatorProtocol
-        case .subscribe, .resume, .remove: break
+        case .subscribe, .resume, .remove, .agents: break
         case let .ack(id): o["id"] = id
         case let .pick(id, choice):
             o["id"] = id
@@ -262,7 +290,7 @@ public enum Request: Equatable, Sendable {
             case let .agent(agentID): o["agent"] = agentID
             }
         case let .pause(until): o["until"] = isoString(until)
-        case let .removeAgent(agentID): o["agent"] = agentID
+        case let .removeAgent(agentID), let .addAgent(agentID): o["agent"] = agentID
         }
         return o
     }

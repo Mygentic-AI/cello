@@ -115,6 +115,11 @@ func run(_ command: [String: Any]) {
     case "resume": controller.resume { answer(what, $0) }
     case "remove": controller.remove { answer(what, $0) }
     case "remove_agent": controller.removeAgent(command["agent"] as? String ?? "") { answer(what, $0) }
+    case "agents":
+        controller.listAgents { using, others, problem in
+            out(["event": "done", "do": what, "ok": problem == nil, "line": problem as Any, "using": using.map(\.name), "others": others.map { ["agent_id": $0.agentID, "name": $0.name, "locked": $0.locked] }])
+        }
+    case "add_agent": controller.addAgent(command["agent"] as? String ?? "", name: command["name"] as? String ?? "") { answer(what, $0) }
     case "quit": exit(0)
     default: out(["event": "error", "message": "unknown command \(what)"])
     }

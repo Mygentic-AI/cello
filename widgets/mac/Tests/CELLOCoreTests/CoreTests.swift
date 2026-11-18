@@ -338,7 +338,6 @@ final class CopyTests: XCTestCase {
         XCTAssertEqual(Copy.firstRunBody(["Ann", "Rex"]), "When Ann or Rex needs a decision and you're not in their session, they'll ask you on this Mac. You answer in one click.")
         XCTAssertEqual(Copy.allSetBody(["Ann", "Rex"]), "Ann and Rex can reach you here. This is how a question from them will look.")
         XCTAssertEqual(Copy.removeBody(["Ann", "Rex", "Bea"]), "Ann, Rex and Bea won't be able to reach you here. Your phone keeps working as it does now.")
-        XCTAssertEqual(Copy.agentsHere(["Ann", "Rex", "Bea", "Cy"]), "Agents that can reach you here: Ann, Rex, Bea…")
     }
 
     // The design never says these to the person. Every line the app shows is in Copy.swift or the app's own sources.
@@ -780,5 +779,70 @@ final class PermissionTests: XCTestCase {
         XCTAssertFalse(delegate.contains("openSettings()"), "the app opens Settings only from the panel's buttons")
         XCTAssertEqual(delegate.components(separatedBy: "requestPermission(").count - 1, 1, "the system prompt is asked for in one place")
         XCTAssertTrue(delegate.contains("case .askSystem: self?.banners.requestPermission(done)"))
+    }
+}
+
+final class AddAgentTests: XCTestCase {
+    // Every item in Settings is short enough to find at a glance. The long "Agents that can reach you here: …" wasn't.
+    func testEverySettingsItemIsShort() {
+        for line in [Copy.pauseHour, Copy.pauseMorning, Copy.resumeNow, Copy.openAtLogin, Copy.addOrRemoveAgents, Copy.quit, Copy.removeMenu] {
+            XCTAssertLessThanOrEqual(line.count, 30, line)
+        }
+    }
+
+    func testTheDoorsWordsForTheListAndForAdding() throws {
+        XCTAssertEqual(Request.agents.object(ref: "r1") as NSDictionary, ["op": "agents", "ref": "r1"])
+        XCTAssertEqual(Request.addAgent(agentID: "bb").object(ref: "r2") as NSDictionary, ["op": "add_agent", "ref": "r2", "agent": "bb"])
+        XCTAssertEqual(FrameParser.others([["agent_id": "bb", "agent": "Bea", "locked": false], ["agent_id": "cc", "agent": "Cy", "locked": true]]), [LocalAgent(agentID: "bb", name: "Bea", locked: false), LocalAgent(agentID: "cc", name: "Cy", locked: true)])
+    }
+
+    // The door says Bea joined before it answers the add, so without this the person who just added her would be asked
+    // "Not you?" about their own click.
+    func testAnAgentThePersonAddsJoinsQuietlyAndOneAddedElsewhereStillSaysSo() {
+        var s = live()
+        s.addingStarted("bb")
+        XCTAssertEqual(s.agentAdded(Agent(agentID: "bb", name: "Bea")), [])
+        s.addingEnded("bb")
+        XCTAssertEqual(s.agentAdded(Agent(agentID: "cc", name: "Cy")), [.joined(Agent(agentID: "cc", name: "Cy"))])
+        XCTAssertEqual(s.agents.map(\.name), ["Ann", "Bea", "Cy"])
+    }
+
+    func testAddingThroughTheDoorJoinsQuietlyAndALockedAgentIsRefusedByName() {
+        final class Effects: ControllerDelegate {
+            var seen: [Effect] = []
+            func stateChanged(_ controller: Controller) {}
+            func perform(_ effect: Effect, controller: Controller) { seen.append(effect) }
+            func needsStart(_ controller: Controller) {}
+        }
+        let door = FakeDoor()
+        defer { door.close() }
+        door.answer = { r in
+            switch (r["op"] as? String, r["agent"] as? String) {
+            case ("subscribe", _): return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+            case ("add_agent", "cc"): return ["op": "result", "ref": r["ref"] ?? "", "ok": false, "error": "notifiers_locked", "message": "The door's words, for the command line."]
+            case ("add_agent", _): return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "added": ["agent_id": "bb", "agent": "Bea"]]
+            default: return ["op": "result", "ref": r["ref"] ?? "", "ok": true]
+            }
+        }
+        // As the real door does: agent_added is written before the add's own answer. Here it follows, which the app
+        // must handle too, so the frame is checked after the answer as well.
+        door.then = { r in r["op"] as? String == "add_agent" && r["agent"] as? String == "bb" ? [["op": "agent_added", "agent_id": "bb", "agent": "Bea"]] : [] }
+        let effects = Effects()
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.delegate = effects
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil(3) { c.state.connection == .connected && !c.state.catchingUp })
+        var answer: String?? = .none
+        c.addAgent("cc", name: "Cy") { answer = .some($0) }
+        XCTAssertTrue(waitUntil { answer != nil })
+        XCTAssertEqual(answer, .some(Copy.addLocked("Cy")))
+        answer = .none
+        c.addAgent("bb", name: "Bea") { answer = .some($0) }
+        XCTAssertTrue(waitUntil { answer != nil })
+        XCTAssertEqual(answer, .some(nil))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(c.state.agents.map(\.name), ["Ann", "Bea"])
+        XCTAssertFalse(effects.seen.contains { if case .joined = $0 { return true } else { return false } }, "no Not you? banner for the agent just added")
     }
 }

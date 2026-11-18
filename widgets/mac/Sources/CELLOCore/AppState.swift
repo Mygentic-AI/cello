@@ -84,6 +84,9 @@ public struct AppState {
     private var held: [Int] = []
     // What was waiting before a reconnect. Whatever the door doesn't send again was answered or cleared meanwhile.
     private var stale: Set<Int> = []
+    // Agents the person is adding from Settings right now. The door says one joined before it answers the add, and a
+    // "can reach you here now. Not you?" banner for an agent the person just added would be wrong.
+    private var adding: Set<String> = []
 
     public init(turnedOn: Bool) {
         self.turnedOn = turnedOn
@@ -241,8 +244,11 @@ public struct AppState {
     public mutating func agentAdded(_ agent: Agent) -> [Effect] {
         if agents.contains(where: { $0.agentID == agent.agentID }) { return [] }
         agents.append(agent)
-        return turnedOn ? [.joined(agent)] : []
+        return turnedOn && !adding.contains(agent.agentID) ? [.joined(agent)] : []
     }
+
+    public mutating func addingStarted(_ agentID: String) { adding.insert(agentID) }
+    public mutating func addingEnded(_ agentID: String) { adding.remove(agentID) }
 
     public mutating func agentRemoved(_ agentID: String) -> [Effect] {
         agents.removeAll { $0.agentID == agentID }

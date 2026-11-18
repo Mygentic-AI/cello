@@ -168,6 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
 
     func popoverDidClose(_ notification: Notification) {
         clickAway.panelClosed()
+        // It opens again on what's waiting, not on the list of agents.
+        panel.showingAgents = false
         ticker?.invalidate()
         ticker = nil
     }

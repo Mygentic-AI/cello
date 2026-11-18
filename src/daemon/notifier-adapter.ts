@@ -17,6 +17,10 @@ export interface NotifierHost {
   // Hands the agent what its operator said. "already" when this one was handed over before, and "no_agent" when the agent
   // is no longer on this daemon.
   fromOperator(agentHex: string, sessionId: Uint8Array | null, text: string, via: string, sourceId: string): "stored" | "already" | "no_agent";
+  // Every agent on this machine, for the Mac app's list of agents it can add.
+  localAgents(): { agentHex: string; name: string }[];
+  // Whether this agent's notifiers.anyone_can_change is off, so adding or removing one takes a person at a terminal.
+  notifiersLocked(agentHex: string): boolean;
 }
 
 // A send the service refused or didn't confirm. maybeSent: it reached the service unconfirmed and may have been shown, so
@@ -46,6 +50,9 @@ export interface NotifierContext {
   // The answer the question under that message already has, from any notifier, or undefined. A typed reply to one that
   // has an answer is passed on as a follow-up. Read with nothing awaited before the hand-over, so it can't go stale.
   priorAnswer(remoteId: string): string | undefined;
+  // Adds a notifier of this type for the agent through the shared add, so it's checked, logged, and the agent's other
+  // routes are told, exactly as notifier-add does. The caller checks the lock first.
+  addRoute(agentHex: string): Promise<unknown>;
 }
 
 // A typed reply to a question already answered: it still reaches the agent, saying what came first, and the person is told.

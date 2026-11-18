@@ -345,6 +345,41 @@ public final class Controller {
         }
     }
 
+    // Settings' list: who reaches the person here, and the other agents on this Mac. Answers the list, or the line to show.
+    public func listAgents(done: @escaping (_ using: [Agent], _ others: [LocalAgent], _ problem: String?) -> Void) {
+        client.send(.agents) { reply in
+            if reply.ok {
+                done(FrameParser.agents(reply.fields["agents"]), FrameParser.others(reply.fields["others"]), nil)
+            } else {
+                done([], [], reply.error == "not_connected" ? Copy.notConnected : Copy.didNotReach(Copy.appName))
+            }
+        }
+    }
+
+    // Adds the Mac for an agent on this machine. It joins quietly: the person just chose it.
+    public func addAgent(_ agentID: String, name: String, done: @escaping (String?) -> Void) {
+        state.addingStarted(agentID)
+        client.send(.addAgent(agentID: agentID)) { [weak self] reply in
+            guard let self else { return }
+            if reply.ok {
+                // Usually the door's agent_added frame has done this already.
+                self.run(self.state.agentAdded(Agent(agentID: agentID, name: name)))
+                self.state.addingEnded(agentID)
+                self.changed()
+                done(nil)
+            } else {
+                self.state.addingEnded(agentID)
+                switch reply.error {
+                case "not_connected": done(Copy.notConnected)
+                case "notifiers_locked": done(Copy.addLocked(name))
+                // Added meanwhile, from Terminal or another app: what the person wanted is so.
+                case "notifier_exists": done(nil)
+                default: done(Copy.addFailed(name))
+                }
+            }
+        }
+    }
+
     // The door's own message is for agents and the command line, so the person gets a line worded for them.
     public static func problem(_ reply: Reply, agent: String) -> String {
         switch reply.error {

@@ -135,11 +135,15 @@ public enum Copy {
     public static let pauseMorning = "Pause until tomorrow morning"
     public static func pausedUntil(_ time: String) -> String { "Paused until \(time)" }
     public static let resumeNow = "Resume now"
-    public static func agentsHere(_ names: [String]) -> String {
-        if names.isEmpty { return "Agents that can reach you here: none yet" }
-        let shown = names.prefix(3).joined(separator: ", ")
-        return "Agents that can reach you here: \(shown)\(names.count > 3 ? "…" : "")"
-    }
+    // Settings › Add or remove agents: the list of every agent on this Mac.
+    public static let addOrRemoveAgents = "Add or remove agents…"
+    public static let reachYouHere = "CAN REACH YOU HERE"
+    public static let notYet = "ON THIS MAC, NOT YET HERE"
+    public static let everyAgentIsHere = "Every agent on this Mac can reach you here."
+    public static let add = "Add"
+    public static let done = "Done"
+    public static func addLocked(_ agent: String) -> String { "\(agent) is locked against changes from here, so it can only be added from Terminal on this Mac." }
+    public static func addFailed(_ agent: String) -> String { "\(agent) couldn't be added right now, so nothing changed. Try again in a moment." }
     public static let quit = "Quit CELLO"
     public static let quitTitle = "Quit CELLO?"
     public static let quitBody = "Your agents can't reach you on this Mac until you open CELLO again. Their questions wait for you."
@@ -150,7 +154,7 @@ public enum Copy {
         return "\(andList(agents)) won't be able to reach you here. Your phone keeps working as it does now."
     }
     // One agent off this Mac, from the list in Settings.
-    public static func removeAgentMenu(_ agent: String) -> String { "Remove \(agent)…" }
+    public static let removeRow = "Remove…"
     public static func removeAgentTitle(_ agent: String) -> String { "Remove \(agent) from this Mac?" }
     public static func removeAgentBody(_ agent: String) -> String { "\(agent) won't be able to reach you here. Your other agents, and your phone, keep working as they do now." }
     public static func removeAgentFailed(_ agent: String) -> String { "\(agent) couldn't be removed right now, so nothing changed. Try again in a moment." }
