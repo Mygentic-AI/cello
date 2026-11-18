@@ -125,9 +125,11 @@ public struct AppState {
     public mutating func endCatchUp(now: Date) -> [Effect] {
         guard catchingUp else { return [] }
         catchingUp = false
-        for id in stale { waiting.removeAll { $0.id == id }; unseenNews.remove(id) }
+        // Answered elsewhere while the app was away: its banner goes too, or its buttons would still look live.
+        let gone = stale.sorted()
+        for id in gone { waiting.removeAll { $0.id == id }; unseenNews.remove(id) }
         stale = []
-        return releaseHeld(now: now)
+        return gone.map { .withdraw(itemID: $0) } + releaseHeld(now: now)
     }
 
     // The person clicked Turn on. What arrived before that is shown now, as one banner.

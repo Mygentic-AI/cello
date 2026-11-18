@@ -240,7 +240,7 @@ final class StateTests: XCTestCase {
         s.disconnected()
         s.subscribed(subscribeReply())
         _ = s.receive(item(2))
-        _ = s.endCatchUp(now: t0)
+        XCTAssertEqual(s.endCatchUp(now: t0), [.withdraw(itemID: 1)], "its banner goes too")
         XCTAssertEqual(s.waiting.map(\.id), [2])
     }
 
