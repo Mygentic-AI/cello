@@ -24,3 +24,7 @@ coverage/
 # Editors
 .vscode/
 .idea/
+
+# The Mac app: SwiftPM's build folder and the assembled CELLO.app
+widgets/mac/.build/
+widgets/mac/build/
