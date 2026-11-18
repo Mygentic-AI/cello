@@ -593,6 +593,36 @@
         }
       },
       "expected_cbor_hex": "8b7463656c6c6f2d75736167652d66616374732d76315820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1a6af6c3801a6a6e8880030e100973323032362d30383a312c323032362d31313a32584011111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "agentListingStructure": {
+      "tag": "cello-agent-listing-v1",
+      "inputs": {
+        "subjectId": {
+          "hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "revision": 3,
+        "name": "Ann_helper",
+        "description": "Books meetings for a small firm.",
+        "tags": "calendar,scheduling",
+        "language": null,
+        "signedAt": 1794556800
+      },
+      "expected_cbor_hex": "887663656c6c6f2d6167656e742d6c697374696e672d76315820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb036a416e6e5f68656c7065727820426f6f6b73206d656574696e677320666f72206120736d616c6c206669726d2e7363616c656e6461722c7363686564756c696e67f61a6af6c380"
+    },
+    "channelListingStructure": {
+      "tag": "cello-channel-listing-v1",
+      "inputs": {
+        "subjectId": {
+          "hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "revision": 1,
+        "name": "release-notes",
+        "description": "Announcements, one poster.",
+        "tags": "news",
+        "language": "pt-BR",
+        "signedAt": 1794556800
+      },
+      "expected_cbor_hex": "88781863656c6c6f2d6368616e6e656c2d6c697374696e672d76315820cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc016d72656c656173652d6e6f746573781a416e6e6f756e63656d656e74732c206f6e6520706f737465722e646e6577736570742d42521a6af6c380"
     }
   },
   "signal_format": {

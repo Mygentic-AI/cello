@@ -492,6 +492,43 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
+// A discovery listing: what an agent or a channel chose to show to anyone searching its server (DISCOVERY-PLAN.md).
+// An agent's is signed by the agent, a channel's by the channel key, so nobody else, the server included, can forge or edit one.
+// It holds no expiry: renewing resets the server's clock and changes nothing the owner signed.
+export const LISTING_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const LISTING_TAG_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const LISTING_LANGUAGE_PATTERN = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+export const MAX_LISTING_DESCRIPTION = 2_000;
+export const MAX_LISTING_TAGS = 10;
+
+export interface ListingFields {
+  // The agent's id, or the channel's.
+  subjectId: Uint8Array;
+  revision: number;
+  name: string;
+  description: string;
+  // Lowercase tags joined by commas, so the array stays flat. Empty means none.
+  tags: string;
+  // Null means English.
+  language: string | null;
+  signedAt: number;
+}
+
+function checkListing(l: ListingFields): void {
+  if (!LISTING_NAME_PATTERN.test(l.name)) throw new RangeError("a listing name is 1 to 64 letters, digits, underscores or dashes");
+  if ([...l.description].length > MAX_LISTING_DESCRIPTION) throw new RangeError(`a listing description is at most ${MAX_LISTING_DESCRIPTION} characters`);
+  if (l.revision < 1) throw new RangeError("a listing's revision starts at 1");
+  const tags = l.tags === "" ? [] : l.tags.split(",");
+  if (tags.length > MAX_LISTING_TAGS) throw new RangeError(`a listing has at most ${MAX_LISTING_TAGS} tags`);
+  if (tags.some((tag) => !LISTING_TAG_PATTERN.test(tag))) throw new RangeError("a tag is 1 to 32 lowercase letters, digits or dashes, starting with a letter or digit");
+  if (new Set(tags).size !== tags.length) throw new RangeError("a listing's tags must be distinct");
+  if (l.language !== null && !LISTING_LANGUAGE_PATTERN.test(l.language)) throw new RangeError("a language is a code like en or pt-BR");
+}
+
+const listingSlots = { subjectId: HASH_BYTES, revision: "int", name: "text", description: "text", tags: "text", language: "textOrNull", signedAt: "int" } as const;
+export const agentListingStructure = structure<ListingFields>("cello-agent-listing-v1", listingSlots, { check: checkListing });
+export const channelListingStructure = structure<ListingFields>("cello-channel-listing-v1", listingSlots, { check: checkListing });
+
 export const ChannelVisibility = { public: 1, private: 2 } as const;
 export type ChannelVisibility = (typeof ChannelVisibility)[keyof typeof ChannelVisibility];
 

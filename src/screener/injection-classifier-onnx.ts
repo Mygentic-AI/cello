@@ -19,11 +19,8 @@ export function injectionProbabilityOf(scores: ReadonlyArray<{ label: string; sc
 import { pathToFileURL } from "node:url";
 
 // The model, one window at a time, so whoever runs it can stop between windows.
-export interface InjectionClassifier {
-  windows(text: string): string[];
-  score(window: string): Promise<number>;
-  classify(text: string): Promise<{ injectionProbability: number; label?: string }>;
-}
+import type { InjectionClassifier } from "./classifier.ts";
+export type { InjectionClassifier };
 
 const RUNTIME_MODULE = "@huggingface/transformers";
 

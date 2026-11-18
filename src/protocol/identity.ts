@@ -51,6 +51,8 @@ export const CONTEXTS = [
   "cello-signal",
   "cello-issuer-list",
   "cello-usage-facts",
+  "cello-agent-listing",
+  "cello-channel-listing",
 ] as const;
 
 export type SigningContext = (typeof CONTEXTS)[number];
