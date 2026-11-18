@@ -155,7 +155,21 @@ public enum Copy {
     public static let unreachableStopped = "CELLO stopped in the background and couldn't start again."
     public static let unreachableUnknownInstall = "This app doesn't know where CELLO is installed, so it couldn't start it."
     public static let unreachableFix = "Open Terminal and run: cello login"
-    public static func loginSaid(_ said: String) -> String { "cello login said: \(said)" }
+    // What cello login or CELLO itself said goes to the app's log only: it's worded for the command line, not for here.
+    public static let unreachableRefused = "CELLO turned this app away when it asked for what's waiting."
+    public static let unreachableMismatch = "This app and CELLO are different versions, so they can't talk to each other."
+
+    // The reason and the fix the panel shows. Never anything CELLO or cello login said.
+    public static func unreachable(_ why: Unreachable) -> (reason: String, fix: String) {
+        switch why {
+        case .stopped: return (unreachableStopped, unreachableFix)
+        case .subscribeRefused: return (unreachableRefused, restartFix)
+        case let .cannotConnect(code): return (cannotConnect(code), restartFix)
+        case .noDoor: return (unreachableNoDoor, restartFix)
+        case .unknownInstall: return (unreachableUnknownInstall, unreachableFix)
+        case .mismatch: return (unreachableMismatch, mismatchFix)
+        }
+    }
     public static let startTimedOut = "it didn't finish within a minute."
     public static let unreachableNoDoor = "CELLO is running, but this app can't reach it."
     public static let restartFix = "Open Terminal and run: cello logout, then cello login"

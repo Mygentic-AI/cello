@@ -160,29 +160,10 @@ struct PanelView: View {
     private func unreachable(_ why: Unreachable) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Copy.unreachableTitle).font(.system(size: 14, weight: .bold))
-            switch why {
-            case let .stopped(said):
-                Text(Copy.unreachableStopped).font(.system(size: 13))
-                if !said.isEmpty {
-                    Text(Copy.loginSaid(said)).font(.system(size: 11, design: .monospaced)).foregroundColor(muted).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                }
-                Text(Copy.unreachableFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            case let .subscribeRefused(message):
-                Text(message).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
-                Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            case let .cannotConnect(code):
-                Text(Copy.cannotConnect(code)).font(.system(size: 13))
-                Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            case .noDoor:
-                Text(Copy.unreachableNoDoor).font(.system(size: 13))
-                Text(Copy.restartFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            case .unknownInstall:
-                Text(Copy.unreachableUnknownInstall).font(.system(size: 13))
-                Text(Copy.unreachableFix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            case let .mismatch(message):
-                Text(message).font(.system(size: 13))
-                Text(Copy.mismatchFix).font(.system(size: 13))
-            }
+            // What cello login or CELLO said is in the app's log, never here: it's worded for the command line.
+            let said = Copy.unreachable(why)
+            Text(said.reason).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+            Text(said.fix).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
             Button(Copy.tryAgain) { model.onRetry() }
         }
         .padding(12)

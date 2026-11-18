@@ -4,17 +4,17 @@
 import Foundation
 
 public enum Unreachable: Equatable, Sendable {
-    // CELLO wasn't running and starting it failed: what cello login said, shown as it said it.
+    // CELLO wasn't running and starting it failed: what cello login said, kept for the log and never shown.
     case stopped(String)
     // cello login worked, and still the door for this app never appeared.
     case noDoor
     // Connecting fails for a reason other than CELLO not running, by its errno.
     case cannotConnect(Int32)
-    // Connected, but the door refused to subscribe: its own words.
+    // Connected, but the door refused to subscribe: its own words, for the log.
     case subscribeRefused(String)
     // The app was never told how to start CELLO.
     case unknownInstall
-    // The door speaks another version: its own words say which side to update.
+    // The door speaks another version: its own words, for the log.
     case mismatch(String)
 }
 

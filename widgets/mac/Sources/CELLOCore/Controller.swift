@@ -98,6 +98,7 @@ public final class Controller {
             state.disconnected()
             changed()
         case let .refused(message):
+            log.error("hello refused: \(message, privacy: .public)")
             state.connection = .unreachable(.mismatch(message))
             changed()
         case let .frame(frame):
@@ -147,7 +148,10 @@ public final class Controller {
             failuresSinceStart = nil
             switch error {
             case .notInstalled, .unreadable: state.connection = .unreachable(.unknownInstall)
-            case let .exited(_, said): state.connection = .unreachable(.stopped(said))
+            case let .exited(code, said):
+                // The output is for the log: it's worded for a terminal and can name the daemon. The panel says it its own way.
+                log.error("cello login exited with \(code, privacy: .public): \(said, privacy: .public)")
+                state.connection = .unreachable(.stopped(said))
             case .timedOut: state.connection = .unreachable(.stopped(Copy.startTimedOut))
             }
             changed()
@@ -159,6 +163,7 @@ public final class Controller {
             // A dropped line reconnects and subscribes again. A refusal would leave the app looking connected with
             // nothing able to arrive, so it's said.
             if reply.error != "not_connected" {
+                log.error("subscribe refused: \(reply.error ?? "", privacy: .public): \(reply.message ?? "", privacy: .public)")
                 state.connection = .unreachable(.subscribeRefused(reply.message ?? reply.error ?? "refused"))
                 changed()
             }

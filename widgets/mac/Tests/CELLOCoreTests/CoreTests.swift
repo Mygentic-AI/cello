@@ -421,6 +421,15 @@ final class ControllerStartTests: XCTestCase {
         let c = Controller(socketPath: "/nonexistent/operator.sock", turnedOn: true)
         c.startFinished(.failure(.exited(1, "A daemon is already running for wss://x. Run: cello logout")))
         XCTAssertEqual(c.state.connection, .unreachable(.stopped("A daemon is already running for wss://x. Run: cello logout")))
+        // Kept for the log, never shown: what the panel says is the app's own words.
+        if case let .unreachable(why) = c.state.connection {
+            let shown = Copy.unreachable(why)
+            XCTAssertEqual([shown.reason, shown.fix], [Copy.unreachableStopped, Copy.unreachableFix])
+        }
+        for why in [Unreachable.stopped("daemon said x"), .subscribeRefused("That failed inside CELLO: daemon x"), .mismatch("daemon speaks 2")] {
+            let shown = Copy.unreachable(why)
+            XCTAssertFalse("\(shown.reason) \(shown.fix)".lowercased().contains("daemon"), "\(why)")
+        }
         c.startFinished(.failure(.notInstalled("/opt/node")))
         XCTAssertEqual(c.state.connection, .unreachable(.unknownInstall))
         c.startFinished(.failure(.timedOut))
