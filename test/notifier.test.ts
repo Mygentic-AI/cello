@@ -642,6 +642,37 @@ test("the same tap fetched again after a restart hands the agent nothing new and
   assert.equal(handed.length, 1, "the agent must not get the same choice twice");
 });
 
+test("a typed Telegram answer read again after a restart, before it was marked, still settles the question everywhere", async () => {
+  const { notifiers, store, seen, door } = await withMac();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT, { type: "mac" });
+  await notifiers.notify(AGENT, { kind: "request", text: "Proceed?", choices: "Yes|No" });
+  const question = sent.at(-1) as Sent;
+  says(55, "Yes, carefully.", question.message_id);
+  await until("the typed answer", () => handed.length === 1 && edits.length === 1);
+  notifiers.stop();
+  // The daemon died after handing the reply over and before marking the question answered or saving its place.
+  store.prepare("UPDATE notifications SET chosen = NULL").run();
+  const macId = (store.prepare("SELECT id FROM mac_queue ORDER BY id DESC").get() as { id: number }).id;
+  // Past everything for now, since the first reader may have stopped before saving its place, and the read again must
+  // wait for the app.
+  store.setConfig("notifier.telegram.next_update.123456", String(nextUpdate));
+  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen, door);
+  again.start();
+  await until("the door to open again", () => existsSync(door));
+  const { app } = await StandInMacApp.open(door);
+  // Read again only once the app is there to hear the result. The reader looks up its place before each read.
+  store.setConfig("notifier.telegram.next_update.123456", "0");
+  await until("Telegram's buttons to be taken off again", () => edits.length === 2);
+  const settledAgain = await app.waitFor((f) => f["op"] === "settled" && f["id"] === macId, "the Mac to be settled after the restart");
+  assert.equal(settledAgain["typed"], true);
+  assert.equal(handed.length, 1, "the agent must not get the same answer twice");
+  taps(55, question.message_id, "choice:0");
+  await until("a tap after it to be refused", () => tapAnswers.includes("Already answered: a typed answer."));
+  assert.equal(handed.length, 1);
+  await app.close();
+});
+
 test("a tap counts only from the notifier's own private chat, on a message that offered that choice", async () => {
   const { notifiers } = setup();
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
@@ -825,7 +856,7 @@ test("notifier-add's help lists the types, a type's help shows only its own opti
 
 // The Mac app beside Telegram. The live test proves the door with a real daemon. Only here, beside the stand-in Telegram,
 // can a choice made on one be shown to settle the other.
-async function withMac(): Promise<{ notifiers: Notifiers; store: Store; door: string }> {
+async function withMac(): Promise<{ notifiers: Notifiers; store: Store; door: string; seen: Set<string> }> {
   const made = setup(undefined, true);
   made.notifiers.start();
   await until("the operator's door to open", () => existsSync(made.door));
