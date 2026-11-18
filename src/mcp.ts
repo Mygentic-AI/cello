@@ -4,18 +4,23 @@
 // A doorbell never carries message text, or a name another party chose.
 import "./require-node.ts";
 import { randomUUID } from "node:crypto";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DAEMON_STOPPED_DOORBELL, channelNoticeDoorbell, policyDoorbell } from "./guidance.ts";
 import { logEvent } from "./daemon/log.ts";
-import { socketPath } from "./daemon/paths.ts";
+import { celloHome, socketPath } from "./daemon/paths.ts";
 import { IpcClient } from "./ipc/client.ts";
 import type { Operation } from "./ipc/operations.ts";
 import type { IpcNotification } from "./ipc/protocol.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { addNotifier, macAppEnv } from "./mac-app.ts";
 import { TOOL_OPERATIONS, asResult, callLimitMs, inputSchema, toolParams } from "./mcp-tools.ts";
 
 const RECONNECT_MS = 1000;
+// The cello command beside this file, in the form this file runs in: what the Mac app runs to start CELLO again.
+const CLI_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), `cli${extname(fileURLToPath(import.meta.url))}`);
 
 // Who this session is to the daemon. It goes with every call, because nothing is kept on the connection.
 // A host with a second door to the same agent, such as the Hermes bridge, names one caller for both, or this side is refused with agent_held.
@@ -153,6 +158,8 @@ async function run(op: Operation, args: Record<string, unknown>): Promise<unknow
     return result;
   }
   if (op.method === "export_transcript") return exportTranscript(params, (fields) => connected.call(op.method, fields));
+  // Nothing goes to standard output here: it's the MCP transport. The steps come back in the answer instead.
+  if (op.method === "notifier_add") return addNotifier(params, (fields) => connected.call(op.method, fields, callLimitMs(op, args)), () => macAppEnv(CLI_SCRIPT, celloHome(), () => undefined));
   if (op.method === "stop_using_agent") {
     const result = await connected.call(op.method, params, callLimitMs(op, args)) as { agent_id: string };
     heldAgents.delete(result.agent_id);

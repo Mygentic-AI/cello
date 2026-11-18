@@ -114,8 +114,9 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   assert.equal(none.json["error"], "no_notifier");
   assert.match(none.json["message"] as string, /cello notifier-add -h/);
 
-  // An agent's own shell adds it, with nothing secret. The next agent takes it with --same-as.
-  const added = ok(["notifier-add", "mac", "--agent", "Ann"], "ann-shell");
+  // An agent's own shell adds it, with nothing secret. The next agent takes it with --same-as. --route-only, because this
+  // test is about the daemon's side, and putting the app in Applications would open it on the screen of the Mac running it.
+  const added = ok(["notifier-add", "mac", "--route-only", "--agent", "Ann"], "ann-shell");
   assert.deepEqual([added["added"], added["type"], added["app"]], [true, "mac", "not open"]);
   assert.match(added["next"] as string, /Open CELLO on this Mac/);
   ok(["notifier-add", "mac", "--same-as", "Ann", "--agent", "Bea"], "bea-shell");

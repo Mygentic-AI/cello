@@ -11,6 +11,7 @@ import { celloHome, holdsOldVersion, logPath, oldVersionMessage, socketPath } fr
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, type Kind, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
+import { type MacAppEnv, addNotifier, macAppEnv } from "./mac-app.ts";
 import { daemonUnit, installBridge, setLanding } from "./hermes-bridge.ts";
 import { SETUP_HELP, setup } from "./setup.ts";
 import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-sign.ts";
@@ -602,9 +603,13 @@ async function main(): Promise<void> {
   params["caller"] ??= CALLER;
   const client = await IpcClient.connect(socketPath());
   const waited = op.method === "wait" ? ((params["timeout_seconds"] as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 + 10_000 : undefined;
+  // A person reads the Mac app's install steps as they happen. Standard output stays the one JSON answer.
+  const macEnv = (): MacAppEnv => macAppEnv(fileURLToPath(import.meta.url), celloHome(), (line) => process.stderr.write(`${line}\n`));
   const ask = (fields: Record<string, unknown>): Promise<unknown> => (op.method === "export_transcript"
     ? exportTranscript({ ...fields, out: resolve(fields["out"] as string) }, (sent) => client.call(op.method, sent))
-    : client.call(op.method, fields, waited));
+    : op.method === "notifier_add"
+      ? addNotifier(fields, (sent) => client.call(op.method, sent), macEnv)
+      : client.call(op.method, fields, waited));
   let answer: unknown;
   try {
     answer = await ask(params);

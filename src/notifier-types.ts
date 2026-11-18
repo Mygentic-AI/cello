@@ -28,14 +28,16 @@ export const NOTIFIER_TYPES = [
     name: "mac",
     label: "Mac",
     summary: "The CELLO app on this Mac: banners and a menu-bar panel, where the person answers with a click or by typing.",
-    setup: "It needs nothing secret: one CELLO app serves every agent on this Mac, and the person allows it once in the app. Your words reach it in full, without the outbound screen, because nothing leaves this machine. If the app is closed, the Mac is asleep or the person paused it, notify answers sent: \"queued\" and the app shows it when it's back: never send it again. same_as works as for any type. To stop, the person removes it in the app, which takes it off every agent, or you run notifier-remove for one agent.",
+    setup: "It needs nothing secret: one CELLO app serves every agent on this Mac, and the person turns it on once in the app. Adding it says each step and how to undo it, then does them with no prompt: it puts CELLO in ~/Applications, notes where cello is so the app can start it again, and opens it. The person clicks Turn on there, and Allow when macOS asks. build compiles the app from this checkout instead, and app takes one the person built. same_as, for a further agent, only adds the route, since the app is already there. Your words reach it in full, without the outbound screen, because nothing leaves this machine. If the app is closed, the Mac is asleep or the person paused it, notify answers sent: \"queued\" and the app shows it when it's back: never send it again. To stop, the person removes it in the app, which takes it off every agent, or you run notifier-remove for one agent.",
     steps: [
-      "Run: cello notifier-add mac --agent <name>. For each further agent: cello notifier-add mac --same-as <first agent> --agent <name>.",
-      "Open CELLO on this Mac and click Allow. One Allow covers every agent on this Mac.",
+      "Run: cello notifier-add mac --agent <name>. It puts CELLO in your Applications folder and opens it. For each further agent: cello notifier-add mac --same-as <first agent> --agent <name>.",
+      "Open CELLO on this Mac if it isn't open, click Turn on, and choose Allow when macOS asks. That covers every agent on this Mac.",
     ],
-    // TODO(mac app): --build (compile it from widgets/mac) and --app <path> (one built by hand) come with the app itself,
-    // with the default that copies the prebuilt app to ~/Applications. Until then this registers the route only.
-    params: [],
+    params: [
+      { name: "build", kind: "boolean", description: "Build CELLO from widgets/mac in this checkout of cello, instead of using the prebuilt app. Needs the Xcode command-line tools: xcode-select --install." },
+      { name: "app", kind: "string", description: "A CELLO.app you built yourself, to put in ~/Applications instead of the prebuilt one." },
+      { name: "route_only", kind: "boolean", description: "Only save the route: CELLO isn't copied or opened, and nothing is noted. For a Mac where CELLO is already set up." },
+    ],
   },
 ] as const satisfies readonly NotifierType[];
 

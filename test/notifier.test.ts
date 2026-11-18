@@ -815,10 +815,12 @@ test("notifier-add's help lists the types, a type's help shows only its own opti
   const bogus = cli(["notifier-add", "bogus", "-h"]);
   assert.equal(bogus.status, 2);
   assert.match(bogus.out, /has no type bogus\. Types: telegram, mac/);
-  // The Mac has no options of its own, and its page says how to finish in the app.
+  // The Mac's page has its install options, and says how to finish in the app.
   const mac = cli(["notifier-add", "mac", "-h"]);
   assert.equal(mac.status, 0);
-  assert.ok(mac.out.includes("Open CELLO on this Mac") && !mac.out.includes("--bot-token"), mac.out);
+  assert.ok(mac.out.includes("Open CELLO on this Mac") && mac.out.includes("Turn on") && !mac.out.includes("--bot-token"), mac.out);
+  for (const option of ["  --build", "  --app", "  --route-only"]) assert.ok(mac.out.includes(option), `${option} on the Mac's page`);
+  assert.ok(!telegram.out.includes("--route-only"), "and only there");
 });
 
 // The Mac app beside Telegram. The live test proves the door with a real daemon. Only here, beside the stand-in Telegram,
