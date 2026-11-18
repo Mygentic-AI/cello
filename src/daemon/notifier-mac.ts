@@ -331,7 +331,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     return this.#ctx.store.prepare("SELECT id, agent_id, notifier, kind, text, choices, session_id, talking_to, sent_at, shown_at FROM mac_queue WHERE done_at IS NULL ORDER BY id").all() as QueueRow[];
   }
 
-  // Answered, settled or old: the words go, and the row stays so a late pick or reply is told it's no longer waiting.
+  // Answered, settled or old: the words go, and the row stays, so a late pick is told it's no longer waiting and a late
+  // reply still finds its agent and session.
   #done(id: number): void {
     this.#ctx.store.prepare("UPDATE mac_queue SET text = '', done_at = ? WHERE id = ? AND done_at IS NULL").run(Date.now(), id);
   }
