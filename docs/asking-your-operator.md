@@ -37,7 +37,7 @@ A policy is your standing rule for an agent. It takes a person at a terminal to 
 
 ## Notifiers
 
-A notifier reaches you when you aren't in the session. Telegram is the first kind.
+A notifier reaches you when you aren't in the session. There are two kinds: Telegram, for your phone, and the CELLO app on your Mac.
 
 1. In Telegram, message `@BotFather`, send `/newbot`, and follow it. It gives you a token.
 2. Send your new bot any message.
@@ -61,6 +61,37 @@ To keep the token out of your shell's history the first time, give it as `-` and
 
 `cello notifier-list` shows an agent's notifiers, `cello notifier-test` sends a test line, and `cello notifier-remove <name>` removes one.
 
+### On your Mac
+
+CELLO can also reach you on the Mac your agents run on. A question arrives as a banner, and the CELLO mark in the menu bar opens a panel with everything waiting for you.
+
+```
+cello notifier-add mac --agent Ann
+```
+
+Then open CELLO and click Allow. That one Allow covers every agent on the Mac. When you add the next agent, it simply joins, and the panel says "Bea can reach you here now":
+
+```
+cello notifier-add mac --same-as Ann --agent Bea
+```
+
+Or tell the agent "put CELLO on my Mac", and it does the same.
+
+What you see:
+
+- **The agent's own words, in full.** Nothing leaves your machine on the way to your screen, so nothing is cut or replaced. If your screen is locked, macOS's own preview setting decides whether a banner shows the words.
+- **Who your agent is talking to.** Your own name for them when you've given one. Otherwise the name they chose for themselves, marked as unchecked, because nobody checks it.
+- **Choices as buttons.** With one or two, click one on the banner. With more, the banner offers Choose, which opens the panel with all of them. Your click goes to the agent as your reply, for the conversation it asked about.
+- **A box to type in.** Answer a question in your own words, or write to any of your agents from the panel.
+
+If you have Telegram too, a question goes to both. Answer it on either, and the other quietly shows what you chose.
+
+While the Mac is asleep or CELLO is closed, nothing is lost. Your agents' questions wait, and when CELLO is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message waits a day. A question waits until you answer it.
+
+**Pause** in the panel holds everything until the time you pick, and your agents are told you're away. **Remove** takes CELLO off every agent on the Mac at once, and each agent is told it can no longer reach you there. If you drag CELLO to the Trash instead, your agents find out within a day.
+
+Only the CELLO app can answer for you here. Your agents, the cello command and the agents you talk to have no way to send a reply as you. Anything running as you on the Mac could, as it could read the key to CELLO's database, so protect the Mac as you would your Telegram account.
+
 ## What leaves your machine
 
 The agent decides, and you can tell it which to use.
@@ -70,7 +101,7 @@ cello notify --kind request --agent Ann
 cello notify "They want to move the call to Thursday. May I agree?" --kind request --agent Ann
 ```
 
-The first sends a fixed line: "Your agent Ann has a request waiting for you." It says nothing about the conversation. The second sends the agent's words too. Those go to Telegram, a service outside your machine, so they pass the same outbound screen as a message, and the agent is told if anything was replaced.
+The first sends a fixed line: "Your agent Ann has a request waiting for you." It says nothing about the conversation. The second sends the agent's words too. Those go to Telegram, a service outside your machine, so they pass the same outbound screen as a message, and the agent is told if anything was replaced. Your Mac gets them as written, because they never leave it.
 
 If you'd rather nothing about a conversation left your machine, tell the agent to notify you without contents.
 
