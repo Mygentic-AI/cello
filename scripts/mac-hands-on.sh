@@ -115,11 +115,17 @@ up() {
   export CELLO_TEST_ISSUER_URL
   CELLO_TEST_ISSUER_URL=$(cat "$url_file")
 
+  # Each on its own line, so a failure stops up here rather than as a refused enrolment or an empty password later.
+  local trusted pg_pass app_pass
+  trusted=$(node "$here/live/issuer-service.ts" --print-trusted)
+  pg_pass=$(openssl rand -hex 16)
+  app_pass=$(openssl rand -hex 16)
+  [ -n "$trusted" ] && [ -n "$pg_pass" ] && [ -n "$app_pass" ] || die "Couldn't get the stand-in issuer's keys or make the database passwords."
   {
-    echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
-    echo "CELLO_APP_PASSWORD=$(openssl rand -hex 16)"
+    echo "POSTGRES_PASSWORD=$pg_pass"
+    echo "CELLO_APP_PASSWORD=$app_pass"
     echo "CELLO_PORT=$port"
-    echo "CELLO_TRUSTED_ISSUERS='$(node "$here/live/issuer-service.ts" --print-trusted)'"
+    echo "CELLO_TRUSTED_ISSUERS='$trusted'"
     echo "CELLO_ISSUER_LIST_URL=off"
   } > "$run/server.env"
   chmod 600 "$run/server.env"
