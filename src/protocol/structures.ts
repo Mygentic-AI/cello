@@ -517,6 +517,8 @@ export interface ListingFields {
 function checkListing(l: ListingFields): void {
   if (!LISTING_NAME_PATTERN.test(l.name)) throw new RangeError("a listing name is 1 to 64 letters, digits, underscores or dashes");
   if ([...l.description].length > MAX_LISTING_DESCRIPTION) throw new RangeError(`a listing description is at most ${MAX_LISTING_DESCRIPTION} characters`);
+  // Line breaks and tabs are text. Other control characters aren't, and a database refuses NUL outright.
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(l.description)) throw new RangeError("a listing description can't hold control characters");
   if (l.revision < 1) throw new RangeError("a listing's revision starts at 1");
   const tags = l.tags === "" ? [] : l.tags.split(",");
   if (tags.length > MAX_LISTING_TAGS) throw new RangeError(`a listing has at most ${MAX_LISTING_TAGS} tags`);

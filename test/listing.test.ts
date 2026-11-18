@@ -49,5 +49,7 @@ test("names, tags and languages are held to their patterns", () => {
   assert.throws(() => agentListingStructure.encode(fields(id, { tags: "a,a" })), /distinct/);
   assert.throws(() => agentListingStructure.encode(fields(id, { language: "english" })), /language/);
   assert.throws(() => agentListingStructure.encode(fields(id, { description: "x".repeat(2001) })), /description/);
+  assert.throws(() => agentListingStructure.encode(fields(id, { description: "nul\u0000here" })), /control characters/);
+  assert.doesNotThrow(() => agentListingStructure.encode(fields(id, { description: "two\nlines\tand a tab" })));
   assert.doesNotThrow(() => agentListingStructure.encode(fields(id, { language: "pt-BR", tags: "" })));
 });
