@@ -131,7 +131,7 @@ export class Notifiers {
     this.#store.prepare("UPDATE notifications SET chosen = ? WHERE asked = ?").run(TYPED, sent.asked);
     const agentHex = Buffer.from(sent.agent_id).toString("hex");
     const type = this.#rows(agentHex).find((row) => row.name === sent.notifier)?.type;
-    await this.#settleAsked(sent.asked, sent.id, { label: TYPED_LABEL, agentName: this.#host.agentName(agentHex), where: type === undefined ? sent.notifier : serviceOf(type), notifier: sent.notifier });
+    await this.#settleAsked(sent.asked, sent.id, { label: TYPED_LABEL, agentName: this.#host.agentName(agentHex), where: type === undefined ? sent.notifier : serviceOf(type), notifier: sent.notifier, typed: true });
   }
 
   // Starts listening for the operator's replies, on every type.
@@ -201,7 +201,7 @@ export class Notifiers {
     const type = this.#rows(holder.agentHex).find((row) => row.name === holder.name)?.type;
     // "already" is this same tap fetched again after a restart: the agent has it, and the buttons may still be showing.
     await settle(`Passed to ${name}.`);
-    await this.#settleAsked(sent.asked, sent.id, { label, agentName: name, where: type === undefined ? holder.name : serviceOf(type), notifier: holder.name });
+    await this.#settleAsked(sent.asked, sent.id, { label, agentName: name, where: type === undefined ? holder.name : serviceOf(type), notifier: holder.name, typed: false });
     return "passed";
   }
 

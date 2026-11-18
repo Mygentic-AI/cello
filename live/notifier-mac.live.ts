@@ -191,6 +191,17 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   assert.equal(resent["ok"], false, "the notification it answered is no longer waiting");
   assert.deepEqual(operatorReplies("Ann", "ann-shell").map((r) => [r.text, r.session_id, r.via]), [["Yes, but only after 2pm.", session, "mac"]]);
 
+  // 7b. A typed answer to a question with choices answers it: a pick afterwards is refused, and the agent gets one answer.
+  await notify(["Room A or B?", "--kind", "request", "--choices", "Room A|Room B", "--session-id", session], "Ann");
+  const rooms = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Room A or B?", "the room question");
+  const typedRoom = await app.request({ op: "reply", ref: "typed-room-0001", id: rooms["id"], text: "Neither, use the café." });
+  assert.equal(typedRoom["ok"], true);
+  const settledRoom = await app.waitFor((f) => f["op"] === "settled" && f["id"] === rooms["id"], "the room question to settle");
+  assert.deepEqual([settledRoom["typed"], settledRoom["label"]], [true, "a typed answer"]);
+  const lateRoom = await app.request({ op: "pick", id: rooms["id"], choice: 0 });
+  assert.deepEqual([lateRoom["ok"], lateRoom["error"]], [false, "already_answered"]);
+  assert.deepEqual(operatorReplies("Ann", "ann-shell").map((r) => r.text), ["Neither, use the café."]);
+
   // 8. A plain message to an agent the person picks, about no session. One that doesn't reach them here is refused.
   const plain = await app.request({ op: "reply", ref: "plain-to-bea-1", agent: beaId, text: "Bea, book the room for Friday." });
   assert.deepEqual([plain["ok"], plain["passed_to"]], [true, "Bea"]);

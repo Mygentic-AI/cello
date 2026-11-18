@@ -913,6 +913,25 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   taps(55, thirdInTelegram.message_id, "choice:0");
   await until("the tap after a typed answer to be refused", () => tapAnswers.includes("Already answered: a typed answer."));
   assert.deepEqual(handed.map((h) => h.text), ["No", "Yes", "Make it one o'clock."]);
+
+  // Typed in Telegram as a reply to a question with choices: answered everywhere. Its own buttons go with no extra line,
+  // the Mac is settled, and a later pick or tap is told it's answered.
+  await notifiers.notify(AGENT, { kind: "request", text: "Dinner too?", choices: "Yes|No", session_id: session });
+  const fourth = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Dinner too?", "the fourth question on the Mac");
+  const fourthInTelegram = sent.at(-1) as Sent;
+  const linesBefore = sent.length;
+  says(55, "Only if it's early.", fourthInTelegram.message_id);
+  await until("the typed Telegram answer", () => handed.length === 4);
+  assert.deepEqual(handed[3], { agent: AGENT, session, text: "Only if it's early.", via: "telegram" });
+  await until("its own buttons to come off", () => edits.some((e) => e.message_id === fourthInTelegram.message_id && e.buttons === 0));
+  const settledByTyping = await app.waitFor((f) => f["op"] === "settled" && f["id"] === fourth["id"], "the Mac to be settled by a typed Telegram answer");
+  assert.deepEqual([settledByTyping["label"], settledByTyping["where"], settledByTyping["here"], settledByTyping["typed"]], ["a typed answer", "Telegram", false, true]);
+  assert.ok(!sent.slice(linesBefore).some((s) => s.text.startsWith("You chose")), "no 'You chose' line under the person's own reply");
+  const lateMac = await app.request({ op: "pick", id: fourth["id"], choice: 0 });
+  assert.deepEqual([lateMac["ok"], lateMac["message"]], [false, "Already answered: a typed answer."]);
+  taps(55, fourthInTelegram.message_id, "choice:1");
+  await until("a tap after the typed answer to be refused", () => tapAnswers.filter((t) => t === "Already answered: a typed answer.").length === 2);
+  assert.equal(handed.length, 4, "one answer per question, however it was given");
   await app.close();
 });
 

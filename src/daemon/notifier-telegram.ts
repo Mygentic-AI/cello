@@ -147,14 +147,15 @@ export class TelegramNotifier implements NotifierAdapter {
 
   // Takes the buttons off one message this notifier sent, and says quietly what was decided.
   async settle(configText: string, remoteId: string, settled: Settled): Promise<void> {
-    const line = settled.here ? `You chose: ${settled.label}. Passed to ${settled.agentName}.` : `Answered on another of ${settled.agentName}'s notifiers: ${settled.label}.`;
+    // Typed here: the person's reply is right under it and already says it was passed on, so only the buttons go.
+    const line = settled.here ? (settled.typed ? undefined : `You chose: ${settled.label}. Passed to ${settled.agentName}.`) : `Answered on another of ${settled.agentName}'s notifiers: ${settled.label}.`;
     const config = JSON.parse(configText) as TelegramConfig;
     const holder = { botId: botIdOf(config.bot_token), token: config.bot_token, chat: config.chat_number };
     const messageId = Number(remoteId.split(":").at(-1));
     if (!Number.isInteger(messageId)) return;
     try {
       await clearButtons(this.#telegram, holder.token, holder.chat, messageId);
-      await sendText(this.#telegram, holder.token, holder.chat, line, [], true);
+      if (line !== undefined) await sendText(this.#telegram, holder.token, holder.chat, line, [], true);
     } catch (err: unknown) {
       logEvent("notifier.answer_failed", { bot: holder.botId, message: err instanceof Error ? err.message : String(err) });
     }
@@ -251,7 +252,7 @@ export class TelegramNotifier implements NotifierAdapter {
     const holds = (agentId: Uint8Array, notifier: string): Holder | undefined => holders.find((h) => h.name === notifier && h.agentHex === Buffer.from(agentId).toString("hex"));
     type Sent = { agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; kind?: string };
     // guessed: the person didn't say which agent, and more than one uses this chat. Then they're told who it went to.
-    let target: { holder: Holder; sessionId: Uint8Array | null; guessed?: boolean } | undefined;
+    let target: { holder: Holder; sessionId: Uint8Array | null; guessed?: boolean; answers?: string } | undefined;
     // A reply to one of an agent's notifications goes to that agent, about that session.
     const repliedTo = message.reply_to_message?.message_id;
     if (repliedTo !== undefined) {
@@ -262,7 +263,7 @@ export class TelegramNotifier implements NotifierAdapter {
         await this.#answer(here, "The agent that sent that message no longer uses this chat, so your reply wasn't passed on.");
         return;
       }
-      if (sent && holder) target = { holder, sessionId: sent.session_id };
+      if (sent && holder) target = { holder, sessionId: sent.session_id, answers: `${botId}:${chat}:${repliedTo}` };
     }
     // A plain message goes to whichever agent wrote to this chat last, because that's who the person is answering. It
     // names no session: only answering a message says which conversation it's about.
@@ -280,6 +281,9 @@ export class TelegramNotifier implements NotifierAdapter {
     }
     const agentHex = target.holder.agentHex;
     const outcome = this.#ctx.host.fromOperator(agentHex, target.sessionId, text, target.holder.name, `telegram:${botId}:${update.update_id}`);
+    // A typed reply to a question with choices answers it everywhere: its buttons go, here and on every other notifier.
+    // Also when it was handed over before a restart, since the buttons may still be showing.
+    if (outcome !== "no_agent" && target.answers !== undefined) await this.#ctx.answeredInWords(target.answers);
     if (outcome === "already") return;
     if (outcome === "no_agent") {
       // Never silently: the person believes they've given an instruction.

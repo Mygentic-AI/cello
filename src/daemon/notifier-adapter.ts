@@ -70,7 +70,8 @@ export interface Delivered {
 
 // A choice was made, so each copy of the question is settled. here: this copy is the one it was made on. where is the
 // service it was made on, such as Telegram.
-export interface Settled { label: string; agentName: string; where: string; notifier: string; here: boolean }
+// typed: answered in the person's own words rather than with a choice, and label then says so.
+export interface Settled { label: string; agentName: string; where: string; notifier: string; here: boolean; typed: boolean }
 
 // What a new notifier stores, and says about itself, once the service has accepted it.
 export interface Connected {

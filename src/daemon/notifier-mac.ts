@@ -188,7 +188,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const id = queueIdOf(remoteId);
     if (id === undefined) return;
     this.#done(id);
-    this.#push({ op: "settled", id, label: settled.label, where: settled.where, here: settled.here });
+    this.#push({ op: "settled", id, label: settled.label, where: settled.where, here: settled.here, typed: settled.typed });
     return Promise.resolve();
   }
 
