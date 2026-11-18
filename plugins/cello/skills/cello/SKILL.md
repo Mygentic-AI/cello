@@ -60,6 +60,8 @@ Sending is half the job. How you learn the reply came depends on your app:
 
 There is one receive, and it returns at once. `cello_wait` is the one that blocks.
 
+If a send or a new session answers with `doorbell_warning`, this session won't be woken when the reply comes. It happens after a window is reopened, forked or reconnected. Take the agent with `cello_use_agent` (with `force` if the warning says another session holds it, and only if your operator means to move it here).
+
 To staff a front desk when nothing wakes you, waiting for whoever calls next, use the `cello-receptionist` skill. It has an agent that does the waiting.
 
 ## 5. What a read holds
