@@ -57,7 +57,7 @@ func snapshot(_ c: Controller) -> [String: Any] {
             [
                 "id": item.id, "agent": item.agent, "kind": item.kind.rawValue, "text": item.text, "choices": item.choices,
                 "talking": item.talkingTo.map(Copy.talkingTo) as Any, "age": Copy.ageShort(now.timeIntervalSince(item.sentAt)),
-                "silent": item.silent, "banner": plan(BannerPlan.forItem(item)),
+                "silent": item.silent, "shown": item.shown, "banner": plan(BannerPlan.forItem(item)),
             ]
         },
         "earlier": c.state.earlierToday(now: now).map { Copy.earlierLine(agent: $0.agent, what: $0.what, time: "") },

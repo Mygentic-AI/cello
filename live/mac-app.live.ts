@@ -229,8 +229,20 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   state = await app.run({ do: "state" });
   assert.deepEqual((state["waiting"] as { text: string }[]).map((w) => w.text).sort(), ["Coffee or tea?", "Lunch: pizza or salad?", "The quote came in 8% lower."].sort());
 
+  // 8b. The app itself restarts, a fresh process: the door says each one was shown, the banner acks and the panel's
+  // ack both landed, so nothing is bannered again.
+  app.stop();
+  const relaunched = new Probe(binary);
+  probe = relaunched;
+  await relaunched.waitFor("the relaunched app connected", (e) => e["event"] === "status" && e["connection"] === "connected");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const again = await relaunched.run({ do: "state" });
+  assert.deepEqual((again["waiting"] as { text: string; shown: boolean }[]).map((w) => [w.text, w.shown]).sort(), [["Coffee or tea?", true], ["Lunch: pizza or salad?", true], ["The quote came in 8% lower.", true]].sort());
+  assert.ok(!relaunched.events.some((e) => e["effect"] === "banner" || e["effect"] === "summary"), `nothing bannered on relaunch: ${JSON.stringify(relaunched.events)}`);
+
   // 9. Remove takes the Mac off every agent.
-  assert.equal((await app.run({ do: "remove" }))["ok"], true);
+  const app2 = relaunched;
+  assert.equal((await app2.run({ do: "remove" }))["ok"], true);
   for (const name of ["Ann", "Bea"]) assert.deepEqual((ok(["notifier-list", "--agent", name]) as { notifiers: unknown[] }).notifiers, []);
   assert.equal(annId.length, 64);
 });
