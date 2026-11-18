@@ -88,8 +88,13 @@ up() {
   chmod 700 "$run"
   : > "$run/pids"
 
-  # What the owner's Mac had before, by existence only, so down can tell what the test added.
+  # A CELLO app already open stays attached to whatever launch.json said when it opened, which may be the real ~/.cello:
+  # the install wouldn't restart it, so taps during the test could answer real agents.
+  if [ -z "$route_only" ] && pgrep -f "$app_path/Contents/MacOS/" >/dev/null 2>&1; then die "CELLO is open on this Mac. Quit it first (osascript -e 'quit app id \"$bundle_id\"'), then run up again."; fi
+  # What the owner's Mac had before, so down can tell what the test added. A launch.json already there is copied, since
+  # the install writes over it.
   { [ -e "$app_path" ] && echo "app_before=1" || echo "app_before="; [ -e "$launch_file" ] && echo "launch_before=1" || echo "launch_before="; } > "$run/before"
+  if [ -e "$launch_file" ]; then cp -p "$launch_file" "$run/launch.json.before"; fi
 
   echo "Copying cello-server at $server_commit into $server_copy (the shared checkout isn't changed)."
   git -C "$server_repo" archive "$server_commit" | tar -x -C "$server_copy"
@@ -194,7 +199,8 @@ EOF
     if [ -s "$run/before" ] && grep -q '=1' "$run/before"; then
       echo
       echo "Warning: this Mac already has $( grep -q 'app_before=1' "$run/before" && echo "$app_path ")$( grep -q 'launch_before=1' "$run/before" && echo "and $launch_file")."
-      echo "The install replaces them, pointing the app at the throwaway CELLO. Back them up first if they matter."
+      echo "The install replaces them, pointing the app at the throwaway CELLO."
+      if [ -f "$run/launch.json.before" ]; then echo "The old launch.json is saved at $run/launch.json.before, and down prints how to put it back."; fi
     fi
   fi
 }
@@ -304,7 +310,10 @@ To remove what the test left, in this order (nothing here was run):
      Last, because an app with no launch.json falls back to your real ~/.cello.
   5. Optional: System Settings > Notifications > CELLO, to forget its permission.
 EOF
-  if [ -n "$launch_before" ]; then echo "launch.json was there before the test. If you backed it up, put it back instead of step 4."; fi
+  if [ -n "$launch_before" ] && [ -f "$run/launch.json.before" ]; then
+    echo "launch.json was there before the test. Instead of step 4, put the old one back:"
+    echo "  cp -p \"$run/launch.json.before\" \"$launch_file\""
+  fi
 }
 
 command=${1:-}
