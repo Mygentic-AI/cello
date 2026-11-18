@@ -9,7 +9,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, holdsOldVersion, logPath, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
-import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { DEFAULT_WAIT_SECONDS, type Kind, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
 import { daemonUnit, installBridge, setLanding } from "./hermes-bridge.ts";
 import { SETUP_HELP, setup } from "./setup.ts";
@@ -38,18 +38,39 @@ function flag(name: string): string {
 const SIGNAL_FLAGS = "(--over | --standby <minutes> | --wrap)";
 const isSignalParam = (op: Operation, param: Param): boolean => op.command === "send" && (param.name === "signal" || param.name === "est_minutes");
 
-function usageLine(op: Operation): string {
-  const positional = op.params.filter((p) => p.positional).map((p) => (p.required ? `<${p.name}>` : `[<${p.name}>]`));
-  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p)).map((p) => {
+// For a command with kinds: the options every kind shares, or with a kind, that kind's own and the shared ones.
+const forKind = (p: Param, kind: Kind | undefined): boolean => p.forKinds === undefined || (kind !== undefined && p.forKinds.includes(kind.name));
+
+function usageLine(op: Operation, kind?: Kind): string {
+  const positional = op.params.filter((p) => p.positional).map((p) => (kind && p.name === op.kinds?.param ? kind.name : p.required ? `<${p.name}>` : `[<${p.name}>]`));
+  const own = op.kinds && !kind ? [`[<${op.kinds.param} options>]`] : [];
+  const flags = op.params.filter((p) => !p.positional && !isSignalParam(op, p) && forKind(p, kind)).map((p) => {
     const text = p.kind === "boolean" ? flag(p.name) : `${flag(p.name)} <${p.kind}>`;
     return p.required ? text : `[${text}]`;
   });
   const signal = op.command === "send" ? [SIGNAL_FLAGS] : [];
   const scoped = [...(op.scoped ? ["[--agent <name-or-id>]"] : []), ...(op.acts ? ["[--force]"] : []), ...(op.plain ? ["[--json]"] : []), ...(op.command === "agents" ? ["[--labels]"] : [])];
-  return `cello ${[op.command, ...positional, ...signal, ...flags, ...scoped].join(" ")}`;
+  return `cello ${[op.command, ...positional, ...own, ...signal, ...flags, ...scoped].join(" ")}`;
+}
+
+const detailLine = (name: string, text: string): string => `  ${name.padEnd(20)} ${text}`;
+
+// One kind's help: its setup and only its own options. The shared ones are named, and the command's own help has them.
+function kindHelp(op: Operation, kind: Kind): string {
+  const shared = [...op.params.filter((p) => !p.positional && p.forKinds === undefined).map((p) => flag(p.name)), ...(op.scoped ? ["--agent"] : [])];
+  const steps = kind.steps.map((step, i) => `  ${i + 1}. ${step}`).join("\n");
+  const own = kind.params.map((p) => detailLine(flag(p.name), p.description)).join("\n");
+  return `Usage: ${usageLine(op, kind)}\n\n${kind.setup}\n\nSetting it up:\n${steps}\n${own.length > 0 ? `\n${own}\n` : ""}\n${shared.length > 1 ? `${shared.slice(0, -1).join(", ")} and ${shared.at(-1) ?? ""}` : shared.join("")} work for every ${op.kinds?.param ?? "kind"}. 'cello ${op.command} -h' describes them.\n`;
 }
 
 function commandHelp(op: Operation): string {
+  if (op.kinds) {
+    const { param, intro, list } = op.kinds;
+    const kinds = list.map((kind) => detailLine(kind.name, kind.summary)).join("\n");
+    const shared = op.params.filter((p) => !p.positional && p.forKinds === undefined).map((p) => detailLine(flag(p.name), p.description));
+    if (op.scoped) shared.push(detailLine("--agent", "The agent's name or id. Can be left out once chosen with use-agent."));
+    return `Usage: ${usageLine(op)}\n\n${intro}\n\n${param[0]?.toUpperCase()}${param.slice(1)}s:\n${kinds}\n\nEvery ${param} takes:\n${shared.join("\n")}\n\nEach ${param} has options of its own. Run 'cello ${op.command} <${param}> -h' for them and how to set it up.\n`;
+  }
   const details = op.params.filter((p) => !isSignalParam(op, p)).map((p) => `  ${(p.positional ? `<${p.name}>` : flag(p.name)).padEnd(20)} ${p.description}`);
   if (op.command === "send") {
     details.push(
@@ -61,6 +82,14 @@ function commandHelp(op: Operation): string {
   if (op.scoped) details.push(`  ${"--agent".padEnd(20)} The agent's name or id. Can be left out once chosen with use-agent.`);
   if (op.acts) details.push(`  ${"--force".padEnd(20)} Take the agent from another caller that holds it.`);
   return `Usage: ${usageLine(op)}\n\n${op.description}\n${details.length > 0 ? `\n${details.join("\n")}\n` : ""}`;
+}
+
+// A command's help, or with a kind named, that kind's. A kind that doesn't exist is a usage mistake that lists the real ones.
+function helpFor(op: Operation, kindName: string | undefined): string {
+  if (!op.kinds || kindName === undefined) return commandHelp(op);
+  const kind = op.kinds.list.find((k) => k.name === kindName);
+  if (!kind) usageError(`${op.command} has no ${op.kinds.param} ${kindName}. ${op.kinds.param[0]?.toUpperCase()}${op.kinds.param.slice(1)}s: ${op.kinds.list.map((k) => k.name).join(", ")}.`, op);
+  return kindHelp(op, kind);
 }
 
 function overview(): string {
@@ -112,8 +141,8 @@ function fail(text: string, code: number): never {
   process.exit(code);
 }
 
-function usageError(message: string, op?: Operation): never {
-  const hint = op ? `\n\n${usageLine(op)}\nRun 'cello ${op.command} --help' for details.` : "\n\nRun 'cello --help' for the list of commands.";
+function usageError(message: string, op?: Operation, kind?: Kind): never {
+  const hint = op ? `\n\n${usageLine(op, kind)}\nRun 'cello ${op.command}${kind ? ` ${kind.name}` : ""} --help' for details.` : "\n\nRun 'cello --help' for the list of commands.";
   fail(`${message}${hint}\n`, EXIT_USAGE);
 }
 
@@ -196,7 +225,7 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
     const value = args[++i];
     if (value === undefined) usageError(`${arg} needs a value`, op);
     // A secret given as - comes from standard input, so it isn't left in the shell's history or shown in a process list.
-    params[param.name] = param.name === "bot_token" && value === "-" ? readFileSync(0, "utf8").trim() : readValue(param, value);
+    params[param.name] = param.secret && value === "-" ? readFileSync(0, "utf8").trim() : readValue(param, value);
   }
   if (given.length > positional.length) usageError(`${op.command} takes ${positional.length} argument(s), got ${given.length}`, op);
   positional.forEach((param, i) => {
@@ -204,6 +233,10 @@ function parse(op: Operation, args: string[]): Record<string, unknown> {
     // A number given by position is a number to the daemon, as one given by flag is.
     if (value !== undefined) params[param.name] = param.name === "text" && value === "-" ? readFileSync(0, "utf8") : param.kind === "number" ? readValue(param, value) : value;
   });
+  // An option another kind takes would be ignored by this one, so it's refused. An unknown kind is the daemon's to refuse.
+  const kind = op.kinds?.list.find((k) => k.name === params[op.kinds?.param ?? ""]);
+  const foreign = kind && op.params.find((p) => params[p.name] !== undefined && !forKind(p, kind));
+  if (kind && foreign) usageError(`${op.command} ${kind.name} has no option ${flag(foreign.name)}`, op, kind);
   for (const param of op.params) {
     if (param.required && params[param.name] === undefined) usageError(`${op.command} needs ${isSignalParam(op, param) ? SIGNAL_FLAGS : param.positional ? `<${param.name}>` : flag(param.name)}`, op);
   }
@@ -493,7 +526,7 @@ async function main(): Promise<void> {
   const [command, args] = first === "signals" && rest[0] && !rest[0].startsWith("-") ? [`signals-${rest[0]}`, rest.slice(1)] : [first, rest];
   if (!command || command === "--help" || command === "-h" || command === "help") {
     const named = command === "help" ? OPERATIONS.find((candidate) => candidate.command === args[0]) : undefined;
-    process.stdout.write(named ? commandHelp(named) : overview());
+    process.stdout.write(named ? helpFor(named, args[1]) : overview());
     return;
   }
   if (command === "--version" || command === "-v" || command === "version") {
@@ -548,6 +581,11 @@ async function main(): Promise<void> {
   if (!op) usageError(`No such command: ${command}`);
   if (wantsHelp) {
     process.stdout.write(commandHelp(op));
+    return;
+  }
+  // notifier-add telegram -h: one kind's own help.
+  if (op.kinds && args[0] !== undefined && (args[1] === "--help" || args[1] === "-h")) {
+    process.stdout.write(helpFor(op, args[0]));
     return;
   }
   const params = parse(op, args);

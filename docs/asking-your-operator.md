@@ -57,6 +57,8 @@ cello notifier-add telegram --same-as Ann --agent Bea
 
 To keep the token out of your shell's history the first time, give it as `-` and it's read from standard input: `cello notifier-add telegram --bot-token - --agent Ann`.
 
+`cello notifier-add -h` lists the kinds of notifier, and `cello notifier-add telegram -h` shows Telegram's own options and these steps.
+
 `cello notifier-list` shows an agent's notifiers, `cello notifier-test` sends a test line, and `cello notifier-remove <name>` removes one.
 
 ## What leaves your machine
