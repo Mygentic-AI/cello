@@ -165,6 +165,18 @@ export async function sendText(at: TelegramEndpoint, token: string, chatId: stri
   return { chatId: String(sent.chat.id), messageId: sent.message_id };
 }
 
+// A message with buttons that each carry their own data, for the bot's own menus rather than an agent's choices.
+// Telegram allows 64 bytes of data per button.
+export async function sendButtons(at: TelegramEndpoint, token: string, chatId: string, text: string, buttons: readonly { text: string; data: string }[], silent = false): Promise<void> {
+  const markup = { reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) } };
+  await call(at, token, "sendMessage", { chat_id: chatId, text, ...markup, ...(silent ? { disable_notification: true } : {}) }, at.timeoutMs, undefined, TRIES, true);
+}
+
+// The commands Telegram lists when the person types "/". One try: without it the commands still work, typed in full.
+export async function setCommands(at: TelegramEndpoint, token: string, commands: readonly { command: string; description: string }[]): Promise<void> {
+  await call(at, token, "setMyCommands", { commands }, at.timeoutMs, undefined, 1);
+}
+
 // Stops the tapped button's spinner, with a short line Telegram shows the person.
 export async function answerTap(at: TelegramEndpoint, token: string, tapId: string, text: string): Promise<void> {
   await call(at, token, "answerCallbackQuery", { callback_query_id: tapId, text });
