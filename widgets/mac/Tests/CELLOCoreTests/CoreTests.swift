@@ -510,6 +510,43 @@ final class ControllerDoorTests: XCTestCase {
         XCTAssertNotEqual(after[2], after[0], "once taken, the same words again are a new message")
     }
 
+    // An answered card folds with nothing from the door, so the Controller has to redraw by itself when it does.
+    func testTheControllerRedrawsWhenAnAnsweredCardFolds() {
+        // Each redraw, and whether the panel would then find the card folded.
+        final class Counter: ControllerDelegate {
+            var redraws: [(at: Date, folded: Bool)] = []
+            func stateChanged(_ controller: Controller) { redraws.append((Date(), controller.state.justAnswered(now: Date()).isEmpty)) }
+            func perform(_ effect: Effect, controller: Controller) {}
+            func needsStart(_ controller: Controller) {}
+        }
+        let door = FakeDoor()
+        defer { door.close() }
+        let news: [String: Any] = ["op": "notification", "id": 8, "agent_id": "aa", "agent": "Ann", "kind": "message", "text": "Done.", "choices": [String](), "session_id": NSNull(), "talking_to": NSNull(), "sent_at": "2026-11-18T10:01:00Z", "age_seconds": 0, "shown": false, "silent": false]
+        door.answer = { r in
+            r["op"] as? String == "subscribe"
+                ? ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+                : ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann"]
+        }
+        door.then = { r in r["op"] as? String == "subscribe" ? [news] : [] }
+        let counter = Counter()
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.delegate = counter
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil { c.state.item(8) != nil })
+        // Past the catch-up window, whose own redraw would otherwise be counted.
+        XCTAssertTrue(waitUntil(3) { !c.state.catchingUp })
+        var done = false
+        c.reply(8, text: "Thanks.") { _ in done = true }
+        XCTAssertTrue(waitUntil { done })
+        XCTAssertEqual(c.state.justAnswered(now: Date()).count, 1)
+        let answeredAt = Date()
+        counter.redraws = []
+        XCTAssertTrue(waitUntil(answeredCardSeconds + 3) { counter.redraws.contains { $0.folded } }, "no redraw when the card folded")
+        let fold = counter.redraws.first { $0.folded }
+        XCTAssertGreaterThanOrEqual(fold?.at.timeIntervalSince(answeredAt) ?? 0, answeredCardSeconds - 0.5)
+    }
+
     // A typed answer to a question already answered elsewhere goes on as a follow-up, and the door says so in said. That
     // line is the one the panel keeps. Without said, it's the usual line.
     func testAReplyKeepsTheDoorsFollowUpLineAndOtherwiseTheUsualOne() {
