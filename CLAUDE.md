@@ -1,6 +1,6 @@
 # cello (repo: cello)
 
-The CELLO client: daemon, commands and Claude Code tools. The design is in the spec in `trustless-cello/docs/planning/rewrite/SPEC-v2.0.md`, and the current scope is in `BUILD-PLAN.md` beside it. The server is in the separate `cello-server` repo.
+The CELLO client: daemon, commands and Claude Code tools. The server is in the separate `cello-server` repo. The maintainers keep the design spec and build plan privately; `docs/` here describes how the client behaves.
 
 ## How work runs
 
@@ -8,7 +8,7 @@ A unit of work is: build a bit, run `cello-unit-reviewer` on it, fix what it fin
 
 Tests: the main tests are live ones with real processes. Write a small test only where a mistake wouldn't show by itself, such as crypto, chain checks and tampering. No fixed order. When a test catches a real bug, say so in the commit message.
 
-Old code is reference. Copy only what the current work needs, works without the old structure, and would be written the same way today. Copy by script, strip its history, and add it to `COPIED.md`.
+Old code is reference. Copy only what the current work needs, works without the old structure, and would be written the same way today. Copy by script and strip its history.
 
 ## Rules
 

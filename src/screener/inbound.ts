@@ -1,5 +1,5 @@
 // The whole inbound screen, as small steps. The caller decides when each step runs, so nothing long ever holds the thread.
-// Rewritten from cello-client's screen/inbound.ts, with the same checks. Every part is read: there's no cap and no early exit.
+// Every part is read: there's no cap and no early exit.
 import { AFFORDANCE_PREFIX } from "./affordance.ts";
 import type { InjectionClassifier } from "./injection-classifier-onnx.ts";
 import { scanInjectionPatterns } from "./injection-patterns.ts";

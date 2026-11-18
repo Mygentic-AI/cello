@@ -1,7 +1,6 @@
 // What to do about signals running out: tell the agent once, in the last 30 days, and with auto-renew on, renew Usage.
 // Only Usage can be renewed without the person: the issuer re-signs other signals with their original expiry until the owner proves
 // them again on the trust site, so a collect would renew nothing. Pure, so the rules can be tested apart from the wallet.
-// Plan: trustless-cello/docs/planning/rewrite/USAGE-SIGNAL-PLAN.md.
 
 export const RENEW_WINDOW_SECONDS = 30 * 86_400;
 // With auto-renew on, Usage is refreshed this often, so the counts others see are never more than a month old.

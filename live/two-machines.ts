@@ -706,11 +706,11 @@ function reportText(results: Json, meta: Json, failures: string[]): string {
 
 async function orchestrate(): Promise<void> {
   const { values: args } = parseArgs({ options: {
-    server: { type: "string" }, instance: { type: "string" }, zone: { type: "string" }, project: { type: "string", default: "cello-infra" },
+    server: { type: "string" }, instance: { type: "string" }, zone: { type: "string" }, project: { type: "string" },
     short: { type: "string", default: "100" }, kb100: { type: "string", default: "40" }, mb1: { type: "string", default: "20" },
     starts: { type: "string", default: "15" }, kills: { type: "string", default: "3" }, "no-sync": { type: "boolean", default: false },
   } });
-  if (!args.server || !args.instance || !args.zone) throw new Error("--server, --instance and --zone are required");
+  if (!args.server || !args.instance || !args.zone || !args.project) throw new Error("--server, --instance, --zone and --project are required");
   const here = new URL("..", import.meta.url).pathname;
   const git = (...rest: string[]): string => execFileSync("git", ["-C", here, ...rest], { encoding: "utf8" }).trim();
   const dirty = git("status", "--short", "src", "live");

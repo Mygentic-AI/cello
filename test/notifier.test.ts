@@ -21,6 +21,8 @@ const NAMES: Record<string, string> = { [AGENT]: "Ann", [AGENT2]: "Bea" };
 interface Sent { token: string; chat_id: string; text: string; message_id: number; buttons: { text: string; callback_data: string }[]; silent: boolean }
 // What Telegram was told to show after a tap, the messages it was told to rewrite, and the reactions put on the person's own.
 let tapAnswers: string[] = [];
+// Each command list the bot was given, as the commands' names.
+let commandLists: string[][] = [];
 let edits: { message_id: number; chat_id: string; buttons: number }[] = [];
 const reactions: { message_id: number; chat_id: string; emoji: string }[] = [];
 // Every sendMessage that reached the stand-in, answered or not.
@@ -72,6 +74,11 @@ function telegram(): Promise<string> {
         const waiting = inbox.filter((u) => u.update_id >= (body.offset ?? 0));
         if (waiting.length > 0) res.end(JSON.stringify({ ok: true, result: waiting }));
         else setTimeout(() => res.end(JSON.stringify({ ok: true, result: [] })), 20);
+        return;
+      }
+      if (match[2] === "setMyCommands") {
+        commandLists.push(((body as { commands?: { command: string }[] }).commands ?? []).map((c) => c.command));
+        res.end(JSON.stringify({ ok: true, result: true }));
         return;
       }
       if (match[2] === "answerCallbackQuery") { tapAnswers.push(String((body as { text?: string }).text)); res.end(JSON.stringify({ ok: true, result: true })); return; }
@@ -157,6 +164,7 @@ function setup(at: { apiUrl: string; timeoutMs: number; pollSeconds: number } = 
   readerCalls = 0;
   handed = [];
   tapAnswers = [];
+  commandLists = [];
   edits = [];
   told = [];
   held = new Set([AGENT, AGENT2]);
@@ -422,6 +430,63 @@ test("a reply finds its agent: by the message it answers, else whoever wrote las
   says(55, "/start again");
   await settle();
   assert.equal(handed.length, 2);
+});
+
+test("/agents offers each agent in the chat: picking one sends plain messages there, until another agent writes", async () => {
+  const { notifiers } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await until("the bot's command list", () => commandLists.some((list) => list.includes("agents")));
+
+  await notifiers.notify(AGENT, { kind: "request" });
+  says(55, "/agents");
+  await until("the list of agents", () => sent.some((s) => s.buttons.length === 2 && s.buttons.some((b) => b.text === "Bea")));
+  const list = sent.find((s) => s.buttons.some((b) => b.text === "Bea")) as Sent;
+  assert.equal(list.silent, true, "the list doesn't sound");
+  assert.deepEqual(handed, [], "the command itself is never an instruction");
+
+  // Ann wrote last, so a plain message would go to her. Picking Bea changes that, with no guessing.
+  taps(55, list.message_id, (list.buttons.find((b) => b.text === "Bea") as { callback_data: string }).callback_data);
+  await until("the pick confirmed", () => tapAnswers.includes("Now talking to Bea."));
+  const plainId = 900 + nextUpdate;
+  says(55, "for Bea, by pick");
+  await until("the plain message", () => handed.length === 1);
+  assert.deepEqual(handed[0], { agent: AGENT2, session: null, text: "for Bea, by pick", via: "telegram" });
+  await until("a 👍, since it named its agent", () => reactions.some((r) => r.message_id === plainId));
+
+  // Ann writes again: she's who the person is answering now.
+  await notifiers.notify(AGENT, { kind: "request" });
+  says(55, "back to Ann");
+  await until("the next plain message", () => handed.length === 2);
+  assert.equal((handed as Handed[])[1]?.agent, AGENT);
+
+  // A button from a stale list, for an agent that has left the chat, hands nothing over.
+  notifiers.remove(AGENT2, "telegram");
+  taps(55, list.message_id, (list.buttons.find((b) => b.text === "Bea") as { callback_data: string }).callback_data);
+  await until("being told Bea has gone", () => tapAnswers.includes("That agent no longer uses this chat."));
+  assert.equal(handed.length, 2);
+});
+
+test("a pick read again after a restart doesn't take messages back from an agent that wrote since", async () => {
+  const { notifiers, store, seen } = setup();
+  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  await notifiers.add(AGENT2, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
+  says(55, "/agents");
+  await until("the list of agents", () => sent.some((s) => s.buttons.some((b) => b.text === "Bea")));
+  const list = sent.find((s) => s.buttons.some((b) => b.text === "Bea")) as Sent;
+  taps(55, list.message_id, (list.buttons.find((b) => b.text === "Bea") as { callback_data: string }).callback_data);
+  await until("the pick confirmed", () => tapAnswers.includes("Now talking to Bea."));
+  await notifiers.notify(AGENT, { kind: "request" });
+  notifiers.stop();
+  // The daemon died after taking the pick and before saving its place, so the tap is read again.
+  store.setConfig("notifier.telegram.next_update.123456", "0");
+  const again = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen);
+  again.start();
+  await until("the tap read again", () => tapAnswers.filter((t) => t === "Now talking to Bea.").length === 2);
+  says(55, "for Ann, who wrote after the pick");
+  await until("the plain message", () => handed.length === 1);
+  assert.equal(handed[0]?.agent, AGENT);
+  assert.equal(sent.filter((s) => s.text.startsWith("Now talking to Bea.")).length, 1, "the pick is confirmed in the chat once");
 });
 
 test("only the notifier's own private chat speaks as the operator, and a voice note is answered, never dropped", async () => {

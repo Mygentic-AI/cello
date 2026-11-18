@@ -1,5 +1,5 @@
-// The public halves of the three root keys, shipped in the client. Made on 6 November 2026: enclave on Andre's Mac,
-// KMS in cello-infra (keyring cello-root, key issuer-list-root, version 1, HSM), paper sealed with Andre's passphrase.
+// The public halves of the three root keys, shipped in the client. Made on 6 November 2026: one in a Mac's secure
+// enclave, one in cloud KMS hardware (P-256, can't be exported), one on paper.
 import { type RootAlgorithm, type RootKey, type RootName, rootKeysFrom } from "./issuer-list.ts";
 
 const hex = (value: string): Uint8Array => new Uint8Array(Buffer.from(value, "hex"));

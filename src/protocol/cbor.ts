@@ -55,8 +55,8 @@ import { setSizeLimits } from "cbor-x";
  *
  * ── WHY 250,000 AND NOT SOMETHING TIGHTER ─────────────────────────────────────────────────────
  *
- * The bound is set by the LARGEST LEGITIMATE STRUCTURE, not by the attack. `ae-channel.ts` in
- * trustless-cello declares `MAX_WIRE_ITEMS = 250_000` as the anti-hostile-peer bound for
+ * The bound is set by the LARGEST LEGITIMATE STRUCTURE, not by the attack. The server's
+ * `ae-channel.ts` declares `MAX_WIRE_ITEMS = 250_000` as the anti-hostile-peer bound for
  * directory-to-directory replication, and it decodes BEFORE applying it — so a tighter global cap
  * here silently supersedes it. A first attempt at 65,536 did exactly that: at 65,537 rows in any
  * replicated table (`agent_profiles`, `conversation_seals`, `seal_notarizations`, …, none of which

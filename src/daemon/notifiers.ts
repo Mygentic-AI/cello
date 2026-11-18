@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
-import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendText, thumbsUp, updatesFrom } from "./telegram.ts";
+import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendButtons, sendText, setCommands, thumbsUp, updatesFrom } from "./telegram.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS notifiers (
@@ -48,6 +48,12 @@ const MAX_CHOICE_CHARS = 40;
 const NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 
 // The fixed lines. They say that something is waiting and nothing about what.
+// A pick made with /agents, kept in the notifications table as its own kind. A button carries "pick:" and the start of the
+// agent's id: Telegram allows 64 bytes, and 32 hex characters can't collide between the few agents sharing one chat.
+const PICK = "pick";
+const PICK_DATA = "pick:";
+const PICK_PREFIX_CHARS = 32;
+
 export function cannedLine(agentName: string, kind: Kind): string {
   return `Your agent ${agentName} has a ${kind} waiting for you.`;
 }
@@ -159,6 +165,13 @@ export class Notifiers {
   async #read(botId: string, reader: AbortController): Promise<void> {
     const stop = reader.signal;
     let retry = FIRST_RETRY_MS;
+    // So typing "/" in the chat offers /agents. It's only a hint: the command works typed in full without it.
+    // The newest token, as the reader uses, since an older one may have been replaced at BotFather.
+    const newest = this.#holders().filter((h) => h.botId === botId).at(-1);
+    if (newest) {
+      setCommands(this.#telegram, newest.token, [{ command: "agents", description: "Choose which agent your messages go to" }])
+        .catch((err: unknown) => logEvent("notifier.commands_failed", { bot: botId, message: err instanceof Error ? err.message : String(err) }));
+    }
     while (!stop.aborted) {
       // The newest notifier's token, since an older one may have been replaced at BotFather.
       const token = this.#holders().filter((h) => h.botId === botId).at(-1)?.token;
@@ -242,6 +255,27 @@ export class Notifiers {
       logEvent("notifier.reply_ignored", { bot: botId, reason: "a tap from a chat no notifier holds" });
       return;
     }
+    if (typeof tap.data === "string" && tap.data.startsWith(PICK_DATA)) {
+      const prefix = tap.data.slice(PICK_DATA.length);
+      const holder = holders.find((h) => h.agentHex.startsWith(prefix));
+      if (!holder || prefix.length === 0) {
+        await settle("That agent no longer uses this chat.");
+        return;
+      }
+      // Kept beside the notifications, so a plain message finds the newest of the two. It names no session.
+      // The same tap read again after a restart is already there. Writing it again would make an old pick the newest row,
+      // and take plain messages back from an agent that has written since.
+      const remoteId = `${botId}:${chat}:pick:${update.update_id}`;
+      const name = this.#host.agentName(holder.agentHex);
+      if (this.#store.prepare("SELECT 1 FROM notifications WHERE remote_id = ?").get(remoteId)) {
+        await settle(`Now talking to ${name}.`);
+        return;
+      }
+      this.#store.prepare("INSERT INTO notifications (agent_id, notifier, session_id, kind, remote_id, sent_at) VALUES (?, ?, NULL, ?, ?, ?)").run(idOf(holder.agentHex), holder.name, PICK, remoteId, Date.now());
+      await settle(`Now talking to ${name}.`);
+      await this.#answer({ ...holder, token }, `Now talking to ${name}. Your messages go to ${name} until another agent writes to you. Replying to a message always goes to whoever sent it.`, true);
+      return;
+    }
     const sent = this.#store.prepare("SELECT id, agent_id, notifier, session_id, choices, asked FROM notifications WHERE remote_id = ? ORDER BY id DESC").get(`${botId}:${chat}:${under.message_id}`) as { id: number; agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; choices: string | null; asked: string | null } | undefined;
     const holder = sent && holders.find((h) => h.name === sent.notifier && h.agentHex === Buffer.from(sent.agent_id).toString("hex"));
     const choices = sent?.choices ? JSON.parse(sent.choices) as string[] : [];
@@ -274,6 +308,19 @@ export class Notifiers {
     await this.#settleAsked(sent.asked, sent.id, `You chose: ${label}. Passed to ${name}.`, `Answered on another of ${name}'s notifiers: ${label}.`);
   }
 
+  // /agents: one button per agent that uses this chat, so the person can say who their plain messages are for.
+  async #offerAgents(here: Holder, holders: Holder[]): Promise<void> {
+    const agents = [...new Map(holders.map((h) => [h.agentHex, h])).values()];
+    const buttons = agents.map((h) => ({ text: this.#host.agentName(h.agentHex), data: `${PICK_DATA}${h.agentHex.slice(0, PICK_PREFIX_CHARS)}` }));
+    try {
+      await sendButtons(this.#telegram, here.token, here.chat, "Who should your messages go to? Pick one. Replying to a message always goes to whoever sent it.", buttons, true);
+    } catch (err: unknown) {
+      logEvent("notifier.answer_failed", { bot: here.botId, message: err instanceof Error ? err.message : String(err) });
+      // /agents has no other answer, so say something rather than leave the person wondering.
+      await this.#answer(here, `The list of agents couldn't be sent. Send /agents again. Agents in this chat: ${buttons.map((b) => b.text).join(", ")}.`, true);
+    }
+  }
+
   // One thing sent to the bot. Only the exact bot and chat a notifier holds may speak as the operator, and only a private chat.
   async #onUpdate(botId: string, token: string, update: TelegramUpdate): Promise<void> {
     if (update.callback_query) {
@@ -297,12 +344,16 @@ export class Notifiers {
     const text = typeof message.text === "string" ? message.text.trim() : "";
     // Telegram's own greeting when a chat with a bot is opened. It isn't something the person said to an agent.
     if (/^\/start(@\S+)?(\s|$)/.test(text)) return;
+    if (/^\/agents(@\S+)?$/i.test(text)) {
+      await this.#offerAgents(here, holders);
+      return;
+    }
     if (text.length === 0) {
       await this.#answer(here, "Only text reaches your agent, so this wasn't passed on. Type your answer.");
       return;
     }
     const holds = (agentId: Uint8Array, notifier: string): Holder | undefined => holders.find((h) => h.name === notifier && h.agentHex === Buffer.from(agentId).toString("hex"));
-    type Sent = { agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null };
+    type Sent = { agent_id: Uint8Array; notifier: string; session_id: Uint8Array | null; kind?: string };
     // guessed: the person didn't say which agent, and more than one uses this chat. Then they're told who it went to.
     let target: { holder: Holder; sessionId: Uint8Array | null; guessed?: boolean } | undefined;
     // A reply to one of an agent's notifications goes to that agent, about that session.
@@ -320,8 +371,9 @@ export class Notifiers {
     // A plain message goes to whichever agent wrote to this chat last, because that's who the person is answering. It
     // names no session: only answering a message says which conversation it's about.
     if (!target) {
-      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${botId}:${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
-      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: null, guessed: new Set(holders.map((h) => h.agentHex)).size > 1 };
+      // A pick from /agents is stored in the same list, so whichever is newer wins: the person's pick, or an agent writing since.
+      const sent = (this.#store.prepare("SELECT agent_id, notifier, session_id, kind FROM notifications WHERE remote_id LIKE ? ORDER BY id DESC LIMIT 50").all(`${botId}:${chat}:%`) as Sent[]).find((row) => holds(row.agent_id, row.notifier));
+      if (sent) target = { holder: holds(sent.agent_id, sent.notifier) as Holder, sessionId: null, guessed: sent.kind !== PICK && new Set(holders.map((h) => h.agentHex)).size > 1 };
     }
     if (!target) {
       if (new Set(holders.map((h) => h.agentHex)).size > 1) {

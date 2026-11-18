@@ -1,4 +1,4 @@
-// The wallet: signals about this daemon's agents. Rules from cello-client's trust-signal-store.ts: see COPIED.md.
+// The wallet: signals about this daemon's agents.
 // A signal names one agent's key, so a row belongs to that agent. It's stored under its hash, so a repeat changes nothing.
 // `type` and `payload` stay opaque here: a type this client has never seen stores and reads like a known one.
 import { toHex } from "../protocol/encode.ts";

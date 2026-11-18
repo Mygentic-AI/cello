@@ -1,4 +1,4 @@
-# Publishes the client to npm's `beta` tag when a v* tag is pushed. Copied from cello-client's ci.yml.
+# Publishes the client to npm's `beta` tag when a v* tag is pushed.
 #
 # Always `pnpm publish`, never `npm publish`.
 #

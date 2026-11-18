@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# PRE-TAG GATE: run before any release tag, on the exact commit you will tag. Modelled on cello-client's.
+# PRE-TAG GATE: run before any release tag, on the exact commit you will tag.
 #
 # Runs what the publish workflow runs: install, build, typecheck, lint, the whole test suite, and the release check that refuses
 # an empty shipped issuer list or an empty Concierge address. Records the commit only if every step passes, in
 # ~/.cache/.cello-pre-tag-gate. Tag that commit and no other: any later commit needs the gate again.
-# (The publish guard hook resolves the tag in both cello-client and this repo.)
 #
 # Usage: scripts/pre-tag-gate.sh
 set -euo pipefail

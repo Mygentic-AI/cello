@@ -1,5 +1,5 @@
-// What a result or doorbell tells the model to do next, because a model has no other cue. Copied from cello-client:
-// see COPIED.md. A sentence here is written by this machine, so nothing another party wrote may go into one.
+// What a result or doorbell tells the model to do next, because a model has no other cue.
+// A sentence here is written by this machine, so nothing another party wrote may go into one.
 
 export const WRAP_GUIDANCE = "Counterparty wrapped. Call cello_close_session now — do not reply.";
 export const OVER_GUIDANCE = "Counterparty's turn is done. Counterparty has indicated they are expecting a reply — use cello_send to reply.";
