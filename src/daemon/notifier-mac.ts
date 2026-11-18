@@ -61,7 +61,6 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   #sweeper: NodeJS.Timeout | undefined;
   // Why the door didn't open, when it didn't.
   #doorProblem: string | undefined;
-  #resumer: NodeJS.Timeout | undefined;
 
   // No socket path: no door, as on any machine but a Mac.
   constructor(ctx: NotifierContext, socketPath: string | undefined) {
@@ -74,7 +73,6 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#sweep();
     this.#sweeper = setInterval(() => this.#sweep(), SWEEP_MS);
     this.#sweeper.unref();
-    this.#scheduleResume();
     // The door failing to open costs the Mac route, never the daemon, and it's said by name wherever the route is used.
     this.#door?.open().then(() => { this.#doorProblem = undefined; }, (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -85,7 +83,6 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
 
   stop(): void {
     if (this.#sweeper) clearInterval(this.#sweeper);
-    if (this.#resumer) clearTimeout(this.#resumer);
     this.#door?.close();
     for (const done of this.#waiting.values()) for (const wake of done) wake();
     this.#waiting.clear();
@@ -148,11 +145,16 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     return Promise.resolve({ remoteId: remoteOf(id), shown: () => this.#show(id) });
   }
 
-  // Puts it in front of the person if the app is there and not paused. Answers undefined once the app says it's on screen,
-  // or the line telling the agent why it isn't yet, which always says not to send it again.
+  // Puts it in front of the person if the app is there. Answers undefined once the app says it's on screen, or the line
+  // telling the agent why it isn't yet, which always says not to send it again. While paused it still goes to the app,
+  // marked silent, so it waits in the panel with no banner or sound, and the agent is told the person is away.
   async #show(id: number): Promise<string | undefined> {
     const paused = this.#pausedUntil();
-    if (paused !== undefined) return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's kept, and shows when they're back. Don't send it again.`;
+    if (paused !== undefined) {
+      const row = this.#row(id);
+      if (row) this.#push(this.#frame(row, true));
+      return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's kept, and shows when they're back. Don't send it again.`;
+    }
     const listening = this.#subscribers();
     if (listening.length === 0) {
       const seen = Number(this.#ctx.store.getConfig(SEEN_KEY) ?? 0);
@@ -214,9 +216,9 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     logEvent("operator_door.subscribed", { connection: connection.id });
     return Promise.resolve({
       fields: { agents: this.#agents(), paused_until: paused === undefined ? null : new Date(paused).toISOString() },
-      // What came while it was away, oldest first, each with its age. Nothing while paused: the person is away.
+      // What came while it was away, oldest first, each with its age. While paused, silently, into the panel.
       after: () => {
-        if (paused === undefined) for (const row of this.#backlog()) connection.send(this.#frame(row));
+        for (const row of this.#backlog()) connection.send(this.#frame(row, paused !== undefined));
       },
     });
   }
@@ -278,16 +280,15 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     if (!Number.isFinite(until) || until <= now) throw new LocalError("bad_request", "until must be a time to come, such as 2026-11-19T09:00:00Z.");
     if (until - now > LONGEST_PAUSE_MS) throw new LocalError("bad_request", "A pause lasts at most a year. To stop CELLO on this Mac, remove it.");
     this.#ctx.store.setConfig(PAUSED_KEY, String(until));
-    this.#scheduleResume();
     logEvent("operator_door.paused", { until: new Date(until).toISOString() });
     return Promise.resolve({ fields: { paused_until: new Date(until).toISOString() } });
   }
 
+  // What came during the pause is in the panel already, so nothing is sent again. A pause also ends by itself at its time.
   #resume(): Promise<DoorReply> {
     this.#ctx.store.setConfig(PAUSED_KEY, "");
-    this.#scheduleResume();
     logEvent("operator_door.resumed", {});
-    return Promise.resolve({ fields: { paused_until: null }, after: () => this.#pushBacklog() });
+    return Promise.resolve({ fields: { paused_until: null } });
   }
 
   // Takes CELLO on this Mac off every agent, and tells each agent it can't reach its operator here any more.
@@ -296,7 +297,6 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac'").run();
     this.prune();
     this.#ctx.store.setConfig(PAUSED_KEY, "");
-    this.#scheduleResume();
     for (const agent of agents) {
       logEvent("notifier.removed", { agent: agent.agent_id, notifier: agent.notifier, by: "operator_door" });
       this.#ctx.host.tell(agent.agent_id, "Your operator removed CELLO from their Mac, so notify no longer reaches them there.");
@@ -333,7 +333,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#ctx.store.prepare("UPDATE mac_queue SET text = '', done_at = ? WHERE done_at IS NULL AND kind != 'request' AND shown_at IS NOT NULL AND shown_at < ?").run(Date.now(), Date.now() - DAY_MS);
   }
 
-  #frame(row: QueueRow): Record<string, unknown> {
+  // silent: the person paused CELLO, so the app puts it in the panel with no banner or sound.
+  #frame(row: QueueRow, silent = false): Record<string, unknown> {
     const agentHex = hexOf(row.agent_id);
     const talking = row.talking_to === null ? null : JSON.parse(row.talking_to) as TalkingTo;
     return {
@@ -350,6 +351,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       sent_at: new Date(row.sent_at).toISOString(),
       age_seconds: Math.max(0, Math.round((Date.now() - row.sent_at) / 1000)),
       shown: row.shown_at !== null,
+      silent,
     };
   }
 
@@ -373,31 +375,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     for (const connection of this.#subscribers()) connection.send(frame);
   }
 
-  #pushBacklog(): void {
-    for (const row of this.#backlog()) this.#push(this.#frame(row));
-  }
-
   #pausedUntil(): number | undefined {
     const until = Number(this.#ctx.store.getConfig(PAUSED_KEY) || 0);
     return until > Date.now() ? until : undefined;
-  }
-
-  // A pause ends by itself: the app then gets what came meanwhile.
-  #scheduleResume(): void {
-    if (this.#resumer) clearTimeout(this.#resumer);
-    this.#resumer = undefined;
-    const until = this.#pausedUntil();
-    if (until === undefined) return;
-    this.#resumer = setTimeout(() => {
-      this.#resumer = undefined;
-      // A timer can't run longer than about 24 days, so a longer pause is looked at again then.
-      if (this.#pausedUntil() !== undefined) {
-        this.#scheduleResume();
-        return;
-      }
-      logEvent("operator_door.resumed", { by: "time" });
-      this.#pushBacklog();
-    }, Math.min(until - Date.now(), 2 ** 31 - 1));
-    this.#resumer.unref();
   }
 }

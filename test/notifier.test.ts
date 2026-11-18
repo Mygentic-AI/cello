@@ -934,6 +934,24 @@ test("only notifier code can write an operator reply, and nothing on daemon.sock
   assert.deepEqual([...new Set([...main.matchAll(/notifiers\.(\w+)\(/g)].map((m) => m[1]))].sort(), ["add", "forget", "list", "notify", "remove", "start", "stop", "test"]);
 });
 
+test("while paused the app gets each one silently and the agent hears the operator is away, and resume replays nothing", async () => {
+  const { notifiers, door } = await withMac();
+  await notifiers.add(AGENT, { type: "mac" });
+  const { app } = await StandInMacApp.open(door);
+  const paused = await app.request({ op: "pause", until: new Date(Date.now() + 60_000).toISOString() });
+  assert.equal(paused["ok"], true);
+  const answer = await notifiers.notify(AGENT, { kind: "request", text: "During the pause" }) as { sent: unknown; queued_note: string };
+  assert.equal(answer.sent, "queued");
+  assert.match(answer.queued_note, /paused CELLO.*away/);
+  const quiet = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the silent push");
+  assert.equal(quiet["silent"], true);
+  const before = app.frames.length;
+  await app.request({ op: "resume" });
+  await settle();
+  assert.ok(!app.frames.slice(before).some((f) => f["op"] === "notification"), "nothing is replayed on resume");
+  await app.close();
+});
+
 test("a door that couldn't open is named, never reported as a Mac asleep", async () => {
   const { store, seen } = setup();
   insertMacRow(store);

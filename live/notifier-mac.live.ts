@@ -236,17 +236,31 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   assert.ok(!back.app.frames.some((f) => f["text"] === "Cy wants Thursday. May I agree?"), "an answered question isn't kept");
   back.app.autoAck = true;
 
-  // 11. Paused: queued, saying the operator is away. On resume it's pushed.
+  // 11. Paused: the agent hears queued, saying the operator is away, and the app gets it silently, for its panel. An app
+  // connecting during the pause gets what's kept silently too. Resume sends nothing again.
   const until1h = new Date(Date.now() + 60 * 60_000).toISOString();
   const paused = await back.app.request({ op: "pause", until: until1h });
   assert.equal(paused["ok"], true);
-  const away = await notify(["Lunch order?"], "Ann");
+  const away = await notify(["Lunch order?", "--kind", "request", "--choices", "Pizza|Salad"], "Ann");
   assert.equal(away["sent"], "queued");
   assert.match(away["queued_note"] as string, /paused CELLO on their Mac until .*away.*Don't send it again/);
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.ok(!back.app.frames.some((f) => f["text"] === "Lunch order?"), "nothing is pushed while paused");
+  const quiet = await back.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Lunch order?", "the question, silently, during the pause");
+  assert.equal(quiet["silent"], true);
+  const duringPause = await openApp();
+  assert.equal(duringPause.subscribed["paused_until"], until1h);
+  const quietBacklog = await duringPause.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Lunch order?", "the kept question on connecting during the pause");
+  assert.equal(quietBacklog["silent"], true);
+  assert.ok(duringPause.app.frames.filter((f) => f["op"] === "notification").every((f) => f["silent"] === true), "everything during a pause is silent");
+  await duringPause.app.close();
+  const before = back.app.frames.length;
   await back.app.request({ op: "resume" });
-  await back.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Lunch order?", "the message held during the pause");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.ok(!back.app.frames.slice(before).some((f) => f["op"] === "notification"), "resume replays nothing as a banner");
+  // After the pause, new ones are not silent.
+  const backNow = await notify(["Back yet?"], "Ann");
+  assert.equal(backNow["sent"], true);
+  const loud = await back.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Back yet?", "a notification after the pause");
+  assert.equal(loud["silent"], false);
 
   // 12. Remove takes the Mac off every agent, and each agent is told.
   const removed = await back.app.request({ op: "remove" });
