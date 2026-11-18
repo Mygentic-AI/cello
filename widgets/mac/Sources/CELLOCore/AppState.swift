@@ -8,6 +8,8 @@ public enum Unreachable: Equatable, Sendable {
     case stopped(String)
     // cello login worked, and still the door for this app never appeared.
     case noDoor
+    // Connecting fails for a reason other than CELLO not running, by its errno.
+    case cannotConnect(Int32)
     // The app was never told how to start CELLO.
     case unknownInstall
     // The door speaks another version: its own words say which side to update.

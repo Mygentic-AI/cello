@@ -74,6 +74,10 @@ public final class Controller {
                 }
             } else if failure == .notRunning, failures >= failuresBeforeStart, !startTried {
                 askToStart()
+            } else if case let .other(code) = failure, failures >= failuresAfterStart, state.connection != .unreachable(.cannotConnect(code)) {
+                // Not "nothing there" but a refusal starting CELLO can't fix, such as permissions. Said, not waited on.
+                state.connection = .unreachable(.cannotConnect(code))
+                changed()
             }
         case .disconnected:
             state.disconnected()

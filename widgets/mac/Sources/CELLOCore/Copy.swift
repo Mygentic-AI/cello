@@ -148,6 +148,7 @@ public enum Copy {
     public static let startTimedOut = "it didn't finish within a minute."
     public static let unreachableNoDoor = "CELLO is running, but this app can't reach it."
     public static let restartFix = "Open Terminal and run: cello logout, then cello login"
+    public static func cannotConnect(_ code: Int32) -> String { "This app can't connect to CELLO: \(String(cString: strerror(code)))." }
     public static let tryAgain = "Try again"
     public static let mismatchFix = "Update CELLO so this app and CELLO match."
 

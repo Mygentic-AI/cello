@@ -409,3 +409,20 @@ final class ControllerStartTests: XCTestCase {
         XCTAssertEqual(c.state.connection, .unreachable(.stopped(Copy.startTimedOut)))
     }
 }
+
+final class ControllerConnectTests: XCTestCase {
+    // A path too long for a Unix socket can never connect, and starting CELLO wouldn't help: it's said, not waited on.
+    func testAConnectFailureOtherThanNotRunningEndsStruckThroughWithItsReason() {
+        let c = Controller(socketPath: "/tmp/" + String(repeating: "x", count: 200) + "/operator.sock", turnedOn: true)
+        c.failuresAfterStart = 2
+        c.start()
+        defer { c.stop() }
+        let deadline = Date().addingTimeInterval(10)
+        while c.state.connection != .unreachable(.cannotConnect(ENAMETOOLONG)) && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertEqual(c.state.connection, .unreachable(.cannotConnect(ENAMETOOLONG)))
+        XCTAssertEqual(c.state.look(at: Date()), .unreachable)
+        XCTAssertTrue(Copy.cannotConnect(ENAMETOOLONG).hasPrefix("This app can't connect to CELLO: "))
+    }
+}
