@@ -89,6 +89,8 @@ struct PanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if case let .unreachable(why) = state.connection { unreachable(why) }
+                    // Answered here a moment ago: the card says so for a few seconds, then folds into Earlier today.
+                    ForEach(Array(state.justAnswered(now: now).enumerated()), id: \.offset) { _, line in answeredCard(line) }
                     if state.waiting.isEmpty {
                         Text(Copy.nothingWaiting).font(.system(size: 13)).foregroundColor(muted)
                     } else {
@@ -230,6 +232,17 @@ struct PanelView: View {
             if let problem = model.problems[item.id] {
                 Text(problem).font(.system(size: 12)).foregroundColor(pink)
             }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.gray.opacity(0.2)))
+    }
+
+    private func answeredCard(_ line: EarlierLine) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+            Text(line.card ?? line.what).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

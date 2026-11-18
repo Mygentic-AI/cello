@@ -96,6 +96,11 @@ public enum Copy {
         }
     }
     public static func youChose(_ label: String, agent: String) -> String { "You chose “\(label)”. \(agent) has it." }
+    // The card a question becomes for a few seconds once it's answered here.
+    public static func answeredCard(_ s: Settled, agent: String) -> String {
+        s.typed ? "\(youAnswered). \(agent) has it." : youChose(s.label, agent: agent)
+    }
+    public static func repliedCard(request: Bool, agent: String) -> String { "\(request ? youAnswered : youReplied). \(agent) has it." }
     public static let youAnswered = "You answered in your own words"
     public static let youReplied = "You replied"
     public static func earlierLine(agent: String, what: String, time: String) -> String { "\(agent) · \(what) · \(time)" }

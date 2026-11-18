@@ -61,6 +61,7 @@ func snapshot(_ c: Controller) -> [String: Any] {
             ]
         },
         "earlier": c.state.earlierToday(now: now).map { Copy.earlierLine(agent: $0.agent, what: $0.what, time: "") },
+        "just_answered": c.state.justAnswered(now: now).map { $0.card ?? $0.what },
         "unseen_news": c.state.unseenNews.sorted(),
         "acked": c.state.acked.sorted(),
     ]

@@ -274,8 +274,24 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(s.settled(Settled(id: 1, label: "Not yet", place: "Telegram", here: false, typed: false), now: t0), [.withdraw(itemID: 1)])
         XCTAssertEqual(s.settled(Settled(id: 2, label: "Agree", place: "Mac", here: true, typed: false), now: t0.addingTimeInterval(1)), [.withdraw(itemID: 2)])
         XCTAssertEqual(s.settled(Settled(id: 2, label: "Agree", place: "Mac", here: true, typed: false), now: t0), [], "once")
-        XCTAssertEqual(s.earlierToday(now: t0.addingTimeInterval(2)).map(\.what), ["You chose “Agree”", "Answered on Telegram: “Not yet”"])
+        // Chosen here: a card for a few seconds, then a line. Answered elsewhere: a line at once.
+        XCTAssertEqual(s.justAnswered(now: t0.addingTimeInterval(2)).map(\.card), ["You chose “Agree”. Ann has it."])
+        XCTAssertEqual(s.earlierToday(now: t0.addingTimeInterval(2)).map(\.what), ["Answered on Telegram: “Not yet”"])
+        XCTAssertEqual(s.nextCardFold(now: t0.addingTimeInterval(2)), t0.addingTimeInterval(1 + answeredCardSeconds))
+        XCTAssertEqual(s.justAnswered(now: t0.addingTimeInterval(1 + answeredCardSeconds)), [])
+        XCTAssertEqual(s.earlierToday(now: t0.addingTimeInterval(1 + answeredCardSeconds)).map(\.what), ["You chose “Agree”", "Answered on Telegram: “Not yet”"])
         XCTAssertEqual(s.earlierToday(now: t0.addingTimeInterval(2 * 86400)), [], "only today's")
+    }
+
+    func testATypedAnswerHereShowsItsCardThenFolds() {
+        var s = live()
+        _ = s.receive(item(3, choices: ["Agree", "Disagree"]))
+        _ = s.settled(Settled(id: 3, label: "a typed answer", place: "Mac", here: true, typed: true), now: t0)
+        XCTAssertEqual(s.justAnswered(now: t0).map(\.card), ["You answered in your own words. Ann has it."])
+        _ = s.receive(item(4, kind: .message))
+        _ = s.answered(4, what: Copy.youReplied, card: Copy.repliedCard(request: false, agent: "Ann"), now: t0)
+        XCTAssertEqual(s.justAnswered(now: t0.addingTimeInterval(1)).map(\.card), ["You replied. Ann has it.", "You answered in your own words. Ann has it."])
+        XCTAssertEqual(s.earlierToday(now: t0.addingTimeInterval(1)), [])
     }
 
     func testSettledLinesForEveryWayAQuestionIsAnswered() {

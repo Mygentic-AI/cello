@@ -43,7 +43,19 @@ public final class Controller {
 
     private func changed() {
         schedulePauseEnd()
+        scheduleCardFold()
         delegate?.stateChanged(self)
+    }
+
+    // An answered card folds into Earlier today after a few seconds, with nothing from the door, so the panel redraws then.
+    private var cardTimer: DispatchWorkItem?
+    private func scheduleCardFold() {
+        cardTimer?.cancel()
+        cardTimer = nil
+        guard let at = state.nextCardFold(now: now()) else { return }
+        let work = DispatchWorkItem { [weak self] in self?.changed() }
+        cardTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, at.timeIntervalSince(now())) + 0.05, execute: work)
     }
 
     private func run(_ effects: [Effect]) {
@@ -199,7 +211,7 @@ public final class Controller {
         client.send(.pick(id: itemID, choice: choice)) { [weak self] reply in
             guard let self else { return }
             if reply.ok {
-                self.run(self.state.answered(itemID, what: Copy.settledLine(Settled(id: itemID, label: item.choices[choice], place: "Mac", here: true, typed: false)), now: self.now()))
+                self.run(self.state.answered(itemID, what: Copy.settledLine(Settled(id: itemID, label: item.choices[choice], place: "Mac", here: true, typed: false)), card: Copy.youChose(item.choices[choice], agent: item.agent), now: self.now()))
                 self.changed()
                 done(nil)
             } else {
@@ -223,7 +235,8 @@ public final class Controller {
             if reply.ok {
                 self.replyRefs.removeValue(forKey: key)
                 // Answered on another device first: CELLO says it went as a follow-up, and that's the line kept.
-                self.run(self.state.answered(itemID, what: reply.string("said") ?? (item.kind == .request ? Copy.youAnswered : Copy.youReplied), now: self.now()))
+                let said = reply.string("said")
+                self.run(self.state.answered(itemID, what: said ?? (item.kind == .request ? Copy.youAnswered : Copy.youReplied), card: said ?? Copy.repliedCard(request: item.kind == .request, agent: item.agent), now: self.now()))
                 self.changed()
                 done(nil)
             } else {

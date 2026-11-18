@@ -168,11 +168,17 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   const three = (await app.waitFor("the three-choice banner", (e) => e["effect"] === "banner", from3))["plan"] as { item_id: number; buttons: string[] };
   assert.deepEqual(three.buttons, ["Choose…", "Reply…"]);
 
-  // 4. A pick reaches Ann as her operator's answer, for that session, and folds into Earlier today.
+  // 4. A pick reaches Ann as her operator's answer, for that session. The card says so for a few seconds, then folds
+  // into Earlier today.
   const picked = await app.run({ do: "pick", id: two.item_id, choice: 1 });
   assert.equal(picked["ok"], true, JSON.stringify(picked));
   assert.deepEqual(replies("Ann"), [["Disagree", session, "mac"]]);
   state = await app.run({ do: "state" });
+  assert.deepEqual(state["just_answered"], ["You chose “Disagree”. Ann has it."]);
+  assert.ok(!(state["earlier"] as string[]).some((l) => l.includes("Disagree")), "not in Earlier today while the card shows");
+  await new Promise((resolve) => setTimeout(resolve, 4_500));
+  state = await app.run({ do: "state" });
+  assert.deepEqual(state["just_answered"], []);
   assert.ok((state["earlier"] as string[]).some((l) => l.startsWith("Ann · You chose “Disagree”")), JSON.stringify(state["earlier"]));
   const late = await app.run({ do: "pick", id: two.item_id, choice: 0 });
   assert.deepEqual([late["ok"], late["line"]], [false, "This was already answered or cleared."]);

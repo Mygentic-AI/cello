@@ -43,7 +43,12 @@ public struct EarlierLine: Equatable, Sendable {
     public let agent: String
     public let what: String
     public let at: Date
+    // Answered here: for a few seconds the panel shows this in the card's place, then the line folds into Earlier today.
+    public var card: String? = nil
 }
+
+// How long an answered card stays in the panel before it folds into Earlier today.
+public let answeredCardSeconds: TimeInterval = 4
 
 public struct AppState {
     public var connection: Connection = .connecting
@@ -82,7 +87,21 @@ public struct AppState {
     public func item(_ id: Int) -> Item? { waiting.first { $0.id == id } }
 
     public func earlierToday(now: Date, calendar: Calendar = .current) -> [EarlierLine] {
-        earlier.filter { calendar.isDate($0.at, inSameDayAs: now) }.reversed()
+        earlier.filter { calendar.isDate($0.at, inSameDayAs: now) && !Self.showingCard($0, now: now) }.reversed()
+    }
+
+    // Just answered here, newest first: each shows as a card for a few seconds, before it's a line in Earlier today.
+    public func justAnswered(now: Date) -> [EarlierLine] {
+        earlier.filter { Self.showingCard($0, now: now) }.reversed()
+    }
+
+    // When the next answered card folds away, so the panel can redraw then.
+    public func nextCardFold(now: Date) -> Date? {
+        earlier.filter { Self.showingCard($0, now: now) }.map { $0.at.addingTimeInterval(answeredCardSeconds) }.min()
+    }
+
+    private static func showingCard(_ line: EarlierLine, now: Date) -> Bool {
+        line.card != nil && now.timeIntervalSince(line.at) < answeredCardSeconds
     }
 
     // The door accepted subscribe: it said which agents reach the person here and whether a pause is on. What waited follows.
@@ -163,21 +182,22 @@ public struct AppState {
 
     public mutating func settled(_ s: Settled, now: Date) -> [Effect] {
         guard let item = item(s.id) else { return [] }
-        finish(item, what: Copy.settledLine(s), now: now)
+        // Chosen here: the door settles it before the pick's own answer comes back, so the card starts here.
+        finish(item, what: Copy.settledLine(s), card: s.here ? Copy.answeredCard(s, agent: item.agent) : nil, now: now)
         return [.withdraw(itemID: s.id)]
     }
 
     // The door took a pick or a reply for this one. A settled frame may have done this already.
-    public mutating func answered(_ id: Int, what: String, now: Date) -> [Effect] {
+    public mutating func answered(_ id: Int, what: String, card: String? = nil, now: Date) -> [Effect] {
         guard let item = item(id) else { return [] }
-        finish(item, what: what, now: now)
+        finish(item, what: what, card: card, now: now)
         return [.withdraw(itemID: id)]
     }
 
-    private mutating func finish(_ item: Item, what: String, now: Date) {
+    private mutating func finish(_ item: Item, what: String, card: String?, now: Date) {
         waiting.removeAll { $0.id == item.id }
         unseenNews.remove(item.id)
-        earlier.append(EarlierLine(agent: item.agent, what: what, at: now))
+        earlier.append(EarlierLine(agent: item.agent, what: what, at: now, card: card))
         // Memory only, and only today's are shown. A long-running app keeps a day's worth at most.
         earlier.removeAll { now.timeIntervalSince($0.at) > 24 * 60 * 60 }
     }
