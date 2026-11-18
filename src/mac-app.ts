@@ -179,7 +179,17 @@ export async function addNotifier(params: Record<string, unknown>, call: (fields
   if (fields["type"] !== "mac" || routeOnly === true || (fields["same_as"] !== undefined && !named)) return call(fields);
   const here = env();
   const installed = install({ build: wantsBuild, app }, here);
-  const answer = await call(fields) as Record<string, unknown>;
+  let answer: Record<string, unknown>;
+  try {
+    answer = await call(fields) as Record<string, unknown>;
+  } catch (err: unknown) {
+    // The daemon's refusal says nothing was saved, which is true of the route. The app and launch.json did change,
+    // and running this again finishes it. A person_required refusal is confirmed and retried, so it's left as it is.
+    if (err instanceof DaemonRefused && err.code !== "person_required") {
+      throw new DaemonRefused(err.code, `${err.message} The route wasn't saved, but CELLO is in ${installed.app}${installed.copied ? " now" : ""} and ${installed.launch_file} was written; neither is opened or used until the route is added.`);
+    }
+    throw err;
+  }
   open(installed, here);
   return { ...answer, app_install: installed };
 }

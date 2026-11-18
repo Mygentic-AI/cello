@@ -141,8 +141,13 @@ test("off a Mac it's refused, and when the daemon refuses the route the app isn'
   await assert.rejects(addNotifier({ type: "mac" }, daemon(linux), () => linux.env), (err: unknown) => err instanceof DaemonRefused && err.code === "not_supported");
   const w = world();
   const refusing = (): Promise<unknown> => Promise.reject(new DaemonRefused("notifier_exists", "Ann already has one."));
-  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, refusing, () => w.env), /already has one/);
+  // The refusal says what did change: the app is in Applications, and launch.json was written.
+  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, refusing, () => w.env), (err: unknown) => err instanceof DaemonRefused && err.code === "notifier_exists"
+    && err.message.startsWith("Ann already has one.") && err.message.includes(`CELLO is in ${appPath(w.home)} now`) && err.message.includes(launchFile(w.home)));
   assert.deepEqual(opened(w), []);
+  // A refusal that a person confirms and retries is passed on untouched.
+  const person = (): Promise<unknown> => Promise.reject(new DaemonRefused("person_required", "Adding a notifier takes a person. Nothing changed."));
+  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, person, () => w.env), (err: unknown) => err instanceof DaemonRefused && err.message === "Adding a notifier takes a person. Nothing changed.");
 });
 
 test("telegram passes straight through", async () => {
