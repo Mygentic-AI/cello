@@ -625,3 +625,16 @@ final class TextAreaTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "GrowingTextArea(").count - 1, 2)
     }
 }
+
+final class PanelSizeTests: XCTestCase {
+    func testTheListIsAsTallAsWhatsInItUntilThePanelPassesTwoThirdsOfTheScreen() {
+        // A question with eight choices, about 460 points, on a 1000-point screen with 170 of header and message box.
+        XCTAssertEqual(PanelSize.listHeight(content: 460, chrome: 170, screen: 1000), 460)
+        // More than fits: the panel stops at two-thirds, 666, and the list scrolls inside it.
+        XCTAssertEqual(PanelSize.listHeight(content: 1400, chrome: 170, screen: 1000), 1000 * 2 / 3 - 170, accuracy: 0.001)
+        // Nothing waiting: it doesn't hold space it has no use for.
+        XCTAssertEqual(PanelSize.listHeight(content: 40, chrome: 170, screen: 1000), 40)
+        // A tiny screen still leaves the list room to scroll.
+        XCTAssertEqual(PanelSize.listHeight(content: 900, chrome: 400, screen: 500), PanelSize.smallestList)
+    }
+}

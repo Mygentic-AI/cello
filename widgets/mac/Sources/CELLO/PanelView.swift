@@ -12,6 +12,8 @@ final class PanelModel: ObservableObject {
     @Published var messageAgent = ""
     @Published var messageLine: String?
     @Published var loginItemOn = LoginItem.isOn
+    // The height of the screen the panel opens on, set each time it opens.
+    @Published var screenHeight: Double = 900
     var onQuit: () -> Void = {}
     var onRemove: () -> Void = {}
     var onRemoveAgent: (Agent) -> Void = { _ in }
@@ -77,14 +79,30 @@ private let clock: DateFormatter = {
     return f
 }()
 
+private struct HeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
+}
+
+private extension View {
+    // Reports this view's height, so the panel can size its list to what's in it.
+    func measured(_ height: Binding<CGFloat>) -> some View {
+        background(GeometryReader { proxy in Color.clear.preference(key: HeightKey.self, value: proxy.size.height) })
+            .onPreferenceChange(HeightKey.self) { height.wrappedValue = $0 }
+    }
+}
+
 struct PanelView: View {
     @ObservedObject var model: PanelModel
+    @State private var listContent: CGFloat = 0
+    @State private var headerHeight: CGFloat = 0
+    @State private var boxHeight: CGFloat = 0
 
     var body: some View {
         let now = Date()
         let state = model.state
         VStack(alignment: .leading, spacing: 0) {
-            header(state, now: now)
+            header(state, now: now).measured($headerHeight)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
@@ -108,10 +126,12 @@ struct PanelView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .measured($listContent)
             }
-            .frame(maxHeight: 520)
+            // As tall as what's in it, until the whole panel would pass two-thirds of the screen.
+            .frame(height: CGFloat(PanelSize.listHeight(content: Double(listContent), chrome: Double(headerHeight + boxHeight + 2), screen: model.screenHeight)))
             Divider()
-            messageBox(state)
+            messageBox(state).measured($boxHeight)
         }
         .frame(width: 392)
         .background(Color(nsColor: .windowBackgroundColor))

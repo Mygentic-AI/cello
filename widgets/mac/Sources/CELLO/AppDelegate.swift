@@ -43,7 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
 
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: PanelView(model: panel))
+        let hosting = NSHostingController(rootView: PanelView(model: panel))
+        // The panel follows its content's size, so it grows with what's waiting and with a long reply.
+        hosting.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hosting
 
         banners.onOpenPanel = { [weak self] in self?.showPanel() }
         banners.onPick = { [weak self] id, choice in self?.pickFromBanner(id, choice) }
@@ -100,6 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
 
     private func showPanel() {
         guard let button = statusItem.button else { return }
+        // The screen the mark is on, which is where the panel opens, not whichever screen has the focus.
+        if let screen = button.window?.screen ?? NSScreen.main { panel.screenHeight = Double(screen.visibleFrame.height) }
         NSApp.activate(ignoringOtherApps: true)
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
     }
