@@ -81,6 +81,9 @@ up() {
     . "$run/pids"
     if alive "${ann_daemon:-}" || alive "${bob_daemon:-}" || alive "${issuer:-}"; then die "It's already up. Run: scripts/mac-hands-on.sh down"; fi
   fi
+  # A daemon left by a half-finished up may have no pid recorded. Its own socket still answers, and wiping its home under
+  # it would orphan it.
+  if [ -n "$(daemon_pid "$home")" ] || [ -n "$(daemon_pid "$bob_home")" ]; then die "A daemon from an earlier run is still running. Run: scripts/mac-hands-on.sh down"; fi
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then die "Port $port is taken. Set HANDS_ON_PORT to a free one."; fi
   [ -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ] || die "No cello-issuer at $CELLO_ISSUER_DIR. Set CELLO_ISSUER_DIR."
   rm -rf "$home" "$bob_home" "$server_copy"
