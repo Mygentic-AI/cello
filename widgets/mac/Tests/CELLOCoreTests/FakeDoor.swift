@@ -34,15 +34,31 @@ final class FakeDoor: @unchecked Sendable {
         return received
     }
 
+    // Shut first, so the serve thread's accept returns, and it stops: a descriptor number closed here is reused by the
+    // next test's door, and a thread still accepting on it would answer that test's connection with this one's script.
     func close() {
+        lock.lock()
+        closed = true
+        lock.unlock()
+        shutdown(listener, SHUT_RDWR)
         Darwin.close(listener)
         unlink(path)
     }
 
+    private var closed = false
+    private var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
+    }
+
     private func serve() {
-        while true {
+        while !isClosed {
             let fd = accept(listener, nil, nil)
-            if fd < 0 { return }
+            if fd < 0 || isClosed {
+                if fd >= 0 { Darwin.close(fd) }
+                return
+            }
             var pending = Data()
             var buffer = [UInt8](repeating: 0, count: 4096)
             reading: while true {
