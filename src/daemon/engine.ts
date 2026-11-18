@@ -338,7 +338,13 @@ export class Engine {
       },
       roots: productionRootKeys,
       shippedList: SHIPPED_ISSUER_LIST,
-      publishToServer: (agentHex, file) => this.#publicSignalCall(agentHex, undefined, "signal.publish", (agent) => ({ agent: toB64(agent.signer.id), signal: toB64(file) })).then(() => undefined),
+      publishToServer: async (agentHex, file) => {
+        const answer = await this.#publicSignalCall(agentHex, undefined, "signal.publish", (agent) => ({ agent: toB64(agent.signer.id), signal: toB64(file) })) as { displaced?: unknown };
+        // An older server says nothing about slots and takes nothing down.
+        if (answer.displaced === undefined) return [];
+        if (!Array.isArray(answer.displaced)) throw new LocalError("bad_response", "the server's answer to publishing a signal is malformed");
+        return answer.displaced.map((id) => fromB64(id, "displaced"));
+      },
       unpublishFromServer: (agentHex, signalId) => this.#publicSignalCall(agentHex, undefined, "signal.unpublish", (agent) => ({ agent: toB64(agent.signer.id), signalId: toB64(signalId) })).then(() => undefined),
       // Checked here before it travels: a server whose count doesn't verify against the keys pinned on first contact is named now,
       // not left for the issuer to refuse with less to go on.

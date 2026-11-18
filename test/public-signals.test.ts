@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { encodeCbor } from "../src/protocol/cbor.ts";
 import { toHex } from "../src/protocol/encode.ts";
+import { signalSlot } from "../src/protocol/listing.ts";
 import { signerFromSeeds } from "../src/protocol/identity.ts";
 import { randomBytes, webcrypto } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519.js";
@@ -43,7 +44,7 @@ function setup(read: () => Uint8Array[], failing = false): { wallet: Wallet; sig
     notify: () => undefined,
     roots: () => { throw new RootKeysNotConfigured("these tests have no root keys, so there is no list and no recognised issuer"); },
     shippedList: null,
-    publishToServer: async (_agent, file) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.published.push(file); },
+    publishToServer: async (_agent, file) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.published.push(file); return []; },
     unpublishFromServer: async (_agent, id) => { if (failing) throw new LocalError("server_unreachable", "down"); calls.unpublished.push(id); },
     readPublic: async () => ({ target: toHex(ann.id), files: read() }),
     usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
@@ -145,7 +146,15 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
     notify: (_agent, text) => { notes.push(text); },
     roots,
     shippedList,
-    publishToServer: async (_agent, file) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file); },
+    // Like the real server: one signal per listing slot, so a newer one there takes the older down and says which.
+    publishToServer: async (_agent, file) => {
+      if (server.failing.on) throw new LocalError("server_unreachable", "down");
+      const slot = signalSlot(readSignedSignal(file).envelope.type);
+      const displaced = slot === null ? [] : [...server.held].filter(([, held]) => signalSlot(readSignedSignal(held).envelope.type) === slot).map(([id]) => id);
+      for (const id of displaced) server.held.delete(id);
+      server.held.set(toHex(readSignedSignal(file).envelope.signal_id), file);
+      return displaced.map((id) => new Uint8Array(Buffer.from(id, "hex")));
+    },
     unpublishFromServer: async (_agent, id) => { if (server.failing.on) throw new LocalError("server_unreachable", "down"); server.held.delete(toHex(id)); },
     readPublic: async () => ({ target: toHex(owner.id), files: [...server.held.values()] }),
     usageFacts: async () => { throw new LocalError("not_in_this_test", "usage isn't part of this test"); },
@@ -172,6 +181,18 @@ test("a public signal that a newer one replaces comes off the server by itself, 
   assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0, "the newer one isn't public until its owner says so");
   a.store.close();
   b.store.close();
+});
+
+test("when the server takes a signal down because a newer one fills its listing slot, the wallet stops calling it public", async () => {
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const anon = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github_anon", signal_id: fill(61, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), anon.hash);
+  const identified = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github_id", signal_id: fill(62, 16), issued_at: NOW - 10 }));
+  assert.deepEqual(await a.wallet.publish(toHex(ann.id), identified.hash), { signal_hash: identified.hash, public: true, replaced: [anon.hash] });
+  assert.equal(a.signals.get(ann.id, anon.hash)?.public, 0);
+  assert.equal(server.held.size, 1);
+  a.store.close();
 });
 
 test("when taking a replaced signal back fails it is said loudly once, stays marked, and is retried until the server takes it", async () => {

@@ -41,7 +41,8 @@ export interface WalletHooks {
   roots(): readonly RootKey[];
   shippedList: string | null;
   // Public signals live on a server, so these reach it as the agent. Each fails by name if the server refuses or can't be reached.
-  publishToServer(agentHex: string, file: Uint8Array): Promise<void>;
+  // Answers the ids of any public signals the server took down because this one fills the same listing slot.
+  publishToServer(agentHex: string, file: Uint8Array): Promise<Uint8Array[]>;
   unpublishFromServer(agentHex: string, signalId: Uint8Array): Promise<void>;
   // The signed files a server holds as public for one agent, and the agent's id as it parsed from the address.
   readPublic(agentHex: string, address: string): Promise<{ target: string; files: Uint8Array[] }>;
@@ -436,10 +437,19 @@ export class Wallet {
     if (row.consent_state !== CONSENT_ACCEPTED) throw new LocalError("consent_pending", `This signal is '${row.consent_state}', not accepted, so it can't be made public. Accept it first.`);
     if (row.status !== "active") throw new LocalError("signal_not_current", "A newer signal has replaced this one, so it can't be made public.");
     if (row.expires_at !== null && row.expires_at <= nowSec()) throw new LocalError("signal_expired", "This signal has expired, so it can't be made public. cello signals collect fetches a current one.");
-    await this.#hooks.publishToServer(agentHex, new Uint8Array(row.file));
+    const displaced = (await this.#hooks.publishToServer(agentHex, new Uint8Array(row.file))).map((id) => toHex(id));
     this.#signals.setPublic(fromHex(agentHex), row.signal_hash, true);
     logEvent("signal.public.published", { agent: agentHex, signal: row.signal_hash });
-    return { signal_hash: row.signal_hash, public: true };
+    // The server keeps one signal per listing slot, so a newer one there takes the older off. Say so here too, or this wallet would call it public.
+    const replaced: string[] = [];
+    for (const held of this.#signals.list(fromHex(agentHex))) {
+      if (held.public === 0 || held.signal_hash === row.signal_hash) continue;
+      if (!displaced.includes(toHex(readSignedSignal(new Uint8Array(held.file)).envelope.signal_id))) continue;
+      this.#signals.setPublic(fromHex(agentHex), held.signal_hash, false);
+      replaced.push(held.signal_hash);
+      logEvent("signal.public.withdrawn", { agent: agentHex, signal: held.signal_hash, reason: "replaced_on_server" });
+    }
+    return { signal_hash: row.signal_hash, public: true, ...(replaced.length > 0 ? { replaced } : {}) };
   }
 
   // The server forgets it first. If it can't be reached the signal stays marked public here, because it is still public there.
