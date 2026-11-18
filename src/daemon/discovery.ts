@@ -4,9 +4,9 @@
 // and what's shown comes from those signed bytes, screened on this machine like any message from a stranger.
 import { readRecord } from "../protocol/channel.ts";
 import { toHex } from "../protocol/encode.ts";
-import type { Signer } from "../protocol/identity.ts";
+import type { PublicIdentity, Signer } from "../protocol/identity.ts";
 import { type ListingKind, decodeListing, listingSignedBy, signListing } from "../protocol/listing.ts";
-import type { ListingFields } from "../protocol/structures.ts";
+import { ChannelVisibility, type ListingFields } from "../protocol/structures.ts";
 import { identityCodec, toB64 } from "../protocol/wire.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
 import { formatAddress } from "./address.ts";
@@ -58,47 +58,68 @@ export class Discovery {
     }) as { results?: unknown; cursor?: unknown };
     if (!Array.isArray(answer.results)) throw new LocalError("bad_response", "the server's search answer is malformed");
     const shown: unknown[] = [];
-    let unverified = 0;
+    const unverified: Record<string, number> = {};
     let blocked = 0;
     for (const raw of answer.results as RawResult[]) {
-      const fields = await this.#verified(kind, raw);
-      if (!fields) {
-        unverified += 1;
+      const checked = await this.#verified(kind, raw);
+      if (!checked.ok) {
+        unverified[checked.reason] = (unverified[checked.reason] ?? 0) + 1;
+        logEvent("discover.unverified", { agent: agentHex, kind, listing: typeof raw.id === "string" ? raw.id : "unnamed", reason: checked.reason });
         continue;
       }
-      // The listing's words are a stranger's, so they're screened here before an agent reads them.
+      const { fields } = checked;
+      // The listing's words are a stranger's, so they're screened here before an agent reads them, and what's shown is the screen's
+      // cleaned text: invisible characters stripped, forged security-layer markers removed. The name and tags can't hold anything but
+      // letters, digits, dashes and underscores, so the description is the part that changes.
       const verdict = await this.#hooks.screen(agentHex, `listing:${raw.id}`, raw.id, [fields.name, fields.tags.replaceAll(",", " "), fields.description].join("\n"));
       if (verdict.verdict === "blocked") {
         blocked += 1;
         continue;
       }
-      const preview = [...fields.description].slice(0, PREVIEW_CHARS).join("");
-      const common = { name: fields.name, preview, tags: fields.tags === "" ? [] : fields.tags.split(","), language: fields.language ?? "en", listed_at: raw.listed_at, ...(verdict.verdict === "flagged" ? { screening: "flagged" } : {}) };
+      const cleaned = verdict.delivered === null ? fields.description : verdict.delivered.slice(verdict.delivered.indexOf("\n\n") + 2).split("\n").slice(2).join("\n");
+      // One line, so a description can't draw what looks like another result under it.
+      const preview = [...cleaned.replace(/\s+/g, " ").trim()].slice(0, PREVIEW_CHARS).join("");
+      const screening = verdict.delivered === null ? {} : { screening: { verdict: verdict.verdict, findings: verdict.findings } };
+      const common = { name: fields.name, preview, tags: fields.tags === "" ? [] : fields.tags.split(","), language: fields.language ?? "en", ...screening };
+      // What the server alone says, unsigned by the owner: its count of trust signals, its reader count, when it was listed.
+      const serverSays = { listed_at: raw.listed_at, ...(kind === "agent" ? { signals: raw.signals } : raw.readers === undefined ? {} : { readers: raw.readers }) };
       shown.push(kind === "agent"
-        ? { ...common, name_self_declared: true, address: formatAddress(raw.id, this.#hooks.serverUrl()), agent_id: raw.id, signals: raw.signals }
-        : { ...common, channel: raw.id, access: raw.access, ...(raw.readers === undefined ? {} : { readers: raw.readers }) });
+        ? { ...common, name_self_declared: true, address: formatAddress(raw.id, this.#hooks.serverUrl()), agent_id: raw.id, ...serverSays }
+        : { ...common, channel: raw.id, access: checked.access, ...serverSays });
     }
-    if (unverified > 0) logEvent("discover.unverified", { agent: agentHex, kind, count: unverified });
+    const unverifiedCount = Object.values(unverified).reduce((sum, n) => sum + n, 0);
     return {
       kind,
       results: shown,
       cursor: typeof answer.cursor === "string" ? answer.cursor : null,
-      ...(unverified > 0 ? { unverified } : {}),
+      ...(unverifiedCount > 0 ? { unverified: unverifiedCount, unverified_reasons: unverified } : {}),
       ...(blocked > 0 ? { blocked_by_screening: blocked } : {}),
     };
   }
 
-  // The listing, checked against the owner's keys the server sent with it, and naming the id it came under. Null for anything less.
-  async #verified(kind: ListingKind, raw: RawResult): Promise<ListingFields | null> {
+  // The listing, checked against the owner's keys the server sent with it, and naming the id it came under. Anything less says why.
+  // A channel's access comes from its signed record, never from the server's word.
+  async #verified(kind: ListingKind, raw: RawResult): Promise<{ ok: true; fields: ListingFields; access?: "public" | "invite_only" } | { ok: false; reason: string }> {
+    let listing: ReturnType<typeof decodeListing>;
     try {
-      const listing = decodeListing(kind, raw.listing);
-      if (toHex(listing.fields.subjectId) !== raw.id) return null;
-      if (kind === "agent") return (await listingSignedBy(kind, listing, identityCodec.decode(raw.owner))) ? listing.fields : null;
-      const record = await readRecord(raw.record, listing.fields.subjectId);
-      return record && (await listingSignedBy(kind, listing, record.channel)) ? listing.fields : null;
-    } catch {
-      return null;
+      listing = decodeListing(kind, raw.listing);
+    } catch (err: unknown) {
+      return { ok: false, reason: (err as { code?: string }).code === "unsupported_version" ? "unsupported_version" : "malformed" };
     }
+    if (toHex(listing.fields.subjectId) !== raw.id) return { ok: false, reason: "id_mismatch" };
+    if (kind === "agent") {
+      let owner: PublicIdentity;
+      try {
+        owner = identityCodec.decode(raw.owner);
+      } catch {
+        return { ok: false, reason: "no_owner_keys" };
+      }
+      return (await listingSignedBy(kind, listing, owner)) ? { ok: true, fields: listing.fields } : { ok: false, reason: "bad_signature" };
+    }
+    const record = await readRecord(raw.record, listing.fields.subjectId);
+    if (!record) return { ok: false, reason: "bad_record" };
+    if (!(await listingSignedBy(kind, listing, record.channel))) return { ok: false, reason: "bad_signature" };
+    return { ok: true, fields: listing.fields, access: record.fields.visibility === ChannelVisibility.public ? "public" : "invite_only" };
   }
 
   async #subject(agentHex: string, channel: string | undefined): Promise<{ kind: ListingKind; subject: string; signer: Signer }> {

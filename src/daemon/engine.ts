@@ -341,7 +341,8 @@ export class Engine {
       shippedList: SHIPPED_ISSUER_LIST,
       publishToServer: async (agentHex, file) => {
         const answer = await this.#publicSignalCall(agentHex, undefined, "signal.publish", (agent) => ({ agent: toB64(agent.signer.id), signal: toB64(file) })) as { displaced?: unknown };
-        // An older server says nothing about slots and takes nothing down.
+        // A server from before discovery says nothing about slots and takes nothing down. Remove this once the discovery server is
+        // deployed everywhere, and refuse a missing list as malformed.
         if (answer.displaced === undefined) return [];
         if (!Array.isArray(answer.displaced)) throw new LocalError("bad_response", "the server's answer to publishing a signal is malformed");
         return answer.displaced.map((id) => fromB64(id, "displaced"));

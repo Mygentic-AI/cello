@@ -115,8 +115,13 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   assert.deepEqual([shown["revision"], shown["review"], shown["language"], shown["suspended"]], [2, "approved", "pt-BR", false]);
 
   // A Usage renewal stays public, so the listing doesn't drop out.
+  const firstUsage = usageHash();
   ann.ok(["signals", "request", "usage", "--agent", "Ann", "--json"]);
-  await until("the renewal to settle", () => search(bea, "Bea", "agents", "--tags", tag).results.length === 1 && usageHash());
+  // Collecting settles before it answers: the renewal is a new signal, and it's the one that's public.
+  const usageRows = (ann.ok(["signals", "list", "--json", "--agent", "Ann"]) as { signals: { type: string; signal_hash: string; public?: boolean }[] }).signals.filter((s) => s.type === "usage");
+  const publicUsage = usageRows.filter((s) => s.public === true);
+  assert.equal(publicUsage.length, 1, "exactly one Usage signal public after the renewal");
+  assert.notEqual(publicUsage[0]?.signal_hash, firstUsage, "the public one is the renewal, not the old one");
   assert.equal(search(bea, "Bea", "agents", "--tags", tag).results[0]?.agent_id, annId, "still found after the Usage signal renewed");
 
   // Renew keeps it as it was.
