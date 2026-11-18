@@ -109,6 +109,32 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   assert.match(plain, /Ann_helper \(self-declared\)/);
   assert.match(plain, /1 of 6 trust signals/);
 
+  assert.match(plain, new RegExp(`More: cello discover show ${annId}@`));
+
+  // One agent in full, by its address: the whole description, and each public signal with what it says.
+  const address = byTag[0]?.address as string;
+  const shown1 = bea.ok(["discover", "show", address, "--json", "--agent", "Bea"]) as { listed: boolean; description: string; signals: { type: string; claim: string | null }[]; talk: string; expires_at?: string };
+  assert.equal(shown1.listed, true);
+  assert.equal(shown1.description, "Books meetings for a small firm.");
+  assert.ok(shown1.expires_at, "it says when the listing expires");
+  const usageClaim = shown1.signals.find((s) => s.type === "usage")?.claim ?? "";
+  assert.match(usageClaim, /conversation/, "the Usage signal shows what it counts, not only that it exists");
+  assert.equal(shown1.talk, `cello initiate-session ${address}`);
+  const showPlain = bea.run(["discover", "show", address, "--agent", "Bea"]).stdout;
+  assert.match(showPlain, /^Ann_helper {2}\(name chosen by its owner, not checked\)$/m);
+  // This test's stand-in issuer is trusted by the server but not on Bea's machine, so her daemon marks the Usage signal as only the
+  // agent's own claim and doesn't count it: the reader decides. On production both read the same signed list.
+  assert.match(showPlain, /^Trust signals: 0 of 6$/m);
+  assert.match(showPlain, /^Missing: Usage, GitHub, X, Email, Phone, Passkey$/m);
+  assert.match(showPlain, /^• usage, from an issuer this machine doesn't recognise .*: only the agent's own claim: .*conversation/m);
+  // The owner's view, asked for an agent that isn't on this machine, points to discover show instead of saying "create it".
+  const notMine = bea.refused(["listing", "show", "--agent", annId], "not_your_agent");
+  assert.match(String(notMine["message"]), /cello discover show/);
+  // signals lookup shows what each signal says, under a name a person reads.
+  const lookupPlain = bea.run(["signals", "lookup", address, "--agent", "Bea"]).stdout;
+  assert.match(lookupPlain, /^ {2}Usage {2,}/m);
+  assert.match(lookupPlain, /conversation/);
+
   // An edit replaces it; the owner's view shows the newer revision.
   ann.ok(["listing", "publish", "--name", "Ann_helper", "--description", "Books meetings and answers client email.", "--tags", tag, "--language", "pt-BR", "--agent", "Ann"]);
   const shown = ann.ok(["listing", "show", "--agent", "Ann"]);

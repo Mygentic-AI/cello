@@ -37,6 +37,7 @@ function discoveryAnswering(results: unknown[]): Discovery {
     call: async () => ({ results, cursor: null }),
     agentSigner: () => { throw new Error("not used"); },
     channelSigner: async () => { throw new Error("not used"); },
+    lookupSignals: async () => ({ signals: [], refused: [] }),
     screen: (_agent, _scope, _sender, text) => screen(text),
     serverUrl: () => "wss://server.example/v1",
   });

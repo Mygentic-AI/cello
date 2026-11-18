@@ -266,7 +266,7 @@ test("a public signal the wallet no longer holds can still be taken back by its 
   a.store.close();
 });
 
-test("a lookup of a verified issuer's signal shows no payload, in the answer or in the words a person reads", async () => {
+test("a lookup of a verified issuer's signal shows its claim and nothing else of its payload, in the answer and in the words a person reads", async () => {
   const SECRET = "PAYLOAD-TEXT-7731-that-must-not-appear";
   const p256 = async (name: "enclave" | "kms"): Promise<{ key: RootKey; sign: RootSigner }> => {
     const pair = (await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
@@ -286,15 +286,19 @@ test("a lookup of a verified issuer's signal shows no payload, in the answer or 
   const server = fakeServer();
   const a = walletOn(server, ann);
   const b = walletOn(server, ann, [], list, () => roots);
-  const mine = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "employer", issuer_address: "trust.example.com", payload: new Uint8Array(encodeCbor({ claim: SECRET, detail: SECRET })), signal_id: fill(71, 16) }));
+  // What the signal says, its claim, is shown (Andre, 18 November: a reader must see what matters). Nothing else in the payload is.
+  const CLAIM = "Owns the GitHub account ann-example, held since Mar 2019.";
+  const mine = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "employer", issuer_address: "trust.example.com", payload: new Uint8Array(encodeCbor({ claim: CLAIM, detail: SECRET })), signal_id: fill(71, 16) }));
   await a.wallet.publish(toHex(ann.id), mine.hash);
 
   const result = await b.wallet.lookup(toHex(bea.id), toHex(ann.id)) as { signals: Record<string, unknown>[] };
   assert.equal(result.signals[0]?.["issuer_standing"], "recognised", "this must be a verified issuer for the test to mean anything");
   assert.equal(result.signals[0]?.["counts_as_verified"], true);
+  assert.equal(result.signals[0]?.["claim"], CLAIM, "the claim is shown");
+  assert.ok(publicSignalsText(result as never).includes(CLAIM), "and a person reads it");
   assert.equal(Object.hasOwn(result.signals[0] as object, "payload"), false);
   assert.ok(!JSON.stringify(result).includes("payload"), "no payload key anywhere in the answer");
-  assert.ok(!JSON.stringify(result).includes(SECRET), "no payload text anywhere in the answer");
+  assert.ok(!JSON.stringify(result).includes(SECRET), "no other payload field anywhere in the answer");
   assert.ok(!publicSignalsText(result as never).includes(SECRET), "nor in the words a person reads");
   a.store.close();
   b.store.close();

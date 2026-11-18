@@ -22,6 +22,8 @@ export interface DiscoveryHooks {
   channelSigner(agentHex: string, channelHex: string): Promise<Signer>;
   screen(agentHex: string, scope: string, senderHex: string, text: string): Promise<InboundVerdict>;
   serverUrl(): string;
+  // This agent's view of another agent's public signals, each checked here (the wallet's lookup).
+  lookupSignals(agentHex: string, address: string): Promise<unknown>;
 }
 
 export interface SearchOptions { query?: string; tags?: string; match?: string; cursor?: string; limit?: number }
@@ -120,6 +122,42 @@ export class Discovery {
     if (!record) return { ok: false, reason: "bad_record" };
     if (!(await listingSignedBy(kind, listing, record.channel))) return { ok: false, reason: "bad_signature" };
     return { ok: true, fields: listing.fields, access: record.fields.visibility === ChannelVisibility.public ? "public" : "invite_only" };
+  }
+
+  // One agent or channel in full, from its address or key: the listing as its owner signed it, and for an agent its public signals,
+  // each checked here and showing what it says. For deciding whether to talk to it.
+  async showOne(agentHex: string, target: string): Promise<unknown> {
+    const id = this.#targetId(target);
+    const answer = await this.#hooks.call(agentHex, "discover.get", { subject: toB64(Buffer.from(id, "hex")) }) as { listed?: boolean; kind?: unknown; result?: RawResult & { expires_at?: unknown } };
+    if (answer.listed !== true) return { listed: false, id, note: "Nothing is listed under that id on this server. The agent or channel may never have listed, or its listing is out of search." };
+    if (answer.kind !== "agent" && answer.kind !== "channel") throw new LocalError("bad_response", "the server's answer names no kind of listing");
+    const kind: ListingKind = answer.kind;
+    const raw = answer.result as RawResult;
+    if (raw.id !== id) throw new LocalError("bad_response", "the server answered with a different listing than the one asked for");
+    const checked = await this.#verified(kind, raw);
+    if (!checked.ok) throw new LocalError("listing_unverified", `The server's copy of this listing failed the check here (${checked.reason}), so nothing of it is shown.`);
+    const { fields } = checked;
+    const verdict = await this.#hooks.screen(agentHex, `listing:${raw.id}`, raw.id, [fields.name, fields.tags.replaceAll(",", " "), fields.description].join("\n"));
+    if (verdict.verdict === "blocked") throw new LocalError("blocked_by_screening", `Screening on this machine refused this listing: ${verdict.reason ?? "it can't be shown"}`);
+    const description = verdict.delivered === null ? fields.description : verdict.delivered.slice(verdict.delivered.indexOf("\n\n") + 2).split("\n").slice(2).join("\n");
+    const common = {
+      listed: true, kind, name: fields.name, description, tags: fields.tags === "" ? [] : fields.tags.split(","), language: fields.language ?? "en",
+      listed_at: raw.listed_at, ...(typeof answer.result?.expires_at === "string" ? { expires_at: answer.result.expires_at } : {}),
+      ...(verdict.delivered === null ? {} : { screening: { verdict: verdict.verdict, findings: verdict.findings } }),
+    };
+    if (kind === "channel") return { ...common, channel: id, access: checked.access, ...(raw.readers === undefined ? {} : { readers: raw.readers }), join: `cello channel-join ${id}` };
+    const address = formatAddress(id, this.#hooks.serverUrl());
+    const signals = await this.#hooks.lookupSignals(agentHex, address) as { signals: Record<string, unknown>[]; refused: unknown[] };
+    return { ...common, name_self_declared: true, agent_id: id, address, signals: signals.signals, refused_signals: signals.refused, talk: `cello initiate-session ${address}` };
+  }
+
+  // An address on this agent's own server, or a bare id. Another server's address is refused by name: discovery is per server for now.
+  #targetId(target: string): string {
+    const at = target.indexOf("@");
+    const id = at === -1 ? target : target.slice(0, at);
+    if (!/^[0-9a-f]{64}$/.test(id)) throw new LocalError("bad_argument", "Give an address (<id>@<server>) or a 64-character id, as discover agents or discover channels shows it.");
+    if (at !== -1 && formatAddress(id, this.#hooks.serverUrl()) !== target) throw new LocalError("other_server", "That address is on another server. Discovery shows only listings on this agent's own server for now.");
+    return id;
   }
 
   async #subject(agentHex: string, channel: string | undefined): Promise<{ kind: ListingKind; subject: string; signer: Signer }> {

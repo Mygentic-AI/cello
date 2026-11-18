@@ -416,6 +416,16 @@ export class Wallet {
     return notes;
   }
 
+  // What another agent's signal actually says, in its issuer's words: the GitHub account and its age, the X handle, the Usage count.
+  // Screened like any stranger's text, because a signal's words reach an agent. Null when the signal carries no readable claim.
+  async #claim(agentHex: string, row: WalletRow): Promise<string | null> {
+    const claim = readClaim(new Uint8Array(row.payload));
+    if (claim === null) return null;
+    const verdict = await this.#hooks.screen(agentHex, row.issuer_pubkey.slice(0, 64), claim);
+    if (verdict.verdict === "blocked") return `(withheld: ${verdict.reason ?? "the screen blocked it"})`;
+    return verdict.delivered ?? claim;
+  }
+
   async #describe(agentHex: string, row: WalletRow, list: IssuerList | null, now: number): Promise<Record<string, unknown>> {
     const envelopeKeys = issuerKeys({ issuer_pubkey: row.issuer_pubkey } as never);
     const standing = issuerStanding(row, envelopeKeys, list, this.#signals.trusted(), now);
@@ -546,7 +556,7 @@ export class Wallet {
         supersedes_hash: e.supersedes_hash === null ? null : toHex(e.supersedes_hash), same_operator: e.same_operator ? 1 : 0, status: "active", received_at: now * 1000,
         default_present: 1, consent_state: CONSENT_ACCEPTED, public: 1,
       };
-      signals.push(await this.#describe(agentHex, held, list, now));
+      signals.push({ ...(await this.#describe(agentHex, held, list, now)), claim: await this.#claim(agentHex, held) });
     }
     return { signals, refused };
   }

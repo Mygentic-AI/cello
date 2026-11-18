@@ -72,7 +72,7 @@ function ring(agentHex: string, bell: Doorbell): void {
 
 const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
 const channels = new Channels(store, engine.channelHost());
-const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex) });
+const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex), lookupSignals: (agentHex, address) => engine.wallet.lookup(agentHex, address) });
 const notifiers = new Notifiers(store, engine.notifierHost());
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
@@ -357,8 +357,20 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return discovery.renew(acting(params), optionalText(params, "channel"));
     case "listing_unpublish":
       return discovery.unpublish(acting(params), optionalText(params, "channel"));
-    case "listing_show":
+    case "listing_show": {
+      // The owner's own view. An agent that isn't on this machine gets pointed to the command that shows anyone's listing.
+      const named = text(params, "agent");
+      try {
+        engine.resolveAgent(named);
+      } catch (err: unknown) {
+        if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
+        const address = /^[0-9a-f]{64}(@.+)?$/.test(named) ? named : "<its address>";
+        throw new LocalError("not_your_agent", `listing show is for agents on this machine, and ${named} isn't one. To see another agent's listing and its signals: cello discover show ${address}`);
+      }
       return discovery.show(acting(params), optionalText(params, "channel"));
+    }
+    case "discover_show":
+      return discovery.showOne(acting(params), text(params, "target"));
     case "issuer_trust": {
       const agent = named(params);
       if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);

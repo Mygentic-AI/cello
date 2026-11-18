@@ -2628,7 +2628,7 @@ export class Engine {
   }
 
   // What discovery.ts needs from here: calls to this agent's own server as the agent, its key, the screen, and the server's address.
-  discoveryHost(): Omit<DiscoveryHooks, "channelSigner"> {
+  discoveryHost(): Omit<DiscoveryHooks, "channelSigner" | "lookupSignals"> {
     return {
       call: (agentHex, method, params) => this.#publicSignalCall(agentHex, undefined, method, (agent) => ({ agent: toB64(agent.signer.id), ...params })),
       agentSigner: (agentHex) => this.#requireAgent(agentHex).signer,

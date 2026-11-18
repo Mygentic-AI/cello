@@ -5,7 +5,18 @@ interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
   same_operator?: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];
   subject_kind: string; issuer_kind: string; issuer_pubkey: string; supersedes_hash: string | null; counts_as_verified: boolean; schema_version?: number; payload?: unknown;
+  claim?: string | null;
 }
+
+// The names a person reads, never the wire's type strings.
+const TYPE_LABEL: Record<string, string> = {
+  email: "Email", phone: "Phone", webauthn: "Passkey", totp: "Authenticator app", github_anon: "GitHub (anonymous)", github_id: "GitHub (identified)",
+  x_anon: "X (anonymous)", x_id: "X (identified)", usage: "Usage", usage_detailed: "Usage (detailed)", endorsement: "Endorsement",
+};
+export const signalLabel = (type: string): string => TYPE_LABEL[type] ?? type;
+
+// A signal's own words, indented under its row, so the reader sees what it says and not only that it exists.
+const claimLines = (s: SignalLine): string[] => (s.claim ? s.claim.split("\n").map((line) => `      ${line}`) : []);
 
 const date = (seconds: number): string => new Date(seconds * 1000).toISOString().slice(0, 10);
 
@@ -65,8 +76,8 @@ export function publicSignalsText(result: { agent: string; signals: SignalLine[]
   const { agent, signals, refused } = result;
   const head = `Public signals of ${agent.slice(0, 12)}…`;
   if (signals.length === 0 && refused.length === 0) return `${head}: none. An agent with no public signals proves nothing either way.\n`;
-  const lines = signals.map((s) => `  ${s.type.padEnd(22)}  ${date(s.issued_at)}  ${s.expires_at === null ? "never     " : date(s.expires_at)}  ${s.counts_as_verified ? s.issuer_address : `UNKNOWN ${s.issuer_address}`}`);
-  const header = `  ${"type".padEnd(22)}  issued      expires     issuer`;
+  const lines = signals.flatMap((s) => [`  ${signalLabel(s.type).padEnd(22)}  ${date(s.issued_at)}  ${s.expires_at === null ? "never     " : date(s.expires_at)}  ${s.counts_as_verified ? s.issuer_address : `UNKNOWN ${s.issuer_address}`}`, ...claimLines(s)]);
+  const header = `  ${"signal".padEnd(22)}  issued      expires     issuer`;
   const out = [head, header, `  ${"─".repeat(80)}`, ...lines];
   if (refused.length > 0) out.push(`  ${refused.length} file${refused.length === 1 ? "" : "s"} the server returned failed a check here and ${refused.length === 1 ? "was" : "were"} left out: ${refused.map((r) => r.fault).join(", ")}`);
   out.push("  UNKNOWN = an issuer this machine doesn't recognise: the claim is only that agent's own.");
@@ -82,8 +93,8 @@ export function presentedText(result: { session_id: string; from: string; theirs
   if (unreadable) out.push(`${head}: something was sent that couldn't be opened, which is not the same as nothing sent.`);
   else if (theirs.length === 0 && refused.length === 0) out.push(`${head}: none.`);
   else {
-    out.push(`${head}:`, `  ${"type".padEnd(22)}  issued      expires     issuer`, `  ${"─".repeat(80)}`);
-    for (const s of theirs) out.push(`  ${s.type.padEnd(22)}  ${date(s.issued_at)}  ${s.expires_at === null ? "never     " : date(s.expires_at)}  ${s.counts_as_verified ? s.issuer_address : `UNKNOWN ${s.issuer_address}`}`);
+    out.push(`${head}:`, `  ${"signal".padEnd(22)}  issued      expires     issuer`, `  ${"─".repeat(80)}`);
+    for (const s of theirs) out.push(`  ${signalLabel(s.type).padEnd(22)}  ${date(s.issued_at)}  ${s.expires_at === null ? "never     " : date(s.expires_at)}  ${s.counts_as_verified ? s.issuer_address : `UNKNOWN ${s.issuer_address}`}`, ...claimLines(s));
     if (refused.length > 0) out.push(`  ${refused.length} sent file${refused.length === 1 ? "" : "s"} failed a check here and ${refused.length === 1 ? "was" : "were"} left out: ${refused.map((r) => r.fault).join(", ")}`);
     if (theirs.some((s) => !s.counts_as_verified)) out.push("  UNKNOWN = an issuer this machine doesn't recognise: the claim is only that agent's own.");
   }
