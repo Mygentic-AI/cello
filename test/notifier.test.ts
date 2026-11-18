@@ -713,3 +713,44 @@ test("removing a bot's last notifier stops its reader, and a reply after that re
   assert.equal(readerCalls, calls);
   assert.deepEqual(handed, []);
 });
+
+// The notifiers table exactly as 0.0.324 made it, CHECK and all.
+const SCHEMA_0_0_324 = `
+CREATE TABLE IF NOT EXISTS notifiers (
+  agent_id BLOB NOT NULL REFERENCES agents(agent_id),
+  name     TEXT NOT NULL,
+  type     TEXT NOT NULL CHECK (type IN ('telegram')),
+  -- JSON, and it holds the bot token, so no command, log or notice ever shows it whole.
+  config   TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, name)
+);`;
+
+test("a database from 0.0.324 keeps its Telegram notifier, token and all, when the type CHECK is dropped", async () => {
+  setup();
+  const path = join(mkdtempSync(join(tmpdir(), "cello-notifier-old-")), "cello.db");
+  const old = new Store(path);
+  old.insertAgent(new Uint8Array(Buffer.from(AGENT, "hex")), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(2));
+  old.exec(SCHEMA_0_0_324);
+  const config = JSON.stringify({ bot_token: TOKEN, chat_id: "55", chat_number: "55", bot: "andre_cello_bot" });
+  old.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "phone", "telegram", config, 1_700_000_000_000);
+  assert.throws(() => old.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "x", "other", "{}", 1), /CHECK/);
+  old.close();
+
+  const store = new Store(path);
+  const notifiers = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, new Set());
+  const made = (store.prepare("SELECT sql FROM sqlite_master WHERE name = 'notifiers'").get() as { sql: string }).sql;
+  assert.ok(!/CHECK\s*\(/i.test(made), `the CHECK is gone: ${made}`);
+  store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, ?, ?, ?, ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), "x", "other", "{}", 1);
+  store.prepare("DELETE FROM notifiers WHERE name = 'x'").run();
+  const rows = store.prepare("SELECT hex(agent_id) AS agent, name, type, config, added_at FROM notifiers").all();
+  assert.deepEqual(rows, [{ agent: AGENT.toUpperCase(), name: "phone", type: "telegram", config, added_at: 1_700_000_000_000 }]);
+  // A second open finds nothing to do.
+  open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, new Set());
+  assert.deepEqual(store.prepare("SELECT hex(agent_id) AS agent, name, type, config, added_at FROM notifiers").all(), rows);
+
+  const listed = notifiers.list(AGENT) as { notifiers: { notifier: string; bot: string; chat_id: string }[] };
+  assert.deepEqual(listed.notifiers.map((n) => [n.notifier, n.bot, n.chat_id]), [["phone", "@andre_cello_bot", "55"]]);
+  assert.equal((await notifiers.notify(AGENT, {}) as { sent: boolean }).sent, true);
+  assert.equal(sent.at(-1)?.token, TOKEN, "the token survived and still reaches Telegram");
+});

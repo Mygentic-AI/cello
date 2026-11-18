@@ -7,16 +7,19 @@ import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
 import { TELEGRAM, TelegramError, type TelegramEndpoint, type TelegramUpdate, answerTap, botIdOf, botUsername, choiceIndex, clearButtons, newestUpdate, sendButtons, sendText, setCommands, thumbsUp, updatesFrom } from "./telegram.ts";
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS notifiers (
+const NOTIFIERS_COLUMNS = `(
   agent_id BLOB NOT NULL REFERENCES agents(agent_id),
   name     TEXT NOT NULL,
-  type     TEXT NOT NULL CHECK (type IN ('telegram')),
+  -- Checked in code against the registered types, so a new type needs no table change.
+  type     TEXT NOT NULL,
   -- JSON, and it holds the bot token, so no command, log or notice ever shows it whole.
   config   TEXT NOT NULL,
   added_at INTEGER NOT NULL,
   PRIMARY KEY (agent_id, name)
-);
+)`;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS notifiers ${NOTIFIERS_COLUMNS};
 -- One row per notification that reached a notifier, so a reply can be traced to the agent and session that asked.
 CREATE TABLE IF NOT EXISTS notifications (
   id         INTEGER PRIMARY KEY,
@@ -98,6 +101,20 @@ function pause(ms: number, stop: AbortSignal): Promise<void> {
   });
 }
 
+// Up to 0.0.324 the table allowed only telegram, in a CHECK. SQLite can't drop a CHECK, so the table is made again without
+// it and the rows copied across, in one transaction.
+function dropTypeCheck(store: Store): void {
+  const made = store.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifiers'").get() as { sql: string } | undefined;
+  if (!made || !/CHECK\s*\(\s*type\s+IN\b/i.test(made.sql)) return;
+  store.transaction(() => {
+    store.exec(`CREATE TABLE notifiers_rebuilt ${NOTIFIERS_COLUMNS}`);
+    store.exec("INSERT INTO notifiers_rebuilt (agent_id, name, type, config, added_at) SELECT agent_id, name, type, config, added_at FROM notifiers");
+    store.exec("DROP TABLE notifiers");
+    store.exec("ALTER TABLE notifiers_rebuilt RENAME TO notifiers");
+  });
+  logEvent("notifier.table_rebuilt", { rows: (store.prepare("SELECT count(*) AS c FROM notifiers").get() as { c: number }).c });
+}
+
 export class Notifiers {
   readonly #store: Store;
   readonly #host: NotifierHost;
@@ -109,6 +126,7 @@ export class Notifiers {
     this.#telegram = telegram;
     this.#store = store;
     this.#host = host;
+    dropTypeCheck(store);
     store.exec(SCHEMA);
     // For a database from 0.0.317 to 0.0.319, whose table was made before choices existed.
     const columns = (store.prepare("PRAGMA table_info(notifications)").all() as { name: string }[]).map((column) => column.name);
