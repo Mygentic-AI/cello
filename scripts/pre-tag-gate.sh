@@ -37,6 +37,7 @@ step "lint" pnpm run lint
 step "test, the whole suite" pnpm run test
 # The publish workflow builds the Mac app on a macOS runner. Building and checking it here first catches a break before the tag.
 if [ "$(uname -s)" = "Darwin" ]; then
+  step "the Mac app's own tests" swift test --package-path widgets/mac
   macpack="$(mktemp -d)"
   step "the Mac app builds and packs whole" sh -c "cd mac-app && pnpm pack --pack-destination '$macpack' >/dev/null && sh ./check-tarball.sh '$macpack'/cello-protocol-mac-app-$version.tgz"
   rm -rf "$macpack"
