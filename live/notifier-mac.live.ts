@@ -255,6 +255,8 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   // 11. Paused: the agent hears queued, saying the operator is away, and the app gets it silently, for its panel. An app
   // connecting during the pause gets what's kept silently too. Resume sends nothing again.
   const until1h = new Date(Date.now() + 60 * 60_000).toISOString();
+  // A silent one is in the panel, not on screen, so the real app doesn't ack it until the panel is opened.
+  back.app.autoAck = false;
   const paused = await back.app.request({ op: "pause", until: until1h });
   assert.equal(paused["ok"], true);
   const away = await notify(["Lunch order?", "--kind", "request", "--choices", "Pizza|Salad"], "Ann");
@@ -273,6 +275,7 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.ok(!back.app.frames.slice(before).some((f) => f["op"] === "notification"), "resume replays nothing as a banner");
   // After the pause, new ones are not silent.
+  back.app.autoAck = true;
   const backNow = await notify(["Back yet?"], "Ann");
   assert.equal(backNow["sent"], true);
   const loud = await back.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Back yet?", "a notification after the pause");

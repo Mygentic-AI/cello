@@ -152,6 +152,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const paused = this.#pausedUntil();
     if (paused !== undefined) {
       const row = this.#row(id);
+      // The app must not ack a silent one until it's actually on screen, such as when the panel is opened. Until then
+      // it stays unseen, so the summary banner after the pause includes it.
       if (row) this.#push(this.#frame(row, true));
       return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's waiting in their CELLO panel for when they're back. Don't send it again.`;
     }
