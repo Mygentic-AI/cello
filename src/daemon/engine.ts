@@ -907,9 +907,12 @@ export class Engine {
       const since = this.#store.getConfig(bookmarkKey) ?? null;
       const seen = new Set<string>();
       const handled: Promise<unknown>[] = [];
+      const handledIds: string[] = [];
       let after: unknown;
       let asOf: string | undefined;
+      let pages = 0;
       for (let page = 0; ; page++) {
+        pages = page + 1;
         if (page >= CATCH_UP_MAX_PAGES) throw new Error(`catch-up passed ${CATCH_UP_MAX_PAGES} pages without finishing`);
         const listedAt = Date.now();
         const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id), since, ...(after === undefined ? {} : { after }) }) as CatchUpPage;
@@ -922,16 +925,25 @@ export class Engine {
             this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
           });
           handled.push(work);
+          handledIds.push(sessionHex);
           this.#background("session update", work);
         }
         asOf = listed.asOf;
         if (asOf === undefined || listed.more !== true) break;
+        if (listed.after === undefined) throw new Error("the server said there was more but gave no next page");
         after = listed.after;
       }
+      logEvent("agent.caught_up", { agent: agent.hex, pages, sessions: handled.length, from_bookmark: since !== null, bookmarks: asOf !== undefined });
       if (asOf !== undefined) {
         const reached = asOf;
         void Promise.allSettled(handled).then((results) => {
-          if (results.every((result) => result.status === "fulfilled")) this.#store.setConfig(bookmarkKey, reached);
+          const failed = results.flatMap((result, i) => (result.status === "rejected" ? [handledIds[i]] : []));
+          if (failed.length === 0) {
+            this.#store.setConfig(bookmarkKey, reached);
+            return;
+          }
+          // The same conversations come back next time. One that always fails keeps the bookmark here, and this says which.
+          logEvent("agent.catch_up_bookmark_held", { agent: agent.hex, failed: failed.slice(0, 10), failed_count: failed.length });
         });
       }
       // An offer written to disk just before a crash may never have reached the server.

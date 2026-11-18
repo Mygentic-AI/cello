@@ -372,4 +372,18 @@ test("an agent with more history than a frame holds reconnects and catches up, i
   assert.equal(daemon.status().connected, true);
   const sessions = daemon.status().agents.find((a) => a.name === "Busy")?.sessions ?? [];
   assert.equal(sessions.length, opened, `all ${opened} conversations are still there`);
+  // The catch-up really ran, from the bookmark of an earlier catch-up, and fetched only what changed since: fewer than all
+  // of them. (Paging through a whole large history is the server live test's job.)
+  type CaughtUp = { event: string; agent: string; pages: number; sessions: number; from_bookmark: boolean };
+  const caughtUp = (text: string) => text.split("\n").filter((line) => line.includes("agent.caught_up")).map((line) => JSON.parse(line) as CaughtUp).filter((e) => e.agent === busyId);
+  const afterRestart = caughtUp(since);
+  assert.ok(afterRestart.some((e) => e.from_bookmark && e.sessions < opened), `a catch-up from the bookmark, smaller than all ${opened}: ${JSON.stringify(afterRestart)}`);
+  // Restarted again with nothing new, the bookmark has moved, so nothing comes back.
+  const marker2 = `restart-again-${Date.now()}`;
+  appendFileSync(join(daemon.home, "daemon.log"), `${JSON.stringify({ event: marker2 })}\n`);
+  daemon.kill();
+  daemon.login();
+  await online(daemon, "Busy");
+  const quiet = await until("a catch-up after the second restart", () => caughtUp(daemon.log().split(marker2)[1] ?? "").find((e) => e.from_bookmark));
+  assert.equal(quiet.sessions, 0, "the bookmark moved: nothing changed since, so nothing came back");
 });
