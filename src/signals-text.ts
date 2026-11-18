@@ -80,7 +80,7 @@ export function publicSignalsText(result: { agent: string; signals: SignalLine[]
   const header = `  ${"signal".padEnd(22)}  issued      expires     issuer`;
   const out = [head, header, `  ${"─".repeat(80)}`, ...lines];
   if (refused.length > 0) out.push(`  ${refused.length} file${refused.length === 1 ? "" : "s"} the server returned failed a check here and ${refused.length === 1 ? "was" : "were"} left out: ${refused.map((r) => r.fault).join(", ")}`);
-  out.push("  UNKNOWN = an issuer this machine doesn't recognise: the claim is only that agent's own.");
+  if (signals.some((s) => !s.counts_as_verified)) out.push("  UNKNOWN = an issuer this machine doesn't recognise: the claim is only that agent's own.");
   const notes = signals.flatMap((s) => s.notes.map((note) => `\n${s.type}:\n${note}`));
   return `${[...out, ...notes].join("\n")}\n`;
 }

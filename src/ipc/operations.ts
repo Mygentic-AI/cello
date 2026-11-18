@@ -117,6 +117,35 @@ function showText(r: ShowAnswer): string {
   return `${out.join("\n")}\n`;
 }
 
+// The listing commands' answers, in words. One function, because each answer says what it is by its fields.
+interface ListingAnswer {
+  kind: string; listed?: boolean; revision?: number; review?: string | null; expires_at?: string | null; listed_at?: string | null; renewed?: boolean; removed?: boolean;
+  suspended?: boolean; name?: string; description?: string; tags?: string[]; language?: string;
+}
+const REVIEW_WORDS: Record<string, string> = {
+  approved: "in search",
+  held: "waiting for the server's operator to review it, so not in search yet",
+  refused: "refused by the server's operator, so not in search",
+};
+function listingText(r: ListingAnswer): string {
+  const what = r.kind === "channel" ? "The channel" : "This agent";
+  const suspended = r.suspended ? `\nThe server's operator has suspended it, so it isn't in search whatever its state.` : "";
+  if (r.removed !== undefined) return r.removed ? `Taken down. ${what} no longer shows in search.\n` : `Nothing was listed, so nothing changed.\n`;
+  if (r.renewed) return `Renewed. The listing stays up until ${day(r.expires_at ?? 0)}.\n`;
+  if (r.revision !== undefined && r.name === undefined) {
+    return `Listed (revision ${r.revision}): ${REVIEW_WORDS[r.review ?? ""] ?? r.review}. It stays up until ${day(r.expires_at ?? 0)}.${suspended}\n`;
+  }
+  if (r.listed === false) return `${what} isn't listed.${suspended}\n`;
+  const lines = [
+    `${r.name}: ${REVIEW_WORDS[r.review ?? ""] ?? r.review}`,
+    `Revision ${r.revision} · listed ${day(r.listed_at ?? 0)}, until ${day(r.expires_at ?? 0)} · ${LANGUAGE[r.language ?? "en"] ?? r.language}`,
+    ...(r.tags && r.tags.length > 0 ? [`Tags: ${r.tags.join(", ")}`] : []),
+    "",
+    ...(r.description ?? "").split("\n"),
+  ];
+  return `${lines.join("\n")}${suspended}\n`;
+}
+
 // For a command that acts on every agent on the daemon unless one is named.
 const ANY_AGENT: Param = { name: "agent", kind: "string", description: "One agent's name or agent_id. Left out, every agent on this daemon." };
 
@@ -974,6 +1003,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "List this agent, or a channel it runs, so others on this server can find it. Also: cello listing publish.",
     scoped: true,
     acts: true,
+    plain: (result: ListingAnswer) => listingText(result),
     description: "List this agent, or with --channel a channel this agent runs, so anyone on this server can find it with discover-agents or discover-channels. Run it again to edit; each edit replaces the last. The agent signs its own listing (a channel's is signed with the channel key), so nobody, the server included, can change it. Listing an agent needs a current Usage signal from a recognised issuer, made public with signals-publish; the listing shows this agent's public signals as a count out of six. A name starting with \"cello\" in any case is refused unless the server's operator allows this agent. The server screens the text, and anything suspect waits for its operator to approve it before it can be found. A listing lasts six months; renew it with listing-renew. Everything in it is public.",
     params: [
       { name: "name", kind: "string", required: true, description: "The listing's name: 1 to 64 letters, digits, underscores or dashes." },
@@ -989,6 +1019,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Keep a listing up for another six months. Also: cello listing renew.",
     scoped: true,
     acts: true,
+    plain: (result: ListingAnswer) => listingText(result),
     description: "Reset a listing's six-month clock. Nothing in the listing changes. Without --channel, this agent's own listing.",
     params: [LISTING_CHANNEL],
   },
@@ -998,6 +1029,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Take a listing down. Also: cello listing unpublish.",
     scoped: true,
     acts: true,
+    plain: (result: ListingAnswer) => listingText(result),
     description: "Take a listing down at once, so it can't be found. Anyone who found it before keeps the address. A repeat changes nothing. Without --channel, this agent's own listing.",
     params: [LISTING_CHANNEL],
   },
@@ -1007,6 +1039,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Show a listing as its owner sees it, held or suspended included. Also: cello listing show.",
     scoped: true,
     acts: true,
+    plain: (result: ListingAnswer) => listingText(result),
     description: "Show this agent's listing, or with --channel a channel's, as the server holds it: its text, whether it's in search, waiting for review, or refused, whether the operator suspended it, and when it expires.",
     params: [LISTING_CHANNEL],
   },

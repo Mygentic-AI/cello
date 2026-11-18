@@ -80,7 +80,7 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   const tag = `t${Date.now().toString(36)}`;
 
   // No Usage signal yet: refused, and the words say what's missing.
-  const none = bea.refused(["listing", "publish", "--name", "Bea_helper", "--tags", tag, "--agent", "Bea"], "listing_needs_usage");
+  const none = bea.refused(["listing", "publish", "--name", "Bea_helper", "--tags", tag, "--agent", "Bea", "--json"], "listing_needs_usage");
   assert.match(String(none["message"]), /none public/);
 
   // A conversation earns Usage; made public, it opens a listing.
@@ -90,8 +90,8 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   ann.ok(["signals", "publish", usageHash(), "--agent", "Ann"]);
 
   // A reserved name is refused; a plain one is listed.
-  ann.refused(["listing", "publish", "--name", "CeLLo_helper", "--agent", "Ann"], "listing_name_reserved");
-  const listed = ann.ok(["listing", "publish", "--name", "Ann_helper", "--description", "Books meetings for a small firm.", "--tags", `calendar, ${tag}`, "--agent", "Ann"]);
+  ann.refused(["listing", "publish", "--name", "CeLLo_helper", "--agent", "Ann", "--json"], "listing_name_reserved");
+  const listed = ann.ok(["listing", "publish", "--name", "Ann_helper", "--description", "Books meetings for a small firm.", "--tags", `calendar, ${tag}`, "--agent", "Ann", "--json"]);
   assert.equal(listed["review"], "approved");
   assert.equal(listed["revision"], 1);
 
@@ -128,7 +128,7 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   assert.match(showPlain, /^Missing: Usage, GitHub, X, Email, Phone, Passkey$/m);
   assert.match(showPlain, /^• Usage, from an issuer this machine doesn't recognise .*: only the agent's own claim: .*conversation/m);
   // The owner's view, asked for an agent that isn't on this machine, points to discover show instead of saying "create it".
-  const notMine = bea.refused(["listing", "show", "--agent", annId], "not_your_agent");
+  const notMine = bea.refused(["listing", "show", "--agent", annId, "--json"], "not_your_agent");
   assert.match(String(notMine["message"]), /cello discover show/);
   // signals lookup shows what each signal says, under a name a person reads.
   const lookupPlain = bea.run(["signals", "lookup", address, "--agent", "Bea"]).stdout;
@@ -136,8 +136,8 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   assert.match(lookupPlain, /conversation/);
 
   // An edit replaces it; the owner's view shows the newer revision.
-  ann.ok(["listing", "publish", "--name", "Ann_helper", "--description", "Books meetings and answers client email.", "--tags", tag, "--language", "pt-BR", "--agent", "Ann"]);
-  const shown = ann.ok(["listing", "show", "--agent", "Ann"]);
+  ann.ok(["listing", "publish", "--name", "Ann_helper", "--description", "Books meetings and answers client email.", "--tags", tag, "--language", "pt-BR", "--agent", "Ann", "--json"]);
+  const shown = ann.ok(["listing", "show", "--agent", "Ann", "--json"]);
   assert.deepEqual([shown["revision"], shown["review"], shown["language"], shown["suspended"]], [2, "approved", "pt-BR", false]);
 
   // A Usage renewal stays public, so the listing doesn't drop out.
@@ -151,19 +151,19 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   assert.equal(search(bea, "Bea", "agents", "--tags", tag).results[0]?.agent_id, annId, "still found after the Usage signal renewed");
 
   // Renew keeps it as it was.
-  const renewed = ann.ok(["listing", "renew", "--agent", "Ann"]);
+  const renewed = ann.ok(["listing", "renew", "--agent", "Ann", "--json"]);
   assert.ok(new Date(String(renewed["expires_at"])).getTime() > Date.now() + 180 * 86_400_000);
 
   // A channel Ann runs, listed with its key and found by Bea, who then joins it with that key.
   const channelId = ann.ok(["channel-create", "release-notes", "--type", "public", "--agent", "Ann"])["channel_id"] as string;
-  ann.ok(["listing", "publish", "--channel", channelId, "--name", "release-notes", "--description", "Announcements, one poster.", "--tags", tag, "--agent", "Ann"]);
-  bea.refused(["listing", "publish", "--channel", channelId, "--name", "not-mine", "--agent", "Bea"], "not_the_admin");
+  ann.ok(["listing", "publish", "--channel", channelId, "--name", "release-notes", "--description", "Announcements, one poster.", "--tags", tag, "--agent", "Ann", "--json"]);
+  bea.refused(["listing", "publish", "--channel", channelId, "--name", "not-mine", "--agent", "Bea", "--json"], "not_the_admin");
   const channels = search(bea, "Bea", "channels", "--tags", tag).results;
   assert.deepEqual(channels.map((c) => [c.channel, c.access, c.name]), [[channelId, "public", "release-notes"]]);
   bea.ok(["channel-join", channelId, "--agent", "Bea"]);
 
   // Unlisted: gone from search, and a repeat changes nothing.
-  assert.equal(ann.ok(["listing", "unpublish", "--agent", "Ann"])["removed"], true);
-  assert.equal(ann.ok(["listing", "unpublish", "--agent", "Ann"])["removed"], false);
+  assert.equal(ann.ok(["listing", "unpublish", "--agent", "Ann", "--json"])["removed"], true);
+  assert.equal(ann.ok(["listing", "unpublish", "--agent", "Ann", "--json"])["removed"], false);
   assert.deepEqual(search(bea, "Bea", "agents", "--tags", tag).results, []);
 });

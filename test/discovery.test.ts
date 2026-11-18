@@ -14,6 +14,7 @@ import { compileInjectionPatterns } from "../src/screener/injection-patterns.ts"
 import { initLinearRegex } from "../src/screener/linear-regex.ts";
 import { Discovery } from "../src/daemon/discovery.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
+import { publicSignalsText } from "../src/signals-text.ts";
 
 before(async () => {
   await initLinearRegex();
@@ -158,4 +159,19 @@ test("what only the server says is checked for shape, so it can't carry its own 
   assert.equal(shown.access, "public");
   assert.equal(shown.join, `cello channel-join ${toHex(quiet.id)}`);
   assert.ok(!plainShow(shown as never).includes("evil"));
+});
+
+test("signals lookup explains UNKNOWN only when a row is marked UNKNOWN", () => {
+  const line = (counts: boolean) => ({ signal_hash: "a", type: "email", issuer_address: "trust.example", issuer_standing: counts ? "recognised" : "unknown", status: "active", consent_state: "accepted", default_present: true, issued_at: 1794556800, expires_at: null, notes: [], subject_kind: "agent", issuer_kind: "issuer", issuer_pubkey: "x", supersedes_hash: null, counts_as_verified: counts, claim: "Verified." });
+  assert.ok(!publicSignalsText({ agent: "a".repeat(64), signals: [line(true)], refused: [] } as never).includes("UNKNOWN ="));
+  assert.ok(publicSignalsText({ agent: "a".repeat(64), signals: [line(true), line(false)], refused: [] } as never).includes("UNKNOWN ="));
+});
+
+test("the listing commands answer in words", () => {
+  const plain = (command: string) => OPERATIONS.find((op) => op.command === command)?.plain as (result: never) => string;
+  assert.equal(plain("listing-show")({ kind: "agent", listed: false, suspended: false } as never), "This agent isn't listed.\n");
+  assert.match(plain("listing-publish")({ kind: "agent", revision: 2, review: "held", expires_at: "2027-05-20T10:00:00Z" } as never), /^Listed \(revision 2\): waiting for the server's operator to review it, so not in search yet\. It stays up until 20 May 2027\.$/m);
+  assert.equal(plain("listing-unpublish")({ kind: "agent", removed: true } as never), "Taken down. This agent no longer shows in search.\n");
+  assert.equal(plain("listing-renew")({ kind: "agent", renewed: true, expires_at: "2027-05-20T10:00:00Z" } as never), "Renewed. The listing stays up until 20 May 2027.\n");
+  assert.match(plain("listing-show")({ kind: "agent", listed: true, name: "Ann_helper", review: "approved", revision: 3, listed_at: "2026-11-18T10:00:00Z", expires_at: "2027-05-20T10:00:00Z", language: "en", tags: ["calendar"], description: "Books meetings.", suspended: true } as never), /^Ann_helper: in search\n.*\n.*\n\nBooks meetings\.\nThe server's operator has suspended it/m);
 });
