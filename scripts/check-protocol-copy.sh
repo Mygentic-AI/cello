@@ -13,3 +13,11 @@ if ! diff -r "$client/src/protocol" "$server/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from the client's. In cello-server, run scripts/sync-protocol.sh, then commit both." >&2
   exit 1
 fi
+# The server also runs the deterministic half of the inbound screen on discovery listings. Keep in step with cello-server's sync script.
+SCREENER_FILES="affordance.ts classifier.ts inbound.ts injection-patterns.ts language.ts linear-regex.ts sanitize.ts scan-variants.ts"
+for f in $SCREENER_FILES; do
+  if ! cmp -s "$client/src/screener/$f" "$server/src/screener/$f"; then
+    echo "The server's screener copy of $f differs from the client's. In cello-server, run scripts/sync-protocol.sh, then commit both." >&2
+    exit 1
+  fi
+done
