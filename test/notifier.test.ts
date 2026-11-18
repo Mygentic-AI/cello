@@ -17,7 +17,7 @@ import { TelegramError, sendText } from "../src/daemon/telegram.ts";
 import { OPERATIONS } from "../src/ipc/operations.ts";
 import { NOTIFIER_TYPES, addCommand } from "../src/notifier-types.ts";
 import { StandInMacApp } from "../live/stand-in-mac-app.ts";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const TOKEN = "123456:secret-bot-token";
 const AGENT = "07".repeat(32);
@@ -914,6 +914,24 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   await until("the tap after a typed answer to be refused", () => tapAnswers.includes("Already answered: a typed answer."));
   assert.deepEqual(handed.map((h) => h.text), ["No", "Yes", "Make it one o'clock."]);
   await app.close();
+});
+
+// The live test tries names on daemon.sock, which can't cover a name nobody thought of. This holds for every name: only
+// the notifiers' own code reaches the operator's path, and only the Mac notifier opens the door.
+test("only notifier code can write an operator reply, and nothing on daemon.sock reaches it", () => {
+  const srcDir = join(import.meta.dirname, "..", "src");
+  const files = (readdirSync(srcDir, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts"));
+  const calling = (pattern: RegExp): string[] => files.filter((f) => pattern.test(readFileSync(join(srcDir, f), "utf8"))).sort();
+  assert.deepEqual(calling(/\.fromOperator\(/), ["daemon/notifier-mac.ts", "daemon/notifier-telegram.ts", "daemon/notifiers.ts"]);
+  assert.deepEqual(calling(/\.(choose|answeredInWords)\(/), ["daemon/notifier-mac.ts", "daemon/notifier-telegram.ts"]);
+  assert.deepEqual(calling(/new OperatorDoor\(/), ["daemon/notifier-mac.ts"]);
+  // The inbox is written in one place: the host's fromOperator, which the notifiers hold.
+  const engine = readFileSync(join(srcDir, "daemon", "engine.ts"), "utf8");
+  assert.equal([...engine.matchAll(/#operator\.add\(/g)].length, 1);
+  assert.deepEqual(calling(/\boperatorInbox\b|new OperatorInbox\(/), ["daemon/engine.ts"]);
+  // The daemon's request handler holds the Notifiers, and none of its calls on them is a way to answer as the operator.
+  const main = readFileSync(join(srcDir, "daemon", "main.ts"), "utf8");
+  assert.deepEqual([...new Set([...main.matchAll(/notifiers\.(\w+)\(/g)].map((m) => m[1]))].sort(), ["add", "forget", "list", "notify", "remove", "start", "stop", "test"]);
 });
 
 test("a door that couldn't open is named, never reported as a Mac asleep", async () => {
