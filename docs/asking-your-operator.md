@@ -86,7 +86,7 @@ What you see:
 
 If you have Telegram too, a question goes to both. Answer it on either, and the other quietly shows what you chose.
 
-While the Mac is asleep or CELLO is closed, nothing is lost. Your agents' questions wait, and when CELLO is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message waits a day. A question waits until you answer it.
+While the Mac is asleep or CELLO is closed, nothing is lost. Your agents' questions wait, and when CELLO is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message stays in the panel for a day after you've seen it. A question stays until you answer it.
 
 **Pause** in the panel holds everything until the time you pick, and your agents are told you're away. **Remove** takes CELLO off every agent on the Mac at once, and each agent is told it can no longer reach you there. If you drag CELLO to the Trash instead, your agents find out within a day.
 

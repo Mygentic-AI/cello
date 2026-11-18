@@ -1,7 +1,7 @@
 // The Mac notifier: the CELLO app on this Mac, reached through the operator's door (operator-door.ts). One app serves every
 // agent on the machine. Nothing leaves the machine, so the agent's words reach it whole, without the outbound screen.
 // The app keeps nothing on disk: the daemon keeps each notification's words until it's answered or settled, and a plain
-// message's for a day, then empties them, as operator_messages does once a reply is read.
+// message's until a day after it was shown, then empties them, as operator_messages does once a reply is read.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 import type { ChoiceOutcome, Connected, Delivered, NotifierAdapter, NotifierContext, Outgoing, Settled, StoredNotifier } from "./notifier-adapter.ts";
@@ -312,8 +312,10 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#ctx.store.prepare("UPDATE mac_queue SET text = '', done_at = ? WHERE id = ? AND done_at IS NULL").run(Date.now(), id);
   }
 
+  // A plain message goes a day after it was on screen. One never shown is kept, since the agent was told it would be and
+  // not to send it again.
   #sweep(): void {
-    this.#ctx.store.prepare("UPDATE mac_queue SET text = '', done_at = ? WHERE done_at IS NULL AND kind != 'request' AND sent_at < ?").run(Date.now(), Date.now() - DAY_MS);
+    this.#ctx.store.prepare("UPDATE mac_queue SET text = '', done_at = ? WHERE done_at IS NULL AND kind != 'request' AND shown_at IS NOT NULL AND shown_at < ?").run(Date.now(), Date.now() - DAY_MS);
   }
 
   #frame(row: QueueRow): Record<string, unknown> {

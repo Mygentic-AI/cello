@@ -897,18 +897,23 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   await app.close();
 });
 
-test("the Mac keeps a plain message a day and a question until it's answered, and the app gets what's kept on connecting", async () => {
+test("the Mac keeps a message until a day after it was shown, a question until it's answered, and the app gets what's kept on connecting", async () => {
   const { notifiers, store, door } = await withMac();
   await notifiers.add(AGENT, { type: "mac" });
   const kept = await notifiers.notify(AGENT, { text: "Old news" }) as { sent: unknown; queued_note: string };
   assert.equal(kept.sent, "queued");
   assert.match(kept.queued_note, /hasn't seen this yet.*Don't send it again/);
+  await notifiers.notify(AGENT, { text: "Never seen" });
   await notifiers.notify(AGENT, { kind: "request", text: "Still waiting?" });
-  store.prepare("UPDATE mac_queue SET sent_at = ?").run(Date.now() - 25 * 60 * 60_000);
+  const dayAgo = Date.now() - 25 * 60 * 60_000;
+  store.prepare("UPDATE mac_queue SET sent_at = ?").run(dayAgo);
+  // Only "Old news" was on screen, a day ago.
+  store.prepare("UPDATE mac_queue SET shown_at = ? WHERE text = 'Old news'").run(dayAgo);
   const { app } = await StandInMacApp.open(door);
   await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Still waiting?", "the question kept past a day");
-  assert.ok(!app.frames.some((f) => f["text"] === "Old news"), "a day-old message isn't kept");
-  const emptied = store.prepare("SELECT text FROM mac_queue WHERE kind = 'message'").get() as { text: string };
+  await app.waitFor((f) => f["op"] === "notification" && f["text"] === "Never seen", "a message never shown, kept as the agent was told");
+  assert.ok(!app.frames.some((f) => f["text"] === "Old news"), "a message shown a day ago isn't kept");
+  const emptied = store.prepare("SELECT text FROM mac_queue WHERE shown_at IS NOT NULL").get() as { text: string };
   assert.equal(emptied.text, "", "its words are gone from the database too");
   const question = app.frames.find((f) => f["text"] === "Still waiting?") as Record<string, unknown>;
   assert.ok(Number(question["age_seconds"]) >= 25 * 60 * 60);
