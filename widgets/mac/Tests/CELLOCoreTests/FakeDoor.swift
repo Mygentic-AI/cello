@@ -10,6 +10,8 @@ final class FakeDoor: @unchecked Sendable {
     private var received: [[String: Any]] = []
     // Given each request, the answer to write, or nil to drop the connection without one.
     var answer: ([String: Any]) -> [String: Any]? = { request in ["op": "result", "ref": request["ref"] ?? "", "ok": true] }
+    // Given each request, frames pushed after its answer, such as the notifications a subscribe brings.
+    var then: ([String: Any]) -> [[String: Any]] = { _ in [] }
 
     init() {
         path = "/tmp/cello-fake-\(UUID().uuidString.prefix(8)).sock"
@@ -54,9 +56,12 @@ final class FakeDoor: @unchecked Sendable {
                     lock.lock()
                     received.append(request)
                     lock.unlock()
-                    guard let reply = answer(request), var data = try? JSONSerialization.data(withJSONObject: reply) else { break reading }
-                    data.append(0x0A)
-                    _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
+                    guard let reply = answer(request) else { break reading }
+                    for frame in [reply] + then(request) {
+                        guard var data = try? JSONSerialization.data(withJSONObject: frame) else { continue }
+                        data.append(0x0A)
+                        _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
+                    }
                 }
             }
             Darwin.close(fd)

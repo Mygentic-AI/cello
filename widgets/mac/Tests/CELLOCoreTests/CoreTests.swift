@@ -482,4 +482,33 @@ final class ControllerDoorTests: XCTestCase {
         let after = door.requests.filter { $0["op"] as? String == "reply" }.map { $0["ref"] as? String }
         XCTAssertNotEqual(after[2], after[0], "once taken, the same words again are a new message")
     }
+
+    // A typed answer to a question already answered elsewhere goes on as a follow-up, and the door says so in said. That
+    // line is the one the panel keeps. Without said, it's the usual line.
+    func testAReplyKeepsTheDoorsFollowUpLineAndOtherwiseTheUsualOne() {
+        let door = FakeDoor()
+        defer { door.close() }
+        let question: [String: Any] = ["op": "notification", "id": 7, "agent_id": "aa", "agent": "Ann", "kind": "request", "text": "Wine?", "choices": ["Red", "White"], "session_id": NSNull(), "talking_to": NSNull(), "sent_at": "2026-11-18T10:00:00Z", "age_seconds": 0, "shown": false, "silent": false]
+        let news: [String: Any] = ["op": "notification", "id": 8, "agent_id": "aa", "agent": "Ann", "kind": "message", "text": "Done.", "choices": [String](), "session_id": NSNull(), "talking_to": NSNull(), "sent_at": "2026-11-18T10:01:00Z", "age_seconds": 0, "shown": false, "silent": false]
+        door.answer = { r in
+            switch r["op"] as? String {
+            case "subscribe":
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+            case "reply" where r["id"] as? Int == 7:
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann", "follow_up": true, "first_answer": "White", "said": "Already answered: White. Passed to Ann as a follow-up."]
+            default:
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann"]
+            }
+        }
+        door.then = { r in r["op"] as? String == "subscribe" ? [question, news] : [] }
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil { c.state.item(7) != nil && c.state.item(8) != nil })
+        var done = 0
+        c.reply(7, text: "Actually red.") { _ in done += 1 }
+        c.reply(8, text: "Thanks.") { _ in done += 1 }
+        XCTAssertTrue(waitUntil { done == 2 })
+        XCTAssertEqual(c.state.earlier.map(\.what), ["Already answered: White. Passed to Ann as a follow-up.", Copy.youReplied])
+    }
 }
