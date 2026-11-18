@@ -181,7 +181,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         // It opens again on what's waiting, not on the list of agents.
         panel.showingAgents = false
         // An empty composer folds back to one line; one with words in it stays open on them.
-        if panel.messageText.isEmpty { panel.composing = false }
+        // The line under it, such as "Sent to Ann", was for that moment: left there it takes a question's room next time.
+        if panel.messageText.isEmpty {
+            panel.composing = false
+            panel.messageLine = nil
+        }
         ticker?.invalidate()
         ticker = nil
     }
