@@ -916,6 +916,21 @@ test("a choice made on the Mac settles Telegram, and a tap in Telegram settles t
   await app.close();
 });
 
+test("a door that couldn't open is named, never reported as a Mac asleep", async () => {
+  const { store, seen } = setup();
+  insertMacRow(store);
+  const broken = open(store, { apiUrl, timeoutMs: 5_000, pollSeconds: 0 }, seen, join(tmpdir(), "no-such-folder-cello", "operator.sock"));
+  broken.start();
+  await until("the door's failure to be known", () => JSON.stringify(broken.list(AGENT)).includes("couldn't open"));
+  await assert.rejects(broken.notify(AGENT, {}), (err: unknown) => err instanceof LocalError && err.code === "notify_failed" && /couldn't open/.test(err.message));
+  await assert.rejects(broken.add(AGENT2, { type: "mac" }), refusal("notifier_check_failed"));
+});
+
+// A mac notifier already in the database, as a daemon that opened its door once would have left it.
+function insertMacRow(store: Store): void {
+  store.prepare("INSERT INTO notifiers (agent_id, name, type, config, added_at) VALUES (?, 'mac', 'mac', '{}', ?)").run(new Uint8Array(Buffer.from(AGENT, "hex")), Date.now());
+}
+
 test("the Mac keeps a message until a day after it was shown, a question until it's answered, and the app gets what's kept on connecting", async () => {
   const { notifiers, store, door } = await withMac();
   await notifiers.add(AGENT, { type: "mac" });

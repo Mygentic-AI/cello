@@ -4,6 +4,7 @@
 // message's until a day after it was shown, then empties them, as operator_messages does once a reply is read.
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
+import { DeliveryError } from "./notifier-adapter.ts";
 import type { ChoiceOutcome, Connected, Delivered, NotifierAdapter, NotifierContext, Outgoing, Settled, StoredNotifier } from "./notifier-adapter.ts";
 import { type DoorConnection, type DoorHandler, type DoorReply, OperatorDoor, type OperatorOp } from "./operator-door.ts";
 
@@ -58,6 +59,8 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   // Waits for the app to say a notification is on screen, by queue id.
   readonly #waiting = new Map<number, Set<() => void>>();
   #sweeper: NodeJS.Timeout | undefined;
+  // Why the door didn't open, when it didn't.
+  #doorProblem: string | undefined;
   #resumer: NodeJS.Timeout | undefined;
 
   // No socket path: no door, as on any machine but a Mac.
@@ -72,8 +75,12 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#sweeper = setInterval(() => this.#sweep(), SWEEP_MS);
     this.#sweeper.unref();
     this.#scheduleResume();
-    // The door failing to open costs the Mac route, never the daemon. notify then says the app isn't connected.
-    this.#door?.open().catch((err: unknown) => logEvent("operator_door.unavailable", { message: err instanceof Error ? err.message : String(err) }));
+    // The door failing to open costs the Mac route, never the daemon, and it's said by name wherever the route is used.
+    this.#door?.open().then(() => { this.#doorProblem = undefined; }, (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.#doorProblem = `CELLO's door for the Mac app, ${this.#door?.path ?? "operator.sock"}, couldn't open (${message}), so the app can't connect. Restarting CELLO (cello logout, then cello login) tries again.`;
+      logEvent("operator_door.unavailable", { message });
+    });
   }
 
   stop(): void {
@@ -100,6 +107,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
 
   prepare(params: Record<string, unknown>, copied: (() => string) | undefined): (agentName: string, agentHex: string) => Promise<Connected> {
     if (this.#door === undefined) throw new LocalError("not_supported", "The CELLO app runs on a Mac, so a mac notifier can't be added on this machine.");
+    if (this.#doorProblem !== undefined) throw new LocalError("notifier_check_failed", `Nothing was saved. ${this.#doorProblem}`);
     // Nothing secret to copy, but naming an agent that has none is still a mistake worth saying.
     copied?.();
     return async (agentName, agentHex) => {
@@ -122,12 +130,15 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const seen = Number(this.#ctx.store.getConfig(SEEN_KEY) ?? 0);
     const paused = this.#pausedUntil();
     return {
+      ...(this.#doorProblem === undefined ? {} : { problem: this.#doorProblem }),
       app: this.#subscribers().length > 0 ? "open" : seen > 0 ? `not open, last open ${new Date(seen).toISOString()}` : "never opened",
       ...(paused === undefined ? {} : { paused_until: new Date(paused).toISOString() }),
     };
   }
 
   async deliver(notifier: StoredNotifier, message: Outgoing): Promise<Delivered> {
+    // A failure, not a wait: the app can't connect until CELLO is restarted, so "queued" would be untrue.
+    if (this.#doorProblem !== undefined) throw new DeliveryError(this.#doorProblem);
     const talking = message.sessionHex === null ? undefined : this.#ctx.host.counterparty(notifier.agentHex, message.sessionHex);
     const inserted = this.#ctx.store.prepare("INSERT INTO mac_queue (agent_id, notifier, kind, text, choices, session_id, talking_to, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id").get(
       idOf(notifier.agentHex), notifier.name, message.kind, message.words ?? message.line, message.choices.length > 0 ? JSON.stringify(message.choices) : null,
