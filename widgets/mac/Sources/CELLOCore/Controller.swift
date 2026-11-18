@@ -44,6 +44,7 @@ public final class Controller {
     private func changed() {
         schedulePauseEnd()
         scheduleCardFold()
+        schedulePausedWordEnd()
         delegate?.stateChanged(self)
     }
 
@@ -55,6 +56,20 @@ public final class Controller {
         guard let at = state.nextCardFold(now: now()) else { return }
         let work = DispatchWorkItem { [weak self] in self?.changed() }
         cardTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, at.timeIntervalSince(now())) + 0.05, execute: work)
+    }
+
+    // "paused" beside the mark goes after a few seconds, with nothing from the door, so the mark redraws then.
+    private var wordTimer: DispatchWorkItem?
+    private func schedulePausedWordEnd() {
+        wordTimer?.cancel()
+        wordTimer = nil
+        guard let at = state.pausedWordEnds(now: now()) else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.delegate?.stateChanged(self)
+        }
+        wordTimer = work
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, at.timeIntervalSince(now())) + 0.05, execute: work)
     }
 
@@ -279,7 +294,7 @@ public final class Controller {
         client.send(.pause(until: until)) { [weak self] reply in
             guard let self else { return }
             if reply.ok {
-                self.state.setPaused(until: reply.string("paused_until").flatMap(parseISODate) ?? until)
+                self.state.setPaused(until: reply.string("paused_until").flatMap(parseISODate) ?? until, here: self.now())
                 self.changed()
                 done(nil)
             } else {

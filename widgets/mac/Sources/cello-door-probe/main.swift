@@ -51,6 +51,8 @@ func snapshot(_ c: Controller) -> [String: Any] {
         "event": "state",
         "connection": connection,
         "look": c.state.look(at: now).rawValue,
+        "paused_word": c.state.mark(at: now, time: isoString).word as Any,
+        "tooltip": c.state.mark(at: now, time: isoString).tooltip as Any,
         "paused_until": c.state.pausedUntil.map(isoString) as Any,
         "agents": c.state.agents.map { ["agent_id": $0.agentID, "name": $0.name] },
         "waiting": c.state.waiting.map { item -> [String: Any] in

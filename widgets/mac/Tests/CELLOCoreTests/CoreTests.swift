@@ -674,3 +674,66 @@ final class ClickAwayTests: XCTestCase {
         XCTAssertEqual([started, stopped, closed], [3, 3, 3])
     }
 }
+
+final class PausedMarkTests: XCTestCase {
+    private let time: (Date) -> String = { _ in "9:00 AM" }
+
+    func testPausedShowsTheWordForAFewSecondsThenOnlyTheFadedMarkWithUntilWhenOnHover() {
+        var s = live()
+        s.setPaused(until: t0.addingTimeInterval(3600), here: t0)
+        XCTAssertEqual(s.mark(at: t0.addingTimeInterval(1), time: time), MarkLook(look: .paused, word: "paused", tooltip: "Paused until 9:00 AM"))
+        XCTAssertEqual(s.pausedWordEnds(now: t0.addingTimeInterval(1)), t0.addingTimeInterval(pausedWordSeconds))
+        XCTAssertEqual(s.mark(at: t0.addingTimeInterval(pausedWordSeconds + 0.1), time: time), MarkLook(look: .paused, word: nil, tooltip: "Paused until 9:00 AM"))
+        XCTAssertNil(s.pausedWordEnds(now: t0.addingTimeInterval(pausedWordSeconds + 0.1)))
+        // Resumed: no word and nothing on hover.
+        s.setPaused(until: nil)
+        XCTAssertEqual(s.mark(at: t0.addingTimeInterval(10), time: time), MarkLook(look: .plain, word: nil, tooltip: nil))
+    }
+
+    // A pause CELLO reports when the app connects was set earlier, so the word doesn't flash on every reconnect.
+    func testAPauseFoundOnConnectingShowsOnlyTheFadedMark() {
+        var s = AppState(turnedOn: true)
+        s.subscribed(subscribeReply(pausedUntil: isoString(Date().addingTimeInterval(3600))))
+        let mark = s.mark(at: Date(), time: time)
+        XCTAssertEqual([mark.look.rawValue, mark.word ?? "none", mark.tooltip ?? "none"], ["paused", "none", "Paused until 9:00 AM"])
+    }
+
+    func testOtherLooksSayNothingOnHover() {
+        var s = live()
+        _ = s.receive(item(1, choices: ["Yes", "No"]))
+        XCTAssertEqual(s.mark(at: t0, time: time), MarkLook(look: .waiting, word: nil, tooltip: nil))
+    }
+
+    // The word goes with nothing from the door, so the Controller redraws by itself when it does.
+    func testTheControllerRedrawsWhenTheWordGoes() {
+        final class Marks: ControllerDelegate {
+            var seen: [(at: Date, word: String?)] = []
+            func stateChanged(_ controller: Controller) { seen.append((Date(), controller.state.mark(at: Date(), time: { _ in "" }).word)) }
+            func perform(_ effect: Effect, controller: Controller) {}
+            func needsStart(_ controller: Controller) {}
+        }
+        let door = FakeDoor()
+        defer { door.close() }
+        let until = isoString(Date().addingTimeInterval(3600))
+        door.answer = { r in
+            switch r["op"] as? String {
+            case "subscribe": return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+            case "pause": return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "paused_until": until]
+            default: return ["op": "result", "ref": r["ref"] ?? "", "ok": true]
+            }
+        }
+        let marks = Marks()
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.delegate = marks
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil(3) { c.state.connection == .connected && !c.state.catchingUp })
+        var done = false
+        let pausedAt = Date()
+        c.pause(until: Date().addingTimeInterval(3600)) { _ in done = true }
+        XCTAssertTrue(waitUntil { done })
+        XCTAssertEqual(marks.seen.last?.word, "paused")
+        XCTAssertTrue(waitUntil(pausedWordSeconds + 3) { marks.seen.last?.word == nil }, "no redraw when the word went")
+        XCTAssertGreaterThanOrEqual(marks.seen.last!.at.timeIntervalSince(pausedAt), pausedWordSeconds - 0.5)
+    }
+}

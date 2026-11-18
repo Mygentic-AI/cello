@@ -16,19 +16,20 @@ enum MenuBarIcon {
         return image
     }()
 
-    static func apply(_ look: Look, to button: NSStatusBarButton) {
+    static func apply(_ mark: MarkLook, to button: NSStatusBarButton) {
+        let look = mark.look
         button.appearsDisabled = false
-        button.title = ""
-        button.imagePosition = .imageOnly
+        button.title = mark.word.map { " " + $0 } ?? ""
+        button.imagePosition = mark.word == nil ? .imageOnly : .imageLeading
         button.image = image(for: look)
+        // Hovering over the faded mark says until when.
+        button.toolTip = mark.tooltip
         switch look {
         case .plain: button.setAccessibilityLabel(Copy.lookPlain)
         case .news: button.setAccessibilityLabel(Copy.lookNews)
         case .waiting: button.setAccessibilityLabel(Copy.lookWaiting)
         case .paused:
             button.appearsDisabled = true
-            button.title = " " + Copy.pausedWord
-            button.imagePosition = .imageLeading
             button.setAccessibilityLabel(Copy.lookPaused)
         case .unreachable: button.setAccessibilityLabel(Copy.lookUnreachable)
         }

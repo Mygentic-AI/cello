@@ -206,7 +206,11 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   // 7. Paused: the look says so, a question arrives silently with no banner, and the agent hears its operator is away.
   // Opening the panel is what tells the door it's been seen.
   assert.equal((await app.run({ do: "pause", seconds: 600 }))["ok"], true);
-  assert.equal((await app.run({ do: "state" }))["look"], "paused");
+  const pausedAt = Date.now();
+  state = await app.run({ do: "state" });
+  // "paused" shows beside the mark for a few seconds, and hovering says until when.
+  assert.deepEqual([state["look"], state["paused_word"]], ["paused", "paused"]);
+  assert.match(state["tooltip"] as string, /^Paused until \d{4}-/);
   const fromPause = app.events.length;
   const away = await notify(["Coffee or tea?", "--kind", "request", "--choices", "Coffee|Tea"], "Ann");
   assert.equal(away["sent"], "queued");
@@ -220,8 +224,14 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   state = await app.run({ do: "state" });
   const coffee = (state["waiting"] as { id: number; text: string }[]).find((w) => w.text === "Coffee or tea?");
   assert.ok(coffee && (state["acked"] as number[]).includes(coffee.id), "acked once the panel showed it");
+  // Then only the faded mark, still saying until when on hover.
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 4_500 - Date.now())));
+  state = await app.run({ do: "state" });
+  assert.deepEqual([state["look"], state["paused_word"]], ["paused", null]);
+  assert.match(state["tooltip"] as string, /^Paused until /);
   assert.equal((await app.run({ do: "resume" }))["ok"], true);
-  assert.equal((await app.run({ do: "state" }))["look"], "waiting");
+  state = await app.run({ do: "state" });
+  assert.deepEqual([state["look"], state["tooltip"]], ["waiting", null]);
 
   // 8. CELLO stops: the app sees it, and asks to start it again (the probe only reports that). When it's back, what
   // still waits comes again, and nothing already shown is bannered twice.

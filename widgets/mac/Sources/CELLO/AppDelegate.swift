@@ -6,6 +6,12 @@ import SwiftUI
 
 private let log = Logger(subsystem: "com.celloprotocol.cello", category: "app")
 private let turnedOnKey = "turnedOn"
+private let markClock: DateFormatter = {
+    let f = DateFormatter()
+    f.timeStyle = .short
+    f.dateStyle = .none
+    return f
+}()
 
 final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
@@ -21,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     private var mouseWatchers: [Any] = []
     // The look last put on the mark. The mark is only touched when it changes: resizing the item the panel hangs from,
     // on every redraw, is the likeliest reason the panel stopped closing on an outside click.
-    private var shownLook: Look?
+    private var shownLook: MarkLook?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         var unreadable = false
@@ -44,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
-        MenuBarIcon.apply(.plain, to: statusItem.button!)
+        MenuBarIcon.apply(MarkLook(look: .plain, word: nil, tooltip: nil), to: statusItem.button!)
 
         popover.behavior = .transient
         popover.delegate = self
@@ -73,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     // MARK: ControllerDelegate
 
     func stateChanged(_ controller: Controller) {
-        let look = controller.state.look(at: Date())
+        let look = controller.state.mark(at: Date(), time: { markClock.string(from: $0) })
         if let button = statusItem.button, look != shownLook {
             shownLook = look
             MenuBarIcon.apply(look, to: button)

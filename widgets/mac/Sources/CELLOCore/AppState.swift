@@ -49,6 +49,21 @@ public struct EarlierLine: Equatable, Sendable {
 
 // How long an answered card stays in the panel before it folds into Earlier today.
 public let answeredCardSeconds: TimeInterval = 4
+// How long "paused" shows beside the mark after the person pauses here. After that the faded mark says it alone.
+public let pausedWordSeconds: TimeInterval = 4
+
+// Everything the menu-bar mark shows: the look, the word beside it, and what hovering over it says.
+public struct MarkLook: Equatable, Sendable {
+    public let look: Look
+    public let word: String?
+    public let tooltip: String?
+
+    public init(look: Look, word: String?, tooltip: String?) {
+        self.look = look
+        self.word = word
+        self.tooltip = tooltip
+    }
+}
 
 public struct AppState {
     public var connection: Connection = .connecting
@@ -57,6 +72,9 @@ public struct AppState {
     public private(set) var waiting: [Item] = []
     public private(set) var earlier: [EarlierLine] = []
     public private(set) var pausedUntil: Date?
+    // When the person paused from this app. Not set by a pause the door reports on connecting, so a reconnect never
+    // flashes the word again.
+    public private(set) var pausedHereAt: Date?
     // News not yet looked at in the panel: the pink dot.
     public private(set) var unseenNews: Set<Int> = []
     // Told to the door as on screen, or on screen before this connection.
@@ -84,6 +102,21 @@ public struct AppState {
         return .plain
     }
 
+    // time: how a time of day reads to the person, such as "9:00 AM".
+    public func mark(at now: Date, time: (Date) -> String) -> MarkLook {
+        let look = look(at: now)
+        guard look == .paused, let until = pausedUntil else { return MarkLook(look: look, word: nil, tooltip: nil) }
+        let fresh = pausedHereAt.map { now.timeIntervalSince($0) < pausedWordSeconds } ?? false
+        return MarkLook(look: look, word: fresh ? Copy.pausedWord : nil, tooltip: Copy.pausedUntil(time(until)))
+    }
+
+    // When the word beside the mark goes, so the mark can redraw then.
+    public func pausedWordEnds(now: Date) -> Date? {
+        guard isPaused(at: now), let at = pausedHereAt else { return nil }
+        let end = at.addingTimeInterval(pausedWordSeconds)
+        return end > now ? end : nil
+    }
+
     public func item(_ id: Int) -> Item? { waiting.first { $0.id == id } }
 
     public func earlierToday(now: Date, calendar: Calendar = .current) -> [EarlierLine] {
@@ -109,13 +142,16 @@ public struct AppState {
         connection = .connected
         agents = FrameParser.agents(reply.fields["agents"])
         pausedUntil = (reply.fields["paused_until"] as? String).flatMap(parseISODate)
+        if pausedUntil == nil { pausedHereAt = nil }
         catchingUp = true
         held = []
         stale = Set(waiting.map(\.id))
     }
 
-    public mutating func setPaused(until: Date?) {
+    // here: the person paused from this app just now, so the word shows for a moment.
+    public mutating func setPaused(until: Date?, here: Date? = nil) {
         pausedUntil = until
+        pausedHereAt = until == nil ? nil : here
     }
 
     public mutating func disconnected() {
@@ -222,6 +258,7 @@ public struct AppState {
         waiting = []
         unseenNews = []
         pausedUntil = nil
+        pausedHereAt = nil
     }
 
     // The panel is open, so everything in it is in front of the person: news is read, and the door hears each is shown.
