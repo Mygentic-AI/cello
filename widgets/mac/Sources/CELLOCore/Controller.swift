@@ -1,6 +1,9 @@
 // Joins the connection to the state, and holds everything the app does that isn't drawing: what each frame means, what
 // each click sends, when to start CELLO again. The app and the probe both drive one, so the live test runs this code.
 import Foundation
+import os
+
+private let log = Logger(subsystem: "ai.mygentic.cello", category: "door")
 
 public protocol ControllerDelegate: AnyObject {
     func stateChanged(_ controller: Controller)
@@ -87,8 +90,9 @@ public final class Controller {
             changed()
         case let .frame(frame):
             apply(frame)
-        case .badLine:
-            break
+        case let .badLine(why):
+            // Never the line itself: it can hold an agent's words. What was wrong with it is enough to find the cause.
+            log.error("a line from CELLO couldn't be read: \(why, privacy: .public)")
         }
     }
 
