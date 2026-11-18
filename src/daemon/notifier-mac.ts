@@ -314,8 +314,14 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   }
 
   // Takes CELLO on this Mac off every agent, and tells each agent it can't reach its operator here any more.
+  // An agent whose notifiers are locked keeps the Mac: removing it takes a person at a terminal, as notifier-remove does,
+  // so nothing is removed and the app stays.
   #remove(): Promise<DoorReply> {
     const agents = this.#agents();
+    const locked = agents.filter((agent) => this.#ctx.host.notifiersLocked(agent.agent_id));
+    if (locked.length > 0) {
+      throw new LocalError("notifiers_locked", `Nothing was removed: the notifiers of ${locked.map((a) => a.agent).join(", ")} are locked (notifiers.anyone_can_change is off). A person at a terminal can remove the Mac from each with: cello notifier-remove mac --agent <agent>, then remove CELLO again.`);
+    }
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac'").run();
     this.prune();
     this.#ctx.store.setConfig(PAUSED_KEY, "");
@@ -332,6 +338,10 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const theirs = typeof agent === "string" ? this.#ctx.rows().filter((row) => row.agentHex === agent) : [];
     if (typeof agent !== "string" || theirs.length === 0) throw new LocalError("no_such_agent", "Name the agent by its agent_id, one that reaches you here. subscribe lists them.");
     const name = this.#nameOf(agent);
+    // The same lock notifier-remove respects. This socket is no person at a terminal.
+    if (this.#ctx.host.notifiersLocked(agent)) {
+      throw new LocalError("notifiers_locked", `${name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be removed from it from the app. A person at a terminal can: cello notifier-remove ${theirs[0]?.name ?? "mac"} --agent ${agent}`);
+    }
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac' AND agent_id = ?").run(idOf(agent));
     this.prune();
     for (const row of theirs) logEvent("notifier.removed", { agent, notifier: row.name, by: "operator_door" });

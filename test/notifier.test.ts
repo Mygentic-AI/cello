@@ -1055,6 +1055,18 @@ test("the app takes one agent off the Mac: it's told, the app hears it went, and
   const { app } = await StandInMacApp.open(door);
   const unknown = await app.request({ op: "remove_agent", agent: "09".repeat(32) });
   assert.deepEqual([unknown["ok"], unknown["error"]], [false, "no_such_agent"]);
+  // Locked: neither one alone nor everything is removed, as notifier-remove refuses.
+  locked.add(AGENT2);
+  const lockedOne = await app.request({ op: "remove_agent", agent: AGENT2 });
+  assert.deepEqual([lockedOne["ok"], lockedOne["error"]], [false, "notifiers_locked"]);
+  assert.match(lockedOne["message"] as string, /^Bea's notifiers are locked/);
+  const lockedAll = await app.request({ op: "remove" });
+  assert.deepEqual([lockedAll["ok"], lockedAll["error"]], [false, "notifiers_locked"]);
+  assert.match(lockedAll["message"] as string, /^Nothing was removed: the notifiers of Bea are locked/);
+  assert.equal((notifiers.list(AGENT) as { notifiers: unknown[] }).notifiers.length, 1);
+  assert.ok((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.some((n) => n.type === "mac"));
+  assert.ok(!told.some((t) => /CELLO on their Mac/.test(t.text)), "nobody was told of a removal that didn't happen");
+  locked.delete(AGENT2);
   // Bea never sent anything, and the app still hears she went.
   const removed = await app.request({ op: "remove_agent", agent: AGENT2 });
   assert.deepEqual([removed["ok"], (removed["removed"] as { agent: string }).agent], [true, "Bea"]);

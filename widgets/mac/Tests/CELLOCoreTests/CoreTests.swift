@@ -858,3 +858,28 @@ final class AddAgentTests: XCTestCase {
         XCTAssertEqual(answer, .some(Copy.addFailed("Eve")))
     }
 }
+
+final class LockedRemoveTests: XCTestCase {
+    // The door refuses a locked agent; the person gets the app's own line, and the app isn't taken away.
+    func testALockedRemoveSaysSoInTheAppsWords() {
+        let door = FakeDoor()
+        defer { door.close() }
+        door.answer = { r in
+            switch r["op"] as? String {
+            case "subscribe": return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
+            case "remove", "remove_agent": return ["op": "result", "ref": r["ref"] ?? "", "ok": false, "error": "notifiers_locked", "message": "The door's words."]
+            default: return ["op": "result", "ref": r["ref"] ?? "", "ok": true]
+            }
+        }
+        let c = Controller(socketPath: door.path, turnedOn: true)
+        c.start()
+        defer { c.stop() }
+        XCTAssertTrue(waitUntil(3) { c.state.connection == .connected && !c.state.catchingUp })
+        var one: String?, all: String?
+        c.removeAgent("aa") { one = $0 }
+        c.remove { all = $0 }
+        XCTAssertTrue(waitUntil { one != nil && all != nil })
+        XCTAssertEqual([one, all], [Copy.removeAgentLocked("Ann"), Copy.removeLocked])
+        XCTAssertEqual(c.state.agents.map(\.name), ["Ann"], "nothing removed")
+    }
+}

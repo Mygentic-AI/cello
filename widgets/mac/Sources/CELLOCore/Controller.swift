@@ -325,7 +325,7 @@ public final class Controller {
                 self.changed()
                 done(nil)
             } else {
-                done(reply.error == "not_connected" ? Copy.notConnected : Copy.removeFailed)
+                done(reply.error == "not_connected" ? Copy.notConnected : reply.error == "notifiers_locked" ? Copy.removeLocked : Copy.removeFailed)
             }
         }
     }
@@ -340,7 +340,12 @@ public final class Controller {
                 self.changed()
                 done(nil)
             } else {
-                done(reply.error == "not_connected" ? Copy.notConnected : reply.error == "no_such_agent" ? Copy.agentNotHere(name) : Copy.removeAgentFailed(name))
+                switch reply.error {
+                case "not_connected": done(Copy.notConnected)
+                case "no_such_agent": done(Copy.agentNotHere(name))
+                case "notifiers_locked": done(Copy.removeAgentLocked(name))
+                default: done(Copy.removeAgentFailed(name))
+                }
             }
         }
     }

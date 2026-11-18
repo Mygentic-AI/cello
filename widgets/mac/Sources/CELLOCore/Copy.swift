@@ -161,6 +161,9 @@ public enum Copy {
     public static func removeAgentFailed(_ agent: String) -> String { "\(agent) couldn't be removed right now, so nothing changed. Try again in a moment." }
     public static let remove = "Remove"
     public static let cancel = "Cancel"
+    // An agent locked against changes from here keeps the Mac until a person removes it in Terminal.
+    public static func removeAgentLocked(_ agent: String) -> String { "\(agent) is locked against changes from here, so it can only be removed from Terminal on this Mac." }
+    public static let removeLocked = "Some of your agents are locked against changes from here, so nothing was removed. Remove them from Terminal on this Mac first."
     public static let removeFailed = "CELLO couldn't be removed right now, so nothing changed. Try again in a moment."
 
     // The menu-bar looks, for VoiceOver.
