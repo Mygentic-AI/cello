@@ -65,7 +65,9 @@ public enum Copy {
         return "\(andList(agents)) can reach you here. This is how a question from them will look."
     }
     public static func joinedTitle(_ agent: String) -> String { "\(agent) can reach you here now" }
-    public static let joinedBody = "Not you? Open CELLO › Settings to remove them."
+    // The design's line is "Not you? Open CELLO › Settings to remove her." Settings can't remove one agent yet (the door
+    // only removes the Mac from all of them), so this says only what Settings does. Andre's call which way to close it.
+    public static let joinedBody = "Not you? Open CELLO › Settings to see every agent that can reach you here."
 
     // The panel
     public static func waitingHeader(_ count: Int) -> String { "WAITING FOR YOU · \(count)" }
