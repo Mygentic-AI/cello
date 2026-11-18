@@ -1019,10 +1019,21 @@ test("while paused the app gets each one silently and the agent hears the operat
   assert.match(answer.queued_note, /paused CELLO.*away\. It's waiting in their CELLO panel for when they're back\. Don't send it again\./);
   const quiet = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the silent push");
   assert.equal(quiet["silent"], true);
+  // A second app connecting during the pause gets what's waiting silently too, and its subscribe says it's paused.
+  const second = await StandInMacApp.open(door);
+  assert.notEqual(second.subscribed["paused_until"], null);
+  const kept = await second.app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the kept one on connecting during the pause");
+  assert.equal(kept["silent"], true);
+  await second.app.close();
   const before = app.frames.length;
   await app.request({ op: "resume" });
   await settle();
   assert.ok(!app.frames.slice(before).some((f) => f["op"] === "notification"), "nothing is replayed on resume");
+  // Once the pause is over, an app connecting gets it with silent off, so the app's one summary banner can include it.
+  const after = await StandInMacApp.open(door);
+  const loud = await after.app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the kept one after the pause");
+  assert.deepEqual([loud["silent"], loud["shown"]], [false, false]);
+  await after.app.close();
   await app.close();
 });
 
