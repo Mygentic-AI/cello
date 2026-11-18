@@ -48,6 +48,12 @@ importers:
       typescript-eslint:
         specifier: latest
         version: 8.72.1(eslint@10.14.0)(typescript@6.0.3)
+    optionalDependencies:
+      '@cello-protocol/mac-app':
+        specifier: workspace:*
+        version: link:mac-app
+
+  mac-app: {}
 
 packages:
 

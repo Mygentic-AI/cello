@@ -40,6 +40,9 @@
     "ws": "latest",
     "zod": "latest"
   },
+  "optionalDependencies": {
+    "@cello-protocol/mac-app": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "latest",
     "@types/ws": "latest",

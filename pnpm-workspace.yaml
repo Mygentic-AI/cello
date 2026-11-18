@@ -1,0 +1,5 @@
+# The prebuilt Mac app is its own package beside the cli, so the cli can name it as an optional dependency with
+# workspace:*. pnpm pack and pnpm publish write that as the exact version, so the cli always installs the app of its own
+# release. npm pack would leave workspace:* as it is, which is one more reason releases go through pnpm only.
+packages:
+  - mac-app

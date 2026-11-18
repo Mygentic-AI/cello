@@ -28,3 +28,5 @@ coverage/
 # The Mac app: SwiftPM's build folder and the assembled CELLO.app
 widgets/mac/.build/
 widgets/mac/build/
+mac-app/CELLO.app/
+mac-app/work/

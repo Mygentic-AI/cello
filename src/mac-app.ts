@@ -3,7 +3,8 @@
 // how to undo it, and then done, with no prompt, so an agent can run it: the person's click in the app is the real gate.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DaemonRefused } from "./ipc/client.ts";
@@ -24,19 +25,23 @@ export interface MacAppEnv {
   node: string;
   cli: string;
   platform: NodeJS.Platform;
+  // Where the prebuilt CELLO.app is, from the installed mac-app package, or undefined when that package isn't installed.
+  packagedApp: () => string | undefined;
   run: (command: string, args: string[]) => Ran;
   // Each step as it's taken. The command line prints them on standard error; a tool's answer carries them.
   say: (line: string) => void;
 }
 
 export function macAppEnv(cli: string, celloHome: string, say: (line: string) => void): MacAppEnv {
+  const packageRoot = resolve(dirname(cli), "..");
   return {
     home: homedir(),
     celloHome,
-    packageRoot: resolve(dirname(cli), ".."),
+    packageRoot,
     node: process.execPath,
     cli,
     platform: process.platform,
+    packagedApp: () => findPackagedApp(packageRoot),
     run: (command, args) => {
       const ran = spawnSync(command, args, { encoding: "utf8" });
       return { status: ran.error ? null : ran.status, stdout: ran.stdout ?? "", stderr: ran.stderr ?? (ran.error?.message ?? "") };
@@ -47,9 +52,22 @@ export function macAppEnv(cli: string, celloHome: string, say: (line: string) =>
 
 export const appPath = (home: string): string => join(home, "Applications", "CELLO.app");
 export const launchFile = (home: string): string => join(home, "Library", "Application Support", "CELLO", "launch.json");
-// TODO(mac app): the prebuilt app becomes a macOS-only npm package (os: darwin), an optional dependency, per decision 6.
-// Until then the only prebuilt one is what widgets/mac/scripts/assemble.sh leaves in a checkout.
-export const prebuiltPath = (packageRoot: string): string => join(packageRoot, "widgets", "mac", "build", "CELLO.app");
+
+// The prebuilt app is its own package, which cello names as an optional dependency and npm installs only on a Mac.
+export const MAC_APP_PACKAGE = "@cello-protocol/mac-app";
+
+// Node's own lookup from cello's package.json, because npm -g nests the package under cello and other installs put it beside.
+// Undefined when it isn't installed.
+export function findPackagedApp(packageRoot: string): string | undefined {
+  try {
+    const manifest = createRequire(join(packageRoot, "package.json")).resolve(`${MAC_APP_PACKAGE}/package.json`);
+    return join(dirname(manifest), "CELLO.app");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") return undefined;
+    throw err;
+  }
+}
+
 const assembleScript = (packageRoot: string): string => join(packageRoot, "widgets", "mac", "scripts", "assemble.sh");
 
 const refuse = (code: string, message: string): never => {
@@ -68,6 +86,8 @@ function checkApp(app: string, from: string): void {
   const plist = join(app, "Contents", "Info.plist");
   if (!existsSync(join(app, "Contents", "MacOS", "CELLO")) || !existsSync(plist)) refuse("mac_app_missing", `${from} ${app} isn't a CELLO app: it has no Contents/MacOS/CELLO and Info.plist. Nothing was changed.`);
   if (!readFileSync(plist, "utf8").includes(`<string>${BUNDLE_ID}</string>`)) refuse("mac_app_missing", `${app} isn't the CELLO app: its Info.plist doesn't name ${BUNDLE_ID}. Nothing was changed.`);
+  // A packer that drops the exec bit leaves an app that's signed and whole but that macOS won't start.
+  if ((statSync(join(app, "Contents", "MacOS", "CELLO")).mode & 0o111) === 0) refuse("mac_app_broken", `${from} ${app} can't run: Contents/MacOS/CELLO isn't executable, so macOS wouldn't open it. Nothing was changed.`);
 }
 
 function build(env: MacAppEnv, say: (line: string) => void): string {
@@ -82,6 +102,15 @@ function build(env: MacAppEnv, say: (line: string) => void): string {
     refuse("mac_app_build_failed", `Building CELLO failed, so nothing was changed. The last lines:\n${tail}`);
   }
   return join(out, "CELLO.app");
+}
+
+const OTHER_WAYS = "Or build CELLO with --build, in a checkout of the cello repository with the Xcode command-line tools, or give one you built with --app <path>. Nothing was changed.";
+
+function packagedSource(env: MacAppEnv): string {
+  const app = env.packagedApp();
+  if (app === undefined) return refuse("mac_app_missing", `This install of cello came without the prebuilt CELLO app: ${MAC_APP_PACKAGE}, which npm installs with cello on a Mac, isn't installed. Installing cello again with npm i -g @cello-protocol/cli@latest brings it, unless optional packages are turned off. ${OTHER_WAYS}`);
+  if (!existsSync(app)) return refuse("mac_app_missing", `${MAC_APP_PACKAGE} is installed but holds no CELLO app at ${app}. Installing cello again replaces it. ${OTHER_WAYS}`);
+  return app;
 }
 
 export interface Installed {
@@ -122,8 +151,7 @@ export function install(params: Record<string, unknown>, env: MacAppEnv): Instal
     source = build(env, say);
     checkApp(source, "The build left");
   } else {
-    source = prebuiltPath(env.packageRoot);
-    if (!existsSync(source)) refuse("mac_app_missing", `This install of cello doesn't carry a prebuilt CELLO app yet (${source}). Build one with --build, in a checkout with the Xcode command-line tools, or give one you built with --app <path>. Nothing was changed.`);
+    source = packagedSource(env);
     checkApp(source, "The prebuilt");
   }
 
