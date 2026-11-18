@@ -3,7 +3,7 @@
 import Foundation
 import os
 
-private let log = Logger(subsystem: "ai.mygentic.cello", category: "door")
+private let log = Logger(subsystem: "com.celloprotocol.cello", category: "door")
 
 public protocol ControllerDelegate: AnyObject {
     func stateChanged(_ controller: Controller)

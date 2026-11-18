@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { DaemonRefused } from "../src/ipc/client.ts";
 import { type MacAppEnv, type Ran, addNotifier, appPath, launchFile, prebuiltPath } from "../src/mac-app.ts";
 
-function fakeApp(at: string, binary = "binary-1", id = "ai.mygentic.cello"): void {
+function fakeApp(at: string, binary = "binary-1", id = "com.celloprotocol.cello"): void {
   mkdirSync(join(at, "Contents", "MacOS"), { recursive: true });
   writeFileSync(join(at, "Contents", "MacOS", "CELLO"), binary);
   writeFileSync(join(at, "Contents", "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>${id}</string></dict></plist>`);

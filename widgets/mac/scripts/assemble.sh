@@ -44,7 +44,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>ai.mygentic.cello</string>
+  <key>CFBundleIdentifier</key><string>com.celloprotocol.cello</string>
   <key>CFBundleName</key><string>CELLO</string>
   <key>CFBundleDisplayName</key><string>CELLO</string>
   <key>CFBundleExecutable</key><string>CELLO</string>

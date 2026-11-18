@@ -8,7 +8,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DaemonRefused } from "./ipc/client.ts";
 
-export const BUNDLE_ID = "ai.mygentic.cello";
+// From the product's own domain, celloprotocol.com.
+export const BUNDLE_ID = "com.celloprotocol.cello";
 
 export interface Ran { status: number | null; stdout: string; stderr: string }
 

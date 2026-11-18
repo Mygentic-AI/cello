@@ -4,7 +4,7 @@ import CELLOCore
 import os
 import SwiftUI
 
-private let log = Logger(subsystem: "ai.mygentic.cello", category: "app")
+private let log = Logger(subsystem: "com.celloprotocol.cello", category: "app")
 private let turnedOnKey = "turnedOn"
 
 final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NSPopoverDelegate {
