@@ -2,6 +2,7 @@
 // so nothing can exist in one and not the other. The daemon is the only place real work happens.
 // One name throughout: the command create-agent is the tool cello_create_agent and the daemon method create_agent.
 import { POLICY_GUIDANCE } from "../guidance.ts";
+import { NOTIFIER_TYPES } from "../notifier-types.ts";
 import { presentedText, publicSignalsText, signalViewText, signalsListText } from "../signals-text.ts";
 
 export interface Param {
@@ -16,6 +17,22 @@ export interface Param {
   programOnly?: boolean;
   // The daemon refuses without it, in words that say how to fix it. A schema's refusal wouldn't.
   daemonEnforced?: boolean;
+  // A secret. On the command line, - reads it from standard input, so it stays out of the shell's history.
+  secret?: boolean;
+  // Taken only by these kinds of a command with kinds, such as one notifier type.
+  forKinds?: readonly string[];
+}
+
+// One kind of a command whose options depend on it, such as a notifier's type.
+export interface Kind {
+  name: string;
+  // One line, for the list of kinds.
+  summary: string;
+  // What an agent needs to know to set it up.
+  setup: string;
+  // The same for a person at a terminal, a step to a line.
+  steps: readonly string[];
+  params: readonly Param[];
 }
 
 interface Definition {
@@ -38,6 +55,9 @@ interface Definition {
   // How the command line shows the answer to a person. --json gets the answer itself, as a tool does.
   plain?: (result: never) => string;
   params: readonly Param[];
+  // A command whose options depend on one positional, such as notifier-add's type. Its own help lists the kinds and the
+  // options they share, from intro, and '<kind> -h' shows one kind. description, for a tool, covers every kind.
+  kinds?: { param: string; intro: string; list: readonly Kind[] };
 }
 
 export interface Operation extends Definition {
@@ -74,6 +94,24 @@ function collectText(result: CollectAnswer): string {
 }
 
 const SIGNAL_HASH: Param = { name: "hash", kind: "string", required: true, positional: true, description: "At least 8 hex characters of the signal's hash. signals-list shows them." };
+
+// Every kind's own options as one list, for a tool's schema and the command line's parsing. Each says which kinds take it.
+function kindParams(kinds: readonly Kind[]): Param[] {
+  const merged = new Map<string, Param>();
+  for (const kind of kinds) {
+    for (const param of kind.params) {
+      const earlier = merged.get(param.name);
+      const said = `${kind.name}: ${lowerFirst(param.description)}`;
+      merged.set(param.name, earlier
+        ? { ...earlier, forKinds: [...(earlier.forKinds ?? []), kind.name], description: `${earlier.description} ${said}` }
+        : { ...param, forKinds: [kind.name], description: said });
+    }
+  }
+  return [...merged.values()];
+}
+const lowerFirst = (text: string): string => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+
+const NOTIFIER_ADD_INTRO = "Set up a notifier: a route notify uses to reach the agent's human operator. Anyone can do this, an agent included. Notifiers the agent already had are told a new one was added. If the agent's setting notifiers.anyone_can_change is off, adding or removing one takes a person, and the refusal gives the command to relay.";
 
 const SESSION: Param = { name: "session_id", kind: "string", required: true, positional: true, description: "The session id, 32 hex characters" };
 
@@ -981,12 +1019,12 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Set up a way to reach the agent's human operator, such as Telegram.",
     scoped: true,
     acts: false,
-    description: "Set up a notifier: a route notify uses to reach the agent's human operator. Anyone can do this, an agent included. For telegram, the person makes a bot with @BotFather, sends that bot any message, and gives you the bot's token. With no chat_id, it uses the chat that wrote to the bot last and says whose it is. One bot can serve all of a person's agents: for the next agent, name one that already has it with same_as, and no token is needed. Replies from a bot can be read on one machine only, so an agent on another machine needs its own bot. The token and the chat are checked with Telegram, and a test message is sent, before anything is saved. The token is kept in the encrypted database and never shown again. Notifiers the agent already had are told a new one was added. If the agent's setting notifiers.anyone_can_change is off, adding or removing one takes a person, and the refusal gives the command to relay.",
+    description: `${NOTIFIER_ADD_INTRO} ${NOTIFIER_TYPES.map((type) => `For ${type.name}, ${lowerFirst(type.setup)}`).join(" ")}`,
+    kinds: { param: "type", intro: NOTIFIER_ADD_INTRO, list: NOTIFIER_TYPES },
     params: [
-      { name: "type", kind: "string", required: true, positional: true, allowed: ["telegram"], description: "What kind of notifier." },
-      { name: "bot_token", kind: "string", description: "telegram: the bot's token, from @BotFather. On the command line, - reads it from standard input, which keeps it out of the shell's history." },
-      { name: "same_as", kind: "string", description: "An agent on this machine that already has a notifier: its name or agent_id. This agent gets the same bot and chat, with no token to give. Use it in place of bot_token." },
-      { name: "chat_id", kind: "string", description: "telegram: the id of the chat to write to. Left out: the chat that wrote to the bot last." },
+      { name: "type", kind: "string", required: true, positional: true, allowed: NOTIFIER_TYPES.map((type) => type.name), description: `What kind of notifier: ${NOTIFIER_TYPES.map((type) => type.name).join(", ")}.` },
+      ...kindParams(NOTIFIER_TYPES),
+      { name: "same_as", kind: "string", description: "An agent on this machine that already has a notifier of this type: its name or agent_id. This agent gets the same one, such as the same bot and chat, with nothing secret to give again. Use it in place of the type's secret, such as bot_token." },
       { name: "name", kind: "string", description: "Your name for it, 1 to 32 letters, digits, underscores or dashes. Left out: its type." },
     ],
   },

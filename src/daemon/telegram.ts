@@ -2,20 +2,19 @@
 // The bot token is part of the address, so nothing here ever puts an address in an error.
 import { type RequestOptions, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { DeliveryError } from "./notifier-adapter.ts";
 
 // Where Telegram is, how long one call may take, and how long a wait for new messages is held open. Only a test changes these.
 export interface TelegramEndpoint { apiUrl: string; timeoutMs: number; pollSeconds: number }
 export const TELEGRAM: TelegramEndpoint = { apiUrl: "https://api.telegram.org", timeoutMs: 6_000, pollSeconds: 25 };
 
-export class TelegramError extends Error {
+// maybeSent: the message reached Telegram and wasn't confirmed, so it may have been shown.
+export class TelegramError extends DeliveryError {
   // Telegram's own error number, when it gave one: 401 is a token it doesn't know, 409 is another reader on the same bot.
   readonly code: number | undefined;
-  // The message reached Telegram and wasn't confirmed: it may have been shown. Sending it again risks showing it twice.
-  readonly maybeSent: boolean;
   constructor(message: string, code?: number, maybeSent = false) {
-    super(message);
+    super(message, maybeSent);
     this.code = code;
-    this.maybeSent = maybeSent;
   }
 }
 

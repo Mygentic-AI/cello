@@ -12,6 +12,8 @@ import { LocalError } from "../src/daemon/errors.ts";
 import { Notifiers } from "../src/daemon/notifiers.ts";
 import { Store } from "../src/daemon/store.ts";
 import { TelegramError, sendText } from "../src/daemon/telegram.ts";
+import { OPERATIONS } from "../src/ipc/operations.ts";
+import { NOTIFIER_TYPES, addCommand } from "../src/notifier-types.ts";
 
 const TOKEN = "123456:secret-bot-token";
 const AGENT = "07".repeat(32);
@@ -753,4 +755,22 @@ test("a database from 0.0.324 keeps its Telegram notifier, token and all, when t
   assert.deepEqual(listed.notifiers.map((n) => [n.notifier, n.bot, n.chat_id]), [["phone", "@andre_cello_bot", "55"]]);
   assert.equal((await notifiers.notify(AGENT, {}) as { sent: boolean }).sent, true);
   assert.equal(sent.at(-1)?.token, TOKEN, "the token survived and still reaches Telegram");
+});
+
+test("a locked agent's refusal relays the same add command as before, and never echoes a token", () => {
+  const quote = (value: unknown): string => `'${String(value ?? "").replaceAll("'", "'\\''")}'`;
+  assert.equal(addCommand({ type: "telegram", bot_token: TOKEN }, "A", quote), "cello notifier-add 'telegram' --bot-token <token> --agent A");
+  assert.equal(addCommand({ type: "telegram", bot_token: TOKEN, chat_id: "55" }, "A", quote), "cello notifier-add 'telegram' --bot-token <token> --chat-id '55' --agent A");
+  assert.equal(addCommand({ type: "telegram", same_as: "Ann", chat_id: "55", name: "work" }, "A", quote), "cello notifier-add 'telegram' --same-as 'Ann' --chat-id '55' --name 'work' --agent A");
+});
+
+test("notifier-add's tool is built from the registry: every type, and each type's own options marked as its own", () => {
+  const op = OPERATIONS.find((o) => o.command === "notifier-add");
+  assert.ok(op?.kinds);
+  assert.deepEqual(op.params.find((p) => p.name === "type")?.allowed, NOTIFIER_TYPES.map((t) => t.name));
+  for (const type of NOTIFIER_TYPES) {
+    for (const own of type.params) assert.ok(op.params.find((p) => p.name === own.name)?.forKinds?.includes(type.name), `${type.name} ${own.name}`);
+    assert.ok(op.description.includes(`For ${type.name}, `));
+  }
+  assert.deepEqual(op.params.filter((p) => p.forKinds === undefined).map((p) => p.name), ["type", "same_as", "name"]);
 });
