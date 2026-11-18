@@ -126,7 +126,7 @@ test("discovery end to end: an agent with a public Usage signal lists itself and
   // agent's own claim and doesn't count it: the reader decides. On production both read the same signed list.
   assert.match(showPlain, /^Trust signals: 0 of 6$/m);
   assert.match(showPlain, /^Missing: Usage, GitHub, X, Email, Phone, Passkey$/m);
-  assert.match(showPlain, /^• usage, from an issuer this machine doesn't recognise .*: only the agent's own claim: .*conversation/m);
+  assert.match(showPlain, /^• Usage, from an issuer this machine doesn't recognise .*: only the agent's own claim: .*conversation/m);
   // The owner's view, asked for an agent that isn't on this machine, points to discover show instead of saying "create it".
   const notMine = bea.refused(["listing", "show", "--agent", annId], "not_your_agent");
   assert.match(String(notMine["message"]), /cello discover show/);

@@ -364,8 +364,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
         engine.resolveAgent(named);
       } catch (err: unknown) {
         if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
-        const address = /^[0-9a-f]{64}(@.+)?$/.test(named) ? named : "<its address>";
-        throw new LocalError("not_your_agent", `listing show is for agents on this machine, and ${named} isn't one. To see another agent's listing and its signals: cello discover show ${address}`);
+        if (/^[0-9a-f]{64}(@.+)?$/.test(named)) throw new LocalError("not_your_agent", `listing show is for agents on this machine, and ${named} isn't one. To see another agent's listing and its signals: cello discover show ${named}`);
+        throw new LocalError("unknown_agent", `No agent on this machine is called ${named}: check the name with cello agents. To see another agent's listing and its signals, use its address: cello discover show <address>`);
       }
       return discovery.show(acting(params), optionalText(params, "channel"));
     }

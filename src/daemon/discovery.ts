@@ -5,11 +5,11 @@
 import { readRecord } from "../protocol/channel.ts";
 import { toHex } from "../protocol/encode.ts";
 import type { PublicIdentity, Signer } from "../protocol/identity.ts";
-import { type ListingKind, decodeListing, listingSignedBy, signListing } from "../protocol/listing.ts";
+import { type ListingKind, SIGNAL_SLOTS, decodeListing, listingSignedBy, signListing } from "../protocol/listing.ts";
 import { ChannelVisibility, type ListingFields } from "../protocol/structures.ts";
 import { identityCodec, toB64 } from "../protocol/wire.ts";
 import type { InboundVerdict } from "../screener/inbound.ts";
-import { formatAddress } from "./address.ts";
+import { formatAddress, parseAddress } from "./address.ts";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
 
@@ -35,6 +35,22 @@ const hexId = (value: string | undefined, what: string): string => {
   if (value === undefined || !/^[0-9a-f]{64}$/.test(value)) throw new LocalError("bad_argument", `${what} is a 64-character hex id`);
   return value;
 };
+
+// What the server alone says, unsigned by anyone: checked for shape and re-made here, so it can carry no text of its own onto a screen.
+function serverDate(key: string, value: unknown): Record<string, string> {
+  if (typeof value !== "string") return {};
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? { [key]: new Date(time).toISOString() } : {};
+}
+function serverCount(readers: unknown): { readers?: number } {
+  return typeof readers === "number" && Number.isSafeInteger(readers) && readers >= 0 ? { readers } : {};
+}
+function serverSignals(value: unknown): { count: number; of: number; slots: string[] } | undefined {
+  const v = value as { count?: unknown; of?: unknown; slots?: unknown } | undefined;
+  if (!v || !Number.isSafeInteger(v.count) || !Number.isSafeInteger(v.of) || !Array.isArray(v.slots)) return undefined;
+  const slots = (v.slots as unknown[]).filter((slot): slot is string => typeof slot === "string" && (SIGNAL_SLOTS as readonly string[]).includes(slot));
+  return { count: v.count as number, of: v.of as number, slots };
+}
 
 // "a, b,c" to "a,b,c", lowercased; the shared rules then refuse anything that isn't a tag.
 const tagList = (tags: string | undefined): string => (tags ?? "").split(",").map((tag) => tag.trim().toLowerCase()).filter((tag) => tag !== "").join(",");
@@ -84,7 +100,7 @@ export class Discovery {
       const screening = verdict.delivered === null ? {} : { screening: { verdict: verdict.verdict, findings: verdict.findings } };
       const common = { name: fields.name, preview, tags: fields.tags === "" ? [] : fields.tags.split(","), language: fields.language ?? "en", ...screening };
       // What the server alone says, unsigned by the owner: its count of trust signals, its reader count, when it was listed.
-      const serverSays = { listed_at: raw.listed_at, ...(kind === "agent" ? { signals: raw.signals } : raw.readers === undefined ? {} : { readers: raw.readers }) };
+      const serverSays = { ...serverDate("listed_at", raw.listed_at), ...(kind === "agent" ? { signals: serverSignals(raw.signals) } : serverCount(raw.readers)) };
       shown.push(kind === "agent"
         ? { ...common, name_self_declared: true, address: formatAddress(raw.id, this.#hooks.serverUrl()), agent_id: raw.id, ...serverSays }
         : { ...common, channel: raw.id, access: checked.access, ...serverSays });
@@ -129,12 +145,14 @@ export class Discovery {
   async showOne(agentHex: string, target: string): Promise<unknown> {
     const id = this.#targetId(target);
     const answer = await this.#hooks.call(agentHex, "discover.get", { subject: toB64(Buffer.from(id, "hex")) }) as { listed?: boolean; kind?: unknown; result?: RawResult & { expires_at?: unknown } };
-    if (answer.listed !== true) return { listed: false, id, note: "Nothing is listed under that id on this server. The agent or channel may never have listed, or its listing is out of search." };
+    if (answer.listed === false) return { listed: false, id, note: "Nothing is listed under that id on this server. The agent or channel may never have listed, or its listing is out of search." };
+    if (answer.listed !== true) throw new LocalError("bad_response", "the server's answer to discover show is malformed");
     if (answer.kind !== "agent" && answer.kind !== "channel") throw new LocalError("bad_response", "the server's answer names no kind of listing");
     const kind: ListingKind = answer.kind;
     const raw = answer.result as RawResult;
     if (raw.id !== id) throw new LocalError("bad_response", "the server answered with a different listing than the one asked for");
     const checked = await this.#verified(kind, raw);
+    if (!checked.ok) logEvent("discover.unverified", { agent: agentHex, kind, listing: id, reason: checked.reason });
     if (!checked.ok) throw new LocalError("listing_unverified", `The server's copy of this listing failed the check here (${checked.reason}), so nothing of it is shown.`);
     const { fields } = checked;
     const verdict = await this.#hooks.screen(agentHex, `listing:${raw.id}`, raw.id, [fields.name, fields.tags.replaceAll(",", " "), fields.description].join("\n"));
@@ -142,10 +160,10 @@ export class Discovery {
     const description = verdict.delivered === null ? fields.description : verdict.delivered.slice(verdict.delivered.indexOf("\n\n") + 2).split("\n").slice(2).join("\n");
     const common = {
       listed: true, kind, name: fields.name, description, tags: fields.tags === "" ? [] : fields.tags.split(","), language: fields.language ?? "en",
-      listed_at: raw.listed_at, ...(typeof answer.result?.expires_at === "string" ? { expires_at: answer.result.expires_at } : {}),
+      ...serverDate("listed_at", raw.listed_at), ...serverDate("expires_at", answer.result?.expires_at),
       ...(verdict.delivered === null ? {} : { screening: { verdict: verdict.verdict, findings: verdict.findings } }),
     };
-    if (kind === "channel") return { ...common, channel: id, access: checked.access, ...(raw.readers === undefined ? {} : { readers: raw.readers }), join: `cello channel-join ${id}` };
+    if (kind === "channel") return { ...common, channel: id, access: checked.access, ...serverCount(raw.readers), join: `cello channel-join ${id}` };
     const address = formatAddress(id, this.#hooks.serverUrl());
     const signals = await this.#hooks.lookupSignals(agentHex, address) as { signals: Record<string, unknown>[]; refused: unknown[] };
     return { ...common, name_self_declared: true, agent_id: id, address, signals: signals.signals, refused_signals: signals.refused, talk: `cello initiate-session ${address}` };
@@ -156,7 +174,7 @@ export class Discovery {
     const at = target.indexOf("@");
     const id = at === -1 ? target : target.slice(0, at);
     if (!/^[0-9a-f]{64}$/.test(id)) throw new LocalError("bad_argument", "Give an address (<id>@<server>) or a 64-character id, as discover agents or discover channels shows it.");
-    if (at !== -1 && formatAddress(id, this.#hooks.serverUrl()) !== target) throw new LocalError("other_server", "That address is on another server. Discovery shows only listings on this agent's own server for now.");
+    if (at !== -1 && parseAddress(target).server !== this.#hooks.serverUrl()) throw new LocalError("other_server", "That address is on another server. Discovery shows only listings on this agent's own server for now.");
     return id;
   }
 

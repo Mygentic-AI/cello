@@ -2,7 +2,8 @@
 // so nothing can exist in one and not the other. The daemon is the only place real work happens.
 // One name throughout: the command create-agent is the tool cello_create_agent and the daemon method create_agent.
 import { POLICY_GUIDANCE } from "../guidance.ts";
-import { presentedText, publicSignalsText, signalViewText, signalsListText } from "../signals-text.ts";
+import { type SignalSlot, signalSlot } from "../protocol/listing.ts";
+import { presentedText, publicSignalsText, signalLabel, signalViewText, signalsListText } from "../signals-text.ts";
 
 export interface Param {
   name: string;
@@ -68,12 +69,10 @@ function discoverText(result: DiscoverAnswer): string {
   return `${lines.join("\n\n")}\n${notes.length > 0 ? `\n${notes.join("\n")}\n` : ""}`;
 }
 
-// One listing in full. The six slots in a fixed order, then anything else public, then what's missing.
-const SLOT_ORDER: readonly [string, string, readonly string[]][] = [
-  ["usage", "Usage", ["usage_detailed", "usage"]], ["github", "GitHub", ["github_id", "github_anon"]], ["x", "X", ["x_id", "x_anon"]],
-  ["email", "Email", ["email"]], ["phone", "Phone", ["phone"]], ["passkey", "Passkey", ["webauthn"]],
-];
-interface ShownSignal { type: string; claim?: string | null; issued_at: number; counts_as_verified: boolean; issuer_address: string }
+// One listing in full: the six slots in a fixed order, then what's missing, then anything else public. Which slot a type fills comes
+// from the shared rules, the same table the server counts with, so search and show can't count differently.
+const SLOT_ORDER: readonly [SignalSlot, string][] = [["usage", "Usage"], ["github", "GitHub"], ["x", "X"], ["email", "Email"], ["phone", "Phone"], ["passkey", "Passkey"]];
+interface ShownSignal { type: string; claim?: string | null; issued_at: number; counts_as_verified: boolean; issuer_standing: string; issuer_address: string }
 interface ShowAnswer {
   listed: boolean; id?: string; note?: string; kind?: string; name?: string; description?: string; tags?: string[]; language?: string; listed_at?: string; expires_at?: string;
   address?: string; channel?: string; access?: string; readers?: number; signals?: ShownSignal[]; refused_signals?: unknown[]; talk?: string; join?: string; screening?: { verdict: string };
@@ -93,8 +92,8 @@ function showText(r: ShowAnswer): string {
     const used = new Set<ShownSignal>();
     const lines: string[] = [];
     const missing: string[] = [];
-    for (const [, label, types] of SLOT_ORDER) {
-      const inSlot = signals.filter((s) => types.includes(s.type) && s.counts_as_verified);
+    for (const [slot, label] of SLOT_ORDER) {
+      const inSlot = signals.filter((s) => signalSlot(s.type) === slot && s.counts_as_verified);
       if (inSlot.length === 0) { missing.push(label); continue; }
       for (const s of inSlot) {
         used.add(s);
@@ -103,13 +102,14 @@ function showText(r: ShowAnswer): string {
       }
     }
     const counted = SLOT_ORDER.length - missing.length;
-    const issuers = [...new Set(signals.filter((s) => used.has(s)).map((s) => s.issuer_address))];
-    out.push("", `Trust signals: ${counted} of ${SLOT_ORDER.length}${issuers.length > 0 ? `, from ${issuers.join(", ")} (recognised)` : ""}`, ...lines);
+    // An issuer on the signed list reads "recognised"; one only the owner of this machine trusts says so, and never claims the list.
+    const issuers = [...new Set(signals.filter((s) => used.has(s)).map((s) => `${s.issuer_address} (${s.issuer_standing === "trusted_by_owner" ? "trusted on this machine" : "recognised"})`))];
+    out.push("", `Trust signals: ${counted} of ${SLOT_ORDER.length}${issuers.length > 0 ? `, from ${issuers.join(", ")}` : ""}`, ...lines);
     if (missing.length > 0) out.push(`Missing: ${missing.join(", ")}`);
     const rest = signals.filter((s) => !used.has(s));
     if (rest.length > 0) {
       out.push("", "Also public:");
-      for (const s of rest) out.push(`• ${s.type}${s.counts_as_verified ? "" : `, from an issuer this machine doesn't recognise (${s.issuer_address}): only the agent's own claim`}: ${(s.claim ?? "(no readable claim)").split("\n").join("\n  ")}`);
+      for (const s of rest) out.push(`• ${signalLabel(s.type)}${s.counts_as_verified ? "" : `, from an issuer this machine doesn't recognise (${s.issuer_address}): only the agent's own claim`}: ${(s.claim ?? "(no readable claim)").split("\n").join("\n  ")}`);
     }
     if ((r.refused_signals ?? []).length > 0) out.push(`${(r.refused_signals ?? []).length} public signal(s) failed a check here and were left out.`);
   }

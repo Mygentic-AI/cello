@@ -401,15 +401,11 @@ export class Wallet {
   }
 
   // The claim is quoted and screened, and never joins our words. Blocked text doesn't come through at all.
-  async #notes(agentHex: string, row: WalletRow, standing: IssuerStanding): Promise<string[]> {
+  async #notes(agentHex: string, row: WalletRow, standing: IssuerStanding, screened?: string | null): Promise<string[]> {
     const notes: string[] = [];
     if (standing === "unknown") {
-      const claim = readClaim(new Uint8Array(row.payload));
-      let shown = "(this signal has no readable claim)";
-      if (claim !== null) {
-        const verdict = await this.#hooks.screen(agentHex, row.issuer_pubkey.slice(0, 64), claim);
-        shown = verdict.verdict === "blocked" ? `(withheld: ${verdict.reason ?? "the screen blocked it"})` : verdict.delivered ?? claim;
-      }
+      // The claim screened once: by the caller when it has it, here otherwise.
+      const shown = (screened === undefined ? await this.#claim(agentHex, row) : screened) ?? "(this signal has no readable claim)";
       notes.push(unknownIssuerNote(plainName(row.issuer_address), shown));
     }
     if (row.expires_at === null) notes.push(NO_EXPIRY_NOTE);
@@ -426,7 +422,7 @@ export class Wallet {
     return verdict.delivered ?? claim;
   }
 
-  async #describe(agentHex: string, row: WalletRow, list: IssuerList | null, now: number): Promise<Record<string, unknown>> {
+  async #describe(agentHex: string, row: WalletRow, list: IssuerList | null, now: number, screened?: string | null): Promise<Record<string, unknown>> {
     const envelopeKeys = issuerKeys({ issuer_pubkey: row.issuer_pubkey } as never);
     const standing = issuerStanding(row, envelopeKeys, list, this.#signals.trusted(), now);
     return {
@@ -449,7 +445,7 @@ export class Wallet {
       public: row.public !== 0,
       taking_back: row.public === 2,
       signal_id: toHex(readSignedSignal(new Uint8Array(row.file)).envelope.signal_id),
-      notes: await this.#notes(agentHex, row, standing),
+      notes: await this.#notes(agentHex, row, standing, screened),
     };
   }
 
@@ -536,7 +532,8 @@ export class Wallet {
   }
 
   // Signals another agent showed, from a public listing or sealed with a call. Each file is checked here for itself: its signatures, that it names
-  // that agent, and its dates. A file that fails is left out and named. What passes is described for the reader asking, with no payload.
+  // that agent, and its dates. A file that fails is left out and named. What passes is described for the reader asking, with its claim, screened
+  // (Andre, 18 November: a reader must see what a signal says). Nothing else of the payload is passed on.
   async examine(agentHex: string, subjectHex: string, files: readonly Uint8Array[], event: string): Promise<{ signals: Record<string, unknown>[]; refused: SignalRefusal[] }> {
     const list = await this.#list();
     const now = nowSec();
@@ -556,7 +553,8 @@ export class Wallet {
         supersedes_hash: e.supersedes_hash === null ? null : toHex(e.supersedes_hash), same_operator: e.same_operator ? 1 : 0, status: "active", received_at: now * 1000,
         default_present: 1, consent_state: CONSENT_ACCEPTED, public: 1,
       };
-      signals.push({ ...(await this.#describe(agentHex, held, list, now)), claim: await this.#claim(agentHex, held) });
+      const claim = await this.#claim(agentHex, held);
+      signals.push({ ...(await this.#describe(agentHex, held, list, now, claim)), claim });
     }
     return { signals, refused };
   }
