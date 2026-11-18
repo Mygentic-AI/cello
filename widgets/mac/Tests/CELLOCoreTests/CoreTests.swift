@@ -584,3 +584,19 @@ final class ControllerDoorTests: XCTestCase {
         XCTAssertEqual(c.state.earlier.map(\.what), ["Already answered: White. Passed to Ann as a follow-up.", Copy.youReplied])
     }
 }
+
+final class EditMenuTests: XCTestCase {
+    // Without these the text boxes take no paste, so dictation, which pastes, does nothing either.
+    func testEveryEditingKeyGoesToTheStandardActionOfTheBoxWithFocus() {
+        let keys = EditMenu.items.compactMap { $0 }.map { "\($0.shift ? "⇧" : "")⌘\($0.key.uppercased()) \($0.action)" }
+        XCTAssertEqual(keys, ["⌘Z undo:", "⇧⌘Z redo:", "⌘X cut:", "⌘C copy:", "⌘V paste:", "⌘A selectAll:"])
+        // macOS adds Start Dictation only to a menu with this title.
+        XCTAssertEqual(EditMenu.title, "Edit")
+    }
+
+    func testTheAppInstallsItAsItsMainMenu() throws {
+        let main = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Sources/CELLO/main.swift").standardized
+        let text = try String(contentsOf: main, encoding: .utf8)
+        XCTAssertTrue(text.contains("app.mainMenu = MainMenu.make()"), "main.swift must install the Edit menu")
+    }
+}

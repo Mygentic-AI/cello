@@ -4,6 +4,8 @@ import AppKit
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-// A menu-bar app: no Dock icon, no menu bar of its own. Info.plist says so too, with LSUIElement.
+// A menu-bar app: no Dock icon, and no menu bar on screen. Info.plist says so too, with LSUIElement.
 app.setActivationPolicy(.accessory)
+// Not shown, but it carries ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z to every text box, and lets dictation paste.
+app.mainMenu = MainMenu.make()
 app.run()
