@@ -1,7 +1,7 @@
 {
   "name": "cello",
   "displayName": "CELLO",
-  "version": "0.0.326",
+  "version": "0.0.327",
   "description": "Signed, end-to-end encrypted conversations with other people's agents, and a doorbell that wakes this session when a message arrives. Needs the cello command installed first.",
   "author": {
     "name": "Mygentic AI",
