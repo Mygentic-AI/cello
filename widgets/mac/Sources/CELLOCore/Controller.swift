@@ -91,6 +91,7 @@ public final class Controller {
                 askToStart()
             } else if case let .other(code) = failure, failures >= failuresAfterStart, state.connection != .unreachable(.cannotConnect(code)) {
                 // Not "nothing there" but a refusal starting CELLO can't fix, such as permissions. Said, not waited on.
+                log.error("can't connect to \(self.socketPath, privacy: .public): \(String(cString: strerror(code)), privacy: .public) (errno \(code, privacy: .public))")
                 state.connection = .unreachable(.cannotConnect(code))
                 changed()
             }
@@ -239,8 +240,8 @@ public final class Controller {
             guard let self else { return }
             if reply.ok {
                 self.replyRefs.removeValue(forKey: key)
-                // Answered on another device first: CELLO says it went as a follow-up, and that's the line kept.
-                let said = reply.string("said")
+                // Answered on another device first: it went as a follow-up, worded here from what the door says it was.
+                let said = reply.fields["follow_up"] as? Bool == true ? reply.string("first_answer").map { Copy.followUp(first: $0, agent: reply.string("passed_to") ?? item.agent) } : nil
                 self.run(self.state.answered(itemID, what: said ?? (item.kind == .request ? Copy.youAnswered : Copy.youReplied), card: said ?? Copy.repliedCard(request: item.kind == .request, agent: item.agent), now: self.now()))
                 self.changed()
                 done(nil)
@@ -264,8 +265,9 @@ public final class Controller {
             guard let self else { return }
             if reply.ok {
                 self.replyRefs.removeValue(forKey: key)
-                let passed = Copy.passedTo(reply.string("passed_to") ?? name)
-                done(true, reply.string("note").map { "\(passed) \($0)" } ?? passed)
+                let to = reply.string("passed_to") ?? name
+                // The door's note is worded for agents; the app says the same thing its own way.
+                done(true, reply.string("note") == nil ? Copy.passedTo(to) : "\(Copy.passedTo(to)) \(Copy.notInSession(to))")
             } else {
                 if reply.error != "not_connected" { self.replyRefs.removeValue(forKey: key) }
                 done(false, Self.problem(reply, agent: name))

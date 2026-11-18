@@ -105,6 +105,10 @@ public enum Copy {
     public static let youReplied = "You replied"
     public static func earlierLine(agent: String, what: String, time: String) -> String { "\(agent) · \(what) · \(time)" }
     public static func passedTo(_ agent: String) -> String { "Passed to \(agent)." }
+    // Typed after the question was answered on another device: it went on as a follow-up.
+    public static func followUp(first: String, agent: String) -> String { "Already answered: \(first). Passed to \(agent) as a follow-up." }
+    // A message to an agent no session holds: it waits for the agent's next look.
+    public static func notInSession(_ agent: String) -> String { "\(agent) isn't in a session right now, so it will see this when it next checks." }
 
     // Failures of an answer, worded here rather than passed through.
     public static func didNotReach(_ agent: String) -> String { "That didn't reach \(agent). Try again from the CELLO panel." }
@@ -164,7 +168,7 @@ public enum Copy {
         switch why {
         case .stopped: return (unreachableStopped, unreachableFix)
         case .subscribeRefused: return (unreachableRefused, restartFix)
-        case let .cannotConnect(code): return (cannotConnect(code), restartFix)
+        case .cannotConnect: return (cannotConnect, restartFix)
         case .noDoor: return (unreachableNoDoor, restartFix)
         case .unknownInstall: return (unreachableUnknownInstall, unreachableFix)
         case .mismatch: return (unreachableMismatch, mismatchFix)
@@ -173,7 +177,8 @@ public enum Copy {
     public static let startTimedOut = "it didn't finish within a minute."
     public static let unreachableNoDoor = "CELLO is running, but this app can't reach it."
     public static let restartFix = "Open Terminal and run: cello logout, then cello login"
-    public static func cannotConnect(_ code: Int32) -> String { "This app can't connect to CELLO: \(String(cString: strerror(code)))." }
+    // The system's reason goes to the app's log; this is what the person reads.
+    public static let cannotConnect = "This app can't connect to CELLO, and starting CELLO again won't fix that by itself."
     public static let tryAgain = "Try again"
     public static let mismatchFix = "Update CELLO so this app and CELLO match."
 

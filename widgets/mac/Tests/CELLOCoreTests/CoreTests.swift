@@ -426,9 +426,16 @@ final class ControllerStartTests: XCTestCase {
             let shown = Copy.unreachable(why)
             XCTAssertEqual([shown.reason, shown.fix], [Copy.unreachableStopped, Copy.unreachableFix])
         }
-        for why in [Unreachable.stopped("daemon said x"), .subscribeRefused("That failed inside CELLO: daemon x"), .mismatch("daemon speaks 2")] {
+        // Exactly the app's own lines, whatever the payload says.
+        let cases: [(Unreachable, String, String)] = [
+            (.stopped("daemon said x"), Copy.unreachableStopped, Copy.unreachableFix),
+            (.subscribeRefused("That failed inside CELLO: daemon x"), Copy.unreachableRefused, Copy.restartFix),
+            (.mismatch("daemon speaks 2"), Copy.unreachableMismatch, Copy.mismatchFix),
+            (.cannotConnect(EACCES), Copy.cannotConnect, Copy.restartFix),
+        ]
+        for (why, reason, fix) in cases {
             let shown = Copy.unreachable(why)
-            XCTAssertFalse("\(shown.reason) \(shown.fix)".lowercased().contains("daemon"), "\(why)")
+            XCTAssertEqual([shown.reason, shown.fix], [reason, fix], "\(why)")
         }
         c.startFinished(.failure(.notInstalled("/opt/node")))
         XCTAssertEqual(c.state.connection, .unreachable(.unknownInstall))
@@ -450,7 +457,8 @@ final class ControllerConnectTests: XCTestCase {
         }
         XCTAssertEqual(c.state.connection, .unreachable(.cannotConnect(ENAMETOOLONG)))
         XCTAssertEqual(c.state.look(at: Date()), .unreachable)
-        XCTAssertTrue(Copy.cannotConnect(ENAMETOOLONG).hasPrefix("This app can't connect to CELLO: "))
+        // The system's reason is in the log; the person reads the app's own line.
+        XCTAssertEqual(Copy.unreachable(.cannotConnect(ENAMETOOLONG)).reason, Copy.cannotConnect)
     }
 }
 
@@ -547,9 +555,9 @@ final class ControllerDoorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(fold?.at.timeIntervalSince(answeredAt) ?? 0, answeredCardSeconds - 0.5)
     }
 
-    // A typed answer to a question already answered elsewhere goes on as a follow-up, and the door says so in said. That
-    // line is the one the panel keeps. Without said, it's the usual line.
-    func testAReplyKeepsTheDoorsFollowUpLineAndOtherwiseTheUsualOne() {
+    // A typed answer to a question already answered elsewhere goes on as a follow-up. The panel keeps the app's own line
+    // for it, from the first answer the door names, never the door's words. Otherwise it's the usual line.
+    func testAReplyKeepsTheFollowUpLineInTheAppsWordsAndOtherwiseTheUsualOne() {
         let door = FakeDoor()
         defer { door.close() }
         let question: [String: Any] = ["op": "notification", "id": 7, "agent_id": "aa", "agent": "Ann", "kind": "request", "text": "Wine?", "choices": ["Red", "White"], "session_id": NSNull(), "talking_to": NSNull(), "sent_at": "2026-11-18T10:00:00Z", "age_seconds": 0, "shown": false, "silent": false]
@@ -559,7 +567,7 @@ final class ControllerDoorTests: XCTestCase {
             case "subscribe":
                 return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "agents": [["agent_id": "aa", "agent": "Ann"]], "paused_until": NSNull()]
             case "reply" where r["id"] as? Int == 7:
-                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann", "follow_up": true, "first_answer": "White", "said": "Already answered: White. Passed to Ann as a follow-up."]
+                return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann", "follow_up": true, "first_answer": "White", "said": "The door's own words, never shown."]
             default:
                 return ["op": "result", "ref": r["ref"] ?? "", "ok": true, "passed_to": "Ann"]
             }
