@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export interface McpInstallLine { app: string; outcome: "installed" | "unchanged" | "not_found" | "failed"; detail: string }
+export interface McpInstallLine { app: string; outcome: "installed" | "updated" | "unchanged" | "not_found" | "failed"; detail: string }
 
 const CLAUDE_WAIT_MS = 120_000;
 
@@ -68,7 +68,9 @@ function claudeCode(packageRoot: string): McpInstallLine {
     if (!refreshed.ok) return { app, outcome: "failed", detail: `the plugin is installed, but refreshing its marketplace failed: ${refreshed.said}. If it came from the old version, remove it with: claude plugin uninstall cello@cello-protocol, then run this again` };
     const updated = claude(["plugin", "update", "cello@cello-protocol"]);
     if (!updated.ok) return { app, outcome: "failed", detail: `the plugin is installed, but updating it failed: ${updated.said}` };
-    return { app, outcome: "unchanged", detail: `the plugin cello@cello-protocol is installed and now matches this version (${updated.said.split("\n").at(-1) ?? "updated"}). Restart Claude Code, or run /mcp, to load it` };
+    // "already at the latest version" when nothing changed; anything else means Claude Code took the new copy.
+    if (/already at the latest/i.test(updated.said)) return { app, outcome: "unchanged", detail: "the plugin cello@cello-protocol is installed and already matches this version" };
+    return { app, outcome: "updated", detail: `the plugin cello@cello-protocol now matches this version (${updated.said.split("\n").at(-1) ?? "updated"}). Restart Claude Code to load it` };
   }
   const market = claude(["plugin", "marketplace", "add", packageRoot]);
   if (!market.ok) return { app, outcome: "failed", detail: `adding the marketplace failed: ${market.said}` };
