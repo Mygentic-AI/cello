@@ -226,34 +226,75 @@ export class Wallet {
     this.#lastSettle.set(agentHex, now);
     let left = 0;
     for (const row of waiting) {
-      try {
-        // A renewal of a public signal stays public (Andre, 18 November): the owner already chose to show that signal, and a listing
-        // would otherwise drop out of search at every renewal. Publishing the newer one replaces the older on the server in one step.
-        const successor = this.#signals.list(fromHex(agentHex)).find((r) => r.status === "active" && r.public === 0 && r.consent_state === CONSENT_ACCEPTED
-          && r.type === row.type && r.issuer_pubkey === row.issuer_pubkey && r.subject_kind === row.subject_kind && (r.expires_at === null || r.expires_at > nowSec()));
-        const oldId = readSignedSignal(new Uint8Array(row.file)).envelope.signal_id;
-        if (successor) {
-          const displaced = (await this.#hooks.publishToServer(agentHex, new Uint8Array(successor.file))).map((id) => toHex(id));
+      const oldId = readSignedSignal(new Uint8Array(row.file)).envelope.signal_id;
+      // A renewal of a public signal stays public (Andre, 18 November): the owner already chose to show that signal, and a listing
+      // would otherwise drop out of search at every renewal. Publishing the newer one replaces the older on the server in one step.
+      const successor = this.#successor(agentHex, row);
+      let renewalRefused: string | null = null;
+      if (successor) {
+        try {
+          const displaced = await this.#hooks.publishToServer(agentHex, new Uint8Array(successor.file));
           this.#signals.setPublic(fromHex(agentHex), successor.signal_hash, true);
           logEvent("signal.public.published", { agent: agentHex, signal: successor.signal_hash, reason: "renewed" });
-          // An older server takes nothing down by itself, so the old one is taken back as before.
-          if (!displaced.includes(toHex(oldId))) await this.#hooks.unpublishFromServer(agentHex, oldId);
-        } else {
-          await this.#hooks.unpublishFromServer(agentHex, oldId);
+          this.#settleDisplaced(agentHex, successor.signal_hash, displaced);
+        } catch (err: unknown) {
+          // Unreachable is tried again. A refusal (the agent is at its limit, or the issuer isn't recognised) won't change by retrying,
+          // so the old one is still taken back, and the owner is told the renewal couldn't be made public and why.
+          if (!(err instanceof LocalError) || err.code === "server_unreachable") {
+            left += 1;
+            this.#warnOnce(agentHex, row, `making its renewal public failed: ${err instanceof Error ? err.message : String(err)}`);
+            continue;
+          }
+          renewalRefused = err.message;
         }
+      }
+      try {
+        // The server takes down the old one only when the new one fills the same listing slot, so for other types, endorsements among
+        // them, the old one is taken back here.
+        if (this.#signals.get(fromHex(agentHex), row.signal_hash)?.public !== 0) await this.#hooks.unpublishFromServer(agentHex, oldId);
         this.#signals.setPublic(fromHex(agentHex), row.signal_hash, false);
         this.#warned.delete(row.signal_hash);
         logEvent("signal.public.withdrawn", { agent: agentHex, signal: row.signal_hash, reason: "replaced" });
+        if (renewalRefused !== null && successor) {
+          this.#hooks.notify(fromHex(agentHex), `A public signal of this agent (${plainName(row.type)}, ${row.signal_hash.slice(0, 12)}…) was renewed, but the server refused to make the renewal public: ${renewalRefused} The old one has been taken back, so nothing is public for it now. Fix that, then run: cello signals publish ${successor.signal_hash.slice(0, 12)}`);
+        }
       } catch (err: unknown) {
         left += 1;
         logEvent("signal.public.withdraw_failed", { agent: agentHex, signal: row.signal_hash, message: err instanceof Error ? err.message : String(err) });
-        if (!this.#warned.has(row.signal_hash)) {
-          this.#warned.add(row.signal_hash);
-          this.#hooks.notify(fromHex(agentHex), `A public signal of this agent (${plainName(row.type)}, ${row.signal_hash.slice(0, 12)}…) was replaced by a newer one, but taking it back from the server failed: ${err instanceof Error ? err.message : String(err)}. It is still public and reads as current there. This daemon will keep trying, and you can run: cello signals unpublish ${row.signal_hash.slice(0, 12)}`);
-        }
+        this.#warnOnce(agentHex, row, `taking it back from the server failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return left;
+  }
+
+  // The signal that renews this one: it names this one as what it supersedes, or, for a type with one current signal per issuer, it's
+  // the current one of that type from the same issuer. Endorsements need the explicit link: several authors share one issuer, and an
+  // endorsement the owner kept private must never be made public because another one was renewed.
+  #successor(agentHex: string, row: WalletRow): WalletRow | undefined {
+    const now = nowSec();
+    const candidates = this.#signals.list(fromHex(agentHex)).filter((r) => r.status === "active" && r.public === 0 && r.consent_state === CONSENT_ACCEPTED
+      && r.type === row.type && r.issuer_pubkey === row.issuer_pubkey && r.subject_kind === row.subject_kind && (r.expires_at === null || r.expires_at > now));
+    return candidates.find((r) => r.supersedes_hash === row.signal_hash) ?? (row.type === "endorsement" ? undefined : candidates[0]);
+  }
+
+  // The server keeps one signal per listing slot, so publishing one can take others down. Say so here too, or this wallet would call them public.
+  #settleDisplaced(agentHex: string, published: string, displaced: Uint8Array[]): string[] {
+    const ids = displaced.map((id) => toHex(id));
+    const replaced: string[] = [];
+    for (const held of this.#signals.list(fromHex(agentHex))) {
+      if (held.public === 0 || held.signal_hash === published) continue;
+      if (!ids.includes(toHex(readSignedSignal(new Uint8Array(held.file)).envelope.signal_id))) continue;
+      this.#signals.setPublic(fromHex(agentHex), held.signal_hash, false);
+      replaced.push(held.signal_hash);
+      logEvent("signal.public.withdrawn", { agent: agentHex, signal: held.signal_hash, reason: "replaced_on_server" });
+    }
+    return replaced;
+  }
+
+  #warnOnce(agentHex: string, row: WalletRow, what: string): void {
+    if (this.#warned.has(row.signal_hash)) return;
+    this.#warned.add(row.signal_hash);
+    this.#hooks.notify(fromHex(agentHex), `A public signal of this agent (${plainName(row.type)}, ${row.signal_hash.slice(0, 12)}…) was replaced by a newer one, but ${what}. The old one is still public and reads as current there. This daemon will keep trying, and you can run: cello signals unpublish ${row.signal_hash.slice(0, 12)}`);
   }
 
   #plain(err: unknown, attempted: string): LocalError {
@@ -450,18 +491,10 @@ export class Wallet {
     if (row.consent_state !== CONSENT_ACCEPTED) throw new LocalError("consent_pending", `This signal is '${row.consent_state}', not accepted, so it can't be made public. Accept it first.`);
     if (row.status !== "active") throw new LocalError("signal_not_current", "A newer signal has replaced this one, so it can't be made public.");
     if (row.expires_at !== null && row.expires_at <= nowSec()) throw new LocalError("signal_expired", "This signal has expired, so it can't be made public. cello signals collect fetches a current one.");
-    const displaced = (await this.#hooks.publishToServer(agentHex, new Uint8Array(row.file))).map((id) => toHex(id));
+    const displaced = await this.#hooks.publishToServer(agentHex, new Uint8Array(row.file));
     this.#signals.setPublic(fromHex(agentHex), row.signal_hash, true);
     logEvent("signal.public.published", { agent: agentHex, signal: row.signal_hash });
-    // The server keeps one signal per listing slot, so a newer one there takes the older off. Say so here too, or this wallet would call it public.
-    const replaced: string[] = [];
-    for (const held of this.#signals.list(fromHex(agentHex))) {
-      if (held.public === 0 || held.signal_hash === row.signal_hash) continue;
-      if (!displaced.includes(toHex(readSignedSignal(new Uint8Array(held.file)).envelope.signal_id))) continue;
-      this.#signals.setPublic(fromHex(agentHex), held.signal_hash, false);
-      replaced.push(held.signal_hash);
-      logEvent("signal.public.withdrawn", { agent: agentHex, signal: held.signal_hash, reason: "replaced_on_server" });
-    }
+    const replaced = this.#settleDisplaced(agentHex, row.signal_hash, displaced);
     return { signal_hash: row.signal_hash, public: true, ...(replaced.length > 0 ? { replaced } : {}) };
   }
 

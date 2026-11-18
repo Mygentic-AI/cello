@@ -133,8 +133,8 @@ test("a server that can't be reached changes nothing here: a signal isn't marked
 });
 
 // A server that remembers what is published, so a lookup after a change sees what a real one would.
-function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean } } {
-  return { held: new Map(), failing: { on: false } };
+function fakeServer(): { held: Map<string, Uint8Array>; failing: { on: boolean }; refusing: { code: string | null } } {
+  return { held: new Map(), failing: { on: false }, refusing: { code: null } };
 }
 
 function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array }, notes: string[] = [], shippedList: string | null = null, roots: WalletHooks["roots"] = () => { throw new RootKeysNotConfigured("none"); }): { wallet: Wallet; signals: SignalStore; store: Store } {
@@ -149,6 +149,7 @@ function walletOn(server: ReturnType<typeof fakeServer>, owner: { id: Uint8Array
     // Like the real server: one signal per listing slot, so a newer one there takes the older down and says which.
     publishToServer: async (_agent, file) => {
       if (server.failing.on) throw new LocalError("server_unreachable", "down");
+      if (server.refusing.code) throw new LocalError(server.refusing.code, "the server refused it.");
       const slot = signalSlot(readSignedSignal(file).envelope.type);
       const displaced = slot === null ? [] : [...server.held].filter(([, held]) => signalSlot(readSignedSignal(held).envelope.type) === slot).map(([id]) => id);
       for (const id of displaced) server.held.delete(id);
@@ -197,6 +198,37 @@ test("when the server takes a signal down because a newer one fills its listing 
   a.store.close();
 });
 
+test("renewing one public endorsement never makes public another endorsement from the same issuer that the owner kept private", async () => {
+  const server = fakeServer();
+  const a = walletOn(server, ann);
+  const shown = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(71, 16), issued_at: NOW - 300, payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  await a.wallet.publish(toHex(ann.id), shown.hash);
+  const kept = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(72, 16), issued_at: NOW - 5, payload: new Uint8Array(encodeCbor({ claim: "Bob vouches for Ann" })) }));
+  const renewal = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(73, 16), issued_at: NOW - 10, supersedes_hash: Buffer.from(shown.hash, "hex"), payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
+  assert.deepEqual([...server.held.keys()], [toHex(fill(73, 16))], "only Carol's renewal is public");
+  assert.equal(a.signals.get(ann.id, kept.hash)?.public, 0, "Bob's endorsement stays private");
+  assert.equal(a.signals.get(ann.id, renewal.hash)?.public, 1);
+  a.store.close();
+});
+
+test("a renewal the server refuses to make public still has the old one taken back, and the owner is told why", async () => {
+  const server = fakeServer();
+  const notes: string[] = [];
+  const a = walletOn(server, ann, notes);
+  const old = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(81, 16), issued_at: NOW - 300 }));
+  await a.wallet.publish(toHex(ann.id), old.hash);
+  server.refusing.code = "over_quota";
+  const newer = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "github", signal_id: fill(82, 16), issued_at: NOW - 10 }));
+  assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0, "nothing left to retry forever");
+  assert.equal(server.held.size, 0, "the old one is no longer public");
+  assert.equal(a.signals.get(ann.id, old.hash)?.public, 0);
+  assert.equal(a.signals.get(ann.id, newer.hash)?.public, 0);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0] as string, /refused to make the renewal public: the server refused it\./);
+  a.store.close();
+});
+
 test("when taking a replaced signal back fails it is said loudly once, stays marked, and is retried until the server takes it", async () => {
   const server = fakeServer();
   const notes: string[] = [];
@@ -208,7 +240,7 @@ test("when taking a replaced signal back fails it is said loudly once, stays mar
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 1);
   assert.equal(notes.length, 1, "told once, not on every try");
-  assert.match(notes[0] as string, /taking it back from the server failed/);
+  assert.match(notes[0] as string, /making its renewal public failed/);
   assert.match(notes[0] as string, /still public/);
   assert.equal(a.signals.get(ann.id, old.hash)?.public, 2, "still marked, because the server still shows it");
   assert.equal(server.held.size, 1);
