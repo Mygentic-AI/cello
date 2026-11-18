@@ -25,6 +25,9 @@ An agent runs as Andre, with a shell. Anything it can open, it can use to forge 
 1. **Form:** a Swift menu-bar app that also posts native banners with action buttons. The popover keeps the list, shows all 2 to 8 choices, and lets him type to an agent he picks.
 2. **Transport:** its own owner-only socket, apart from `daemon.sock`, taking only subscribe, pick and reply. The widget proves a pairing secret kept in the Keychain, and only the widget reads it without a prompt. Pairing is one Allow click in the widget, which an agent can't make.
 3. **Signing and install:** a prebuilt universal binary, ad-hoc signed, shipped inside the npm package, copied to `~/Applications` by `notifier-add mac`. No Xcode on the user's machine, no paid account. npm doesn't set the quarantine flag, so Gatekeeper doesn't block it. To verify on Andre's Mac. Developer ID and notarisation come later, with real users.
+5. **Repo:** the source lives in this repo at `widgets/mac`. Cello is one of the three public repos, so anyone can read and build it, and it versions with the daemon's socket protocol.
+6. **Shipping:** the prebuilt app is a separate macOS-only npm package (`os: darwin`), pulled in as an optional dependency, so Linux and Windows users never download it. It joins the publish cascade.
+7. **Install flow:** `cello notifier-add mac` prints each step and how to undo it, then does it, with no prompt, so an agent can run it. Three ways in: the default copies the prebuilt app to `~/Applications`; `--build` compiles from `widgets/mac` and says to run `xcode-select --install` if the tools are missing; `--app <path>` registers an app the user built by hand. The Allow click in the widget is the real gate.
 4. **Asleep or not running:** the daemon queues, and the widget catches up on reconnect and shows each one's age. Until then `notify` says `sent: "queued"`, not `true`.
 
 ## Build order
