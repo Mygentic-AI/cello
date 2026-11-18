@@ -338,9 +338,10 @@ test("installing into someone's git repo leaves their hooks alone, and a missing
   process.stdout.write(`Install with a warm npm cache: ${seconds} s.\n`);
   const hooks = (): string => must("git", ["config", "core.hooksPath"], { cwd: project, env: npmEnv() }).trim();
   assert.equal(hooks(), "their-hooks");
-  // Even if something does run prepare in the installed copy, where its script didn't ship.
-  must(hostTool("npm"), ["run", "prepare"], { cwd: join(project, "node_modules", "@cello-protocol", "cli"), env: npmEnv() });
-  assert.equal(hooks(), "their-hooks");
+  // pnpm packs no prepare, prepack or install script, as npm pack would have, so nothing can run one in the installed copy.
+  const scripts = (JSON.parse(readFileSync(join(project, "node_modules", "@cello-protocol", "cli", "package.json"), "utf8")) as { scripts?: Record<string, string> }).scripts ?? {};
+  const lifecycle = ["preinstall", "install", "postinstall", "prepare", "prepack", "postpack", "dependencies"];
+  assert.deepEqual(Object.keys(scripts).filter((name) => lifecycle.includes(name)), [], "the installed package has no script npm runs by itself");
 
   assert.match(cello(["logout"]).stdout, /stopped/);
   rmSync(join(packageDir, "dist", "daemon", "main.js"));
