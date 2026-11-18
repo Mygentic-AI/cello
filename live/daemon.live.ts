@@ -3,7 +3,7 @@
 import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -340,4 +340,50 @@ test("a Claude session's hold ends when its connection does, however it was take
   const after = await IpcClient.connect(sock);
   await assert.rejects(after.call("receive", { agent: "Holly", caller: "mcp:third-session" }), /agent_held|holds Holly/);
   after.close();
+});
+
+test("an agent with more history than a frame holds reconnects and catches up, in pages, without a drop", { timeout: 600_000 }, async () => {
+  const daemon = newDaemon();
+  daemon.login();
+  daemon.createAgent("Busy");
+  const peerId = daemon.createAgent("Peer");
+  await online(daemon, "Busy");
+  await online(daemon, "Peer");
+  const busy = await daemon.attach("Busy");
+  const busyId = daemon.status().agents.find((a) => a.name === "Busy")?.agent_id as string;
+  // Open conversations until the old one-answer list would be well past the 2 MB frame limit.
+  const listBytes = () => Number(sql(`SELECT coalesce(sum(length(offer::text) + coalesce(length(accept::text), 0) + coalesce(length(confirm::text), 0) + coalesce(length(assignment::text), 0)), 0) FROM sessions WHERE caller_id = decode('${busyId}', 'hex')`));
+  let opened = 0;
+  while (listBytes() < 2_600_000) {
+    assert.ok(opened < 400, "conversations should be big enough to pass the limit well before 400");
+    await busy.call("initiate_session", { target: peerId });
+    opened++;
+  }
+  const marker = `restart-${Date.now()}`;
+  appendFileSync(join(daemon.home, "daemon.log"), `${JSON.stringify({ event: marker })}\n`);
+  daemon.kill();
+  daemon.login();
+  await online(daemon, "Busy");
+  // Give catch-up time to run, then hold the connection: the old list dropped it within seconds, every time.
+  await new Promise((resolve) => setTimeout(resolve, 15_000));
+  const since = readFileSync(join(daemon.home, "daemon.log"), "utf8").split(marker)[1] ?? "";
+  assert.doesNotMatch(since, /Max payload size exceeded/);
+  assert.doesNotMatch(since, /agent\.catch_up_failed/);
+  assert.equal(daemon.status().connected, true);
+  const sessions = daemon.status().agents.find((a) => a.name === "Busy")?.sessions ?? [];
+  assert.equal(sessions.length, opened, `all ${opened} conversations are still there`);
+  // The catch-up really ran, from the bookmark of an earlier catch-up, and fetched only what changed since: fewer than all
+  // of them. (Paging through a whole large history is the server live test's job.)
+  type CaughtUp = { event: string; agent: string; pages: number; sessions: number; from_bookmark: boolean };
+  const caughtUp = (text: string) => text.split("\n").filter((line) => line.includes("agent.caught_up")).map((line) => JSON.parse(line) as CaughtUp).filter((e) => e.agent === busyId);
+  const afterRestart = caughtUp(since);
+  assert.ok(afterRestart.some((e) => e.from_bookmark && e.sessions < opened), `a catch-up from the bookmark, smaller than all ${opened}: ${JSON.stringify(afterRestart)}`);
+  // Restarted again with nothing new, the bookmark has moved, so nothing comes back.
+  const marker2 = `restart-again-${Date.now()}`;
+  appendFileSync(join(daemon.home, "daemon.log"), `${JSON.stringify({ event: marker2 })}\n`);
+  daemon.kill();
+  daemon.login();
+  await online(daemon, "Busy");
+  const quiet = await until("a catch-up after the second restart", () => caughtUp(daemon.log().split(marker2)[1] ?? "").find((e) => e.from_bookmark));
+  assert.equal(quiet.sessions, 0, "the bookmark moved: nothing changed since, so nothing came back");
 });

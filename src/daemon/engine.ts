@@ -282,6 +282,11 @@ function notSealedYet(reason: string): unknown {
   return { sealed: false, status: "not_sealed_yet", message: `This isn't sealed yet: ${reason}. The request is saved and retried by itself, and you'll get a notice.` };
 }
 
+// One catch-up page as the server sends it. asOf is absent from a server without bookmarks, which sends everything at once.
+interface CatchUpPage { sessions: SessionOnWire[]; asOf?: string; more?: boolean; after?: unknown }
+// A page holds up to 50 conversations, so this is 25,000 changed conversations in one catch-up before it gives up.
+const CATCH_UP_MAX_PAGES = 500;
+
 export class Engine {
   readonly #store: Store;
   readonly #events: EngineEvents;
@@ -903,22 +908,58 @@ export class Engine {
         }
         return;
       }
-      const listedAt = Date.now();
-      const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id) }) as { sessions: SessionOnWire[] };
+      // Catch up on what changed since the last complete catch-up with this server, a page at a time. The bookmark moves
+      // only once every conversation listed has been handled, so a crash or a failed update means it is listed again.
+      // A server without bookmarks answers once, with no asOf.
+      const bookmarkKey = `catch_up_since:${agent.hex}:${route.url}`;
+      const since = this.#store.getConfig(bookmarkKey) ?? null;
       const seen = new Set<string>();
-      for (const wire of listed.sessions) {
-        const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
-        const sessionHex = toHex(sessionId);
-        seen.add(sessionHex);
-        this.#background("session update", this.#lane(agent.hex, sessionHex, async () => {
-          await this.#onSessionWire(agent, wire, route);
-          this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
-        }));
+      const handled: Promise<unknown>[] = [];
+      const handledIds: string[] = [];
+      let after: unknown;
+      let asOf: string | undefined;
+      let pages = 0;
+      for (let page = 0; ; page++) {
+        pages = page + 1;
+        if (page >= CATCH_UP_MAX_PAGES) throw new Error(`catch-up passed ${CATCH_UP_MAX_PAGES} pages without finishing`);
+        const listedAt = Date.now();
+        const listed = await route.link.call("session.list", { agent: toB64(agent.signer.id), since, ...(after === undefined ? {} : { after }) }) as CatchUpPage;
+        for (const wire of listed.sessions) {
+          const sessionId = signedOffer.decode(wire.offer).fields.sessionId;
+          const sessionHex = toHex(sessionId);
+          seen.add(sessionHex);
+          const work = this.#lane(agent.hex, sessionHex, async () => {
+            await this.#onSessionWire(agent, wire, route);
+            this.#tellLatePeer(agent, sessionId, listedAt, wire.tip);
+          });
+          handled.push(work);
+          handledIds.push(sessionHex);
+          this.#background("session update", work);
+        }
+        asOf = listed.asOf;
+        if (asOf === undefined || listed.more !== true) break;
+        if (listed.after === undefined) throw new Error("the server said there was more but gave no next page");
+        after = listed.after;
+      }
+      logEvent("agent.caught_up", { agent: agent.hex, pages, sessions: handled.length, from_bookmark: since !== null, bookmarks: asOf !== undefined });
+      if (asOf !== undefined) {
+        const reached = asOf;
+        void Promise.allSettled(handled).then((results) => {
+          const failed = results.flatMap((result, i) => (result.status === "rejected" ? [handledIds[i]] : []));
+          if (failed.length === 0) {
+            this.#store.setConfig(bookmarkKey, reached);
+            return;
+          }
+          // The same conversations come back next time. One that always fails keeps the bookmark here, and this says which.
+          logEvent("agent.catch_up_bookmark_held", { agent: agent.hex, failed: failed.slice(0, 10), failed_count: failed.length });
+        });
       }
       // An offer written to disk just before a crash may never have reached the server.
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
         const sessionHex = toHex(row.session_id);
         if (seen.has(sessionHex) || row.state !== "offered" || this.#urlOf(row) !== route.url) continue;
+        // An expired offer isn't listed any more, and the server would only refuse it again.
+        if (signedOffer.decode(JSON.parse(row.offer)).fields.expiresAt <= Date.now()) continue;
         this.#background("offer resend", route.link.call("session.offer", { agent: toB64(agent.signer.id), offer: JSON.parse(row.offer) }));
       }
     } catch (err: unknown) {
