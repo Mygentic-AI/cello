@@ -950,6 +950,8 @@ export class Engine {
       for (const row of this.#store.sessionsOf(agent.signer.id)) {
         const sessionHex = toHex(row.session_id);
         if (seen.has(sessionHex) || row.state !== "offered" || this.#urlOf(row) !== route.url) continue;
+        // An expired offer isn't listed any more, and the server would only refuse it again.
+        if (signedOffer.decode(JSON.parse(row.offer)).fields.expiresAt <= Date.now()) continue;
         this.#background("offer resend", route.link.call("session.offer", { agent: toB64(agent.signer.id), offer: JSON.parse(row.offer) }));
       }
     } catch (err: unknown) {
