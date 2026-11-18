@@ -12,6 +12,15 @@ private let markClock: DateFormatter = {
     f.dateStyle = .none
     return f
 }()
+private let markDay: DateFormatter = {
+    let f = DateFormatter()
+    f.setLocalizedDateFormatFromTemplate("EEE d MMM j:mm")
+    return f
+}()
+// A pause ending today reads as a time; one ending on another day says which day too.
+private func markTime(_ date: Date) -> String {
+    Calendar.current.isDateInToday(date) ? markClock.string(from: date) : markDay.string(from: date)
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
@@ -25,8 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     private var ticker: Timer?
     private var clickAway: ClickAway!
     private var mouseWatchers: [Any] = []
-    // The look last put on the mark. The mark is only touched when it changes: resizing the item the panel hangs from,
-    // on every redraw, is the likeliest reason the panel stopped closing on an outside click.
+    // The look last put on the mark. The mark is touched only when it changes, so the item the panel hangs from isn't
+    // resized on every redraw.
     private var shownLook: MarkLook?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -79,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate, NS
     // MARK: ControllerDelegate
 
     func stateChanged(_ controller: Controller) {
-        let look = controller.state.mark(at: Date(), time: { markClock.string(from: $0) })
+        let look = controller.state.mark(at: Date(), time: markTime)
         if let button = statusItem.button, look != shownLook {
             shownLook = look
             MenuBarIcon.apply(look, to: button)

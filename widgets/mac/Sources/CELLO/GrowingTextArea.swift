@@ -60,7 +60,8 @@ private struct TextAreaView: NSViewRepresentable {
         guard let view = scroll.documentView as? NSTextView, view.string != text else { return }
         // Cleared after sending, or a draft put back after a failure.
         view.string = text
-        context.coordinator.measure(view)
+        // After this update, since measuring sets the height SwiftUI is drawing.
+        DispatchQueue.main.async { context.coordinator.measure(view) }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

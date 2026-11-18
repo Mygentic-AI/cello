@@ -118,7 +118,7 @@ private let clock: DateFormatter = {
 
 private struct HeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 private extension View {
