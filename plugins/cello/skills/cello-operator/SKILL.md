@@ -29,7 +29,7 @@ It checks the token and the chat with Telegram, and sends a test line, before sa
 
 ## Connecting the Mac
 
-When your operator says "put CELLO on my Mac", run `cello_notifier_add` with `type` `mac`, or `cello notifier-add mac --agent <a>`. There's nothing secret to give. Then tell them to open CELLO on the Mac and click Allow. One Allow covers every agent on the Mac: for the next agent, `cello notifier-add mac --same-as <agent that has it> --agent <next>`.
+When your operator says "put CELLO on my Mac", run `cello_notifier_add` with `type` `mac`, or `cello notifier-add mac --agent <a>`. There's nothing secret to give. It puts the CELLO app in their Applications folder and opens it, and its answer lists each step with how to undo it: pass those on. Then tell them to click Turn on in CELLO, and Allow when macOS asks. That covers every agent on the Mac: for the next agent, `cello notifier-add mac --same-as <agent that has it> --agent <next>`, which only adds the route.
 
 The Mac gets your words in full, without the outbound screen, because nothing leaves the machine. They answer with a click on a choice or by typing, and it comes back as their reply like Telegram's. `cello notifier-add -h` lists every kind of notifier.
 

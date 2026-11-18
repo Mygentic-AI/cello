@@ -69,13 +69,15 @@ CELLO can also reach you on the Mac your agents run on. A question arrives as a 
 cello notifier-add mac --agent Ann
 ```
 
-Then open CELLO and click Allow. That one Allow covers every agent on the Mac. When you add the next agent, it simply joins, and the panel says "Bea can reach you here now":
+It says each step and how to undo it, then does them without asking: it puts CELLO in your Applications folder, notes where cello is so the app can start it again if it ever stops, and opens it. In CELLO, click Turn on, and Allow when macOS asks about notifications. Leave "Open CELLO when I log in" ticked and it's there after a restart. That one click covers every agent on the Mac. When you add the next agent, it simply joins, and CELLO says "Bea can reach you here now":
 
 ```
 cello notifier-add mac --same-as Ann --agent Bea
 ```
 
 Or tell the agent "put CELLO on my Mac", and it does the same.
+
+To build the app yourself from this repository instead, with only the Xcode command-line tools (`xcode-select --install`), add `--build`, or build it with `widgets/mac/scripts/assemble.sh` and give it with `--app <path to CELLO.app>`. The app is one binary for Apple silicon and Intel, signed ad hoc.
 
 What you see:
 
