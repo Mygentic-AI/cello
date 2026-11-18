@@ -725,6 +725,21 @@ final class ClickAwayTests: XCTestCase {
         XCTAssertEqual(closed, 1)
     }
 
+    // The watch itself holds back, not only the popover's delegate: close here counts every call it makes.
+    func testTheWatchDoesNotAskToCloseOnTheHandBack() {
+        var pressed: UInt64 = 3
+        var asked = 0
+        let away = ClickAway(start: {}, stop: {}, presses: { pressed })
+        away.close = { asked += 1 }
+        away.openingFromBanner()
+        away.panelShown()
+        away.appDeactivated()
+        XCTAssertEqual(asked, 0)
+        pressed += 1
+        away.appDeactivated()
+        XCTAssertEqual(asked, 1)
+    }
+
     func testAfterAPressABannerPanelClosesWhenAnotherAppComesForward() {
         var pressed: UInt64 = 0
         var closed = 0
