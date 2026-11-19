@@ -1,6 +1,6 @@
 {
   "name": "@cello-protocol/mac-app",
-  "version": "0.0.328",
+  "version": "0.0.329",
   "description": "The CELLO menu-bar app for macOS, prebuilt: one binary for Apple silicon and Intel, signed ad hoc. Installed with @cello-protocol/cli on a Mac, and put in place by cello notifier-add mac.",
   "os": [
     "darwin"
