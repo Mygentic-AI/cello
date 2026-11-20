@@ -4,7 +4,7 @@ import { existsSync, renameSync } from "node:fs";
 import { createConnection } from "node:net";
 import { celloHome, databasePath, holdsOldVersion, oldVersionEndpoints, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DEFAULT_SERVER_URL } from "./daemon/settings.ts";
-import { HOW_TO_GET_A_CODE } from "./daemon/wallet.ts";
+import { ACCOUNT_SITE } from "./daemon/wallet.ts";
 import { installMcp } from "./install-mcp.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 
@@ -13,12 +13,19 @@ const CONNECT_WAIT_MS = 200;
 const REPLY_WAIT_SECONDS = 60;
 const HELLO = "Hello. I've just been set up.";
 
-export const SETUP_HELP = `Usage: cello setup [--code <code>] [--name <agent>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
+export const SETUP_HELP = `Usage: cello setup [--name <agent>] [--email <address>] [--email-code <code>] [--invite <code>] [--code <code>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
 
-Set up CELLO on this machine: start the background program, create an agent's key, redeem your code for a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
+Set up CELLO on this machine: start the background program, create an agent's key, check your email with a code we send (or redeem a setup code), get a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
-  --code       The setup code from your account at trust.celloprotocol.com. A second agent on this machine doesn't need one. Give - to read it from standard input, so it never sits in a command line or shell history: printf %s "$CODE" | cello setup --code -
-  --name       The agent's name, which is only a label. The default is agent.
+At a terminal it asks for the agent's name, your email and the emailed code, one at a time. With no terminal it never asks: give the values as flags, in two runs, because the code is sent by the first:
+  cello setup --yes --name Ann --email ann@example.com
+  printf %s "$EMAILED_CODE" | cello setup --name Ann --email-code -
+
+  --name       The agent's name, which other agents see. Asked for at a terminal. With a setup code, the default is agent.
+  --email      Your email. A 6-digit code is sent there to check it's yours.
+  --email-code The code from that email. Give - to read it from standard input.
+  --invite     An invite code, if someone gave you one.
+  --code       A setup code, instead of an email. A second agent on this machine needs neither. Give - to read it from standard input, so it never sits in a command line or shell history: printf %s "$CODE" | cello setup --code -
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.
   --concierge  The agent to call at the end. Give none to skip the call this once, and keep the setting as it is.
@@ -43,7 +50,7 @@ class SetupFailed extends Error {
 }
 
 function options(args: string[]): Record<string, string | true> {
-  const known: Record<string, boolean> = { code: true, name: true, server: true, issuer: true, concierge: true, yes: false, json: false, "install-mcp": false };
+  const known: Record<string, boolean> = { code: true, name: true, email: true, "email-code": true, invite: true, server: true, issuer: true, concierge: true, yes: false, json: false, "install-mcp": false };
   const found: Record<string, string | true> = {};
   for (let i = 0; i < args.length; i++) {
     const name = (args[i] as string).replace(/^--/, "");
@@ -62,8 +69,8 @@ function options(args: string[]): Record<string, string | true> {
 const CODE_WAIT_MS = 30_000;
 
 // Reads to the end of standard input, and gives up after a while, so a pipe nobody closes can't hold setup for good.
-function codeFromStandardInput(): Promise<string> {
-  if (process.stdin.isTTY) throw new SetupFailed("code_not_piped", "--code - reads the code from standard input, and this is a terminal. Pipe it in, for example: printf %s \"$CODE\" | cello setup --code -");
+function codeFromStandardInput(flag = "code"): Promise<string> {
+  if (process.stdin.isTTY) throw new SetupFailed("code_not_piped", `--${flag} - reads the code from standard input, and this is a terminal. Pipe it in, for example: printf %s "$CODE" | cello setup --${flag} -`);
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const timer = setTimeout(() => {
@@ -79,6 +86,75 @@ function codeFromStandardInput(): Promise<string> {
       else resolve(code);
     });
   });
+}
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NOT_AN_EMAIL = "That doesn't look like an email address.";
+
+// Pasted back into a shell as it is printed, so a name that needs quoting gets it.
+const shellWord = (word: string): string => (/^[A-Za-z0-9_.@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`);
+
+interface Enrolled { name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean }
+type EmailRoute = { done: true; agent: Enrolled } | { done: false; name: string; email: string };
+
+// The email route: name, then email, then the code. The key is made when the code is asked for, so a run cut short leaves
+// only that key, and the next run sends a new code for it. Without a terminal it asks nothing: it sends the code and stops.
+async function emailRoute(client: IpcClient, host: SetupHost, flags: Record<string, string | true>, interactive: boolean, say: (line: string) => void): Promise<EmailRoute> {
+  const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
+  const { agents } = await client.call("status", {}) as { agents: { name: string; agent_id: string }[] };
+  const given = text("name");
+  const earlier = given === undefined ? agents[0] : agents.find((a) => a.name === given);
+  let name = earlier?.name ?? given;
+  if (earlier) say(`${earlier.name} was started earlier and hasn't checked an email yet.`);
+  let email = text("email");
+  let sends = 0;
+  for (;;) {
+    if (name === undefined) {
+      if (!interactive) throw new SetupFailed("name_required", "Give the agent a name with --name. Nothing was set up.");
+      name = await host.ask("What should your agent be called? Other agents see this name: letters, digits, underscores or dashes.\n> ");
+      if (name === "") throw new SetupFailed("name_required", "No name was given. Nothing was set up.");
+    }
+    if (email === undefined) {
+      if (!interactive) throw new SetupFailed("email_required", "No setup code and no email. Give --email <address> to get a code, or --code <code>. Nothing was set up.");
+      email = await host.ask("What's your email? We'll send a 6-digit code to check it's yours.\n> ");
+      if (email === "") throw new SetupFailed("email_required", "No email was given. Nothing was set up.");
+      if (!EMAIL_SHAPE.test(email)) {
+        say(`${NOT_AN_EMAIL} Try again.`);
+        email = undefined;
+        continue;
+      }
+    }
+    try {
+      const started = await client.call("enroll_start", { name, email, ...(text("invite") ? { invite: text("invite") } : {}) }) as { already_set_up?: boolean } & Enrolled;
+      if (started.already_set_up) return { done: true, agent: started };
+    } catch (err: unknown) {
+      // A name the daemon won't take is asked for again, in its words. Everything else stops here.
+      if (interactive && err instanceof DaemonRefused && err.code === "bad_argument" && !earlier && given === undefined) {
+        say(`${err.message}. Try again.`);
+        name = undefined;
+        continue;
+      }
+      throw err;
+    }
+    sends += 1;
+    say(sends === 1 && !earlier ? `A 6-digit code is on its way to ${email}. It can take a minute.` : `A new code is on its way to ${email}. Only the newest code works.`);
+    if (!interactive) return { done: false, name, email };
+    say("Not there? Check spam. Wrong address? Press Enter with no code to give a different one.");
+    for (;;) {
+      const code = await host.ask("Type the code from the email:\n> ");
+      if (code === "") break;
+      try {
+        return { done: true, agent: await client.call("enroll_agent", { name, email_code: code }) as Enrolled };
+      } catch (err: unknown) {
+        if (err instanceof DaemonRefused && err.code === "enroll_code_wrong") {
+          say(err.message);
+          continue;
+        }
+        throw err;
+      }
+    }
+    email = undefined;
+  }
 }
 
 const answers = (path: string): Promise<boolean> => new Promise((resolve) => {
@@ -172,7 +248,7 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
   const asJson = args.includes("--json");
   const say = (line: string): void => { if (!asJson) process.stdout.write(`${line}\n`); };
   const refuse = (code: string, message: string): number => {
-    process.stderr.write(asJson ? `${JSON.stringify({ error: code, message })}\n` : `${message}\n`);
+    process.stderr.write(asJson ? `${JSON.stringify({ error: code, message })}\n` : `✗ ${message}\n`);
     return 1;
   };
   let client: IpcClient | undefined;
@@ -181,8 +257,17 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
     // --code - takes the code from standard input, so it never sits in a command line or in shell history.
     const code = text("code") === "-" ? await codeFromStandardInput() : text("code");
+    if (code && (text("email") || text("email-code"))) return refuse("bad_argument", "Give a setup code or an email, not both.");
+    const email = text("email");
+    if (email !== undefined && !EMAIL_SHAPE.test(email)) return refuse("bad_email", `${NOT_AN_EMAIL} Nothing was set up.`);
+    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !text("email-code");
+    // Without a terminal nothing can be asked, so what's missing is said now, before anything starts.
+    if (!code && !interactive && !existsSync(databasePath())) {
+      if (!email && !text("email-code")) return refuse("email_required", "No setup code and no email. Give --email <address> to get a code, or --code <code>. Nothing was set up.");
+      if (!text("name")) return refuse("name_required", "Give the agent a name with --name. Nothing was set up.");
+    }
+    const emailCode = text("email-code") === "-" ? await codeFromStandardInput("email-code") : text("email-code");
     await moveOldVersion(host, say);
-    if (!code && !existsSync(databasePath())) return refuse("code_required", HOW_TO_GET_A_CODE);
 
     client = await daemon(host, text("server"), flags["yes"] === true, say);
     const server = await waitForServer(client);
@@ -193,9 +278,22 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     }
     const skipConcierge = text("concierge")?.toLowerCase() === "none";
 
-    const agent = await client.call("enroll_agent", { name: text("name"), code }) as {
-      name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean;
-    };
+    let agent: Enrolled;
+    let byEmail = emailCode !== undefined;
+    try {
+      agent = await client.call("enroll_agent", { name: text("name"), code, ...(emailCode ? { email_code: emailCode } : {}) }) as Enrolled;
+    } catch (err: unknown) {
+      // No setup code and nothing on this machine to copy from: the email route. A setup code that failed stops here.
+      if (!(err instanceof DaemonRefused) || err.code !== "code_required" || code) throw err;
+      const route = await emailRoute(client, host, flags, interactive, say);
+      if (!route.done) {
+        say(`Code sent to ${route.email}. Next: printf %s <code> | cello setup --name ${shellWord(route.name)} --email-code -`);
+        if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, done: false, next: "email_code", name: route.name })}\n`);
+        return 0;
+      }
+      agent = route.agent;
+      byEmail = true;
+    }
     say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified email signal.`);
     if (!agent.online) throw new SetupFailed("not_registered", `${agent.name} has its signal, and the server didn't take it: ${agent.note ?? "no reason given"}. Your code is safe. Run the same command again.`);
     const held = await client.call("signals_list", { agent: agent.agent_id }) as { signals: { type: string; counts_as_verified: boolean }[] };
@@ -237,9 +335,12 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       say("  claude --dangerously-load-development-channels plugin:cello@cello-protocol");
       say("Or let setup connect the apps on this machine: cello setup --install-mcp");
     }
+    say(byEmail && !agent.already_set_up ? `✓ ${agent.name} is set up. You can sign in at ${ACCOUNT_SITE} with the same email.` : `✓ ${agent.name} is set up.`);
     if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, server, name: agent.name, agent_id: agent.agent_id, address: agent.address, already_set_up: agent.already_set_up === true, signals_held: agent.signals_held ?? null, concierge: reply, install_mcp: installed })}\n`);
     return installed?.some((line) => line.outcome === "failed") ? 1 : 0;
   } catch (err: unknown) {
+    // At a terminal a wrong code is asked for again; a scripted run says how to try again instead.
+    if (err instanceof DaemonRefused && err.code === "enroll_code_wrong") return refuse(err.code, `${err.message} Run the same command with the right code.`);
     if (err instanceof SetupFailed || err instanceof DaemonRefused) return refuse(err.code, err.message);
     if (err instanceof DaemonGone) return refuse(err.code, "The background program stopped during setup. Run the same command again.");
     throw err;

@@ -16,8 +16,7 @@ import type { Store } from "./store.ts";
 
 const CONFIG_ISSUER_LIST = "issuer_list";
 export const ACCOUNT_SITE = "https://trust.celloprotocol.com";
-export const WAITLIST_PAGE = "https://celloprotocol.com/waitlist";
-export const HOW_TO_GET_A_CODE = `You need a setup code. Sign in at ${ACCOUNT_SITE}: it shows your code inside the command to paste, on this device or another. Not admitted yet? Join at ${WAITLIST_PAGE}.`;
+export const HOW_TO_GET_A_CODE = "Run cello setup and give your email to get a code. If you already have a setup code, use cello setup --code <code>.";
 
 // What a person can do next, for each thing an issuer can refuse. The issuer's own words come first.
 const NEXT_STEP: Record<string, string> = {
@@ -26,10 +25,15 @@ const NEXT_STEP: Record<string, string> = {
   code_expired: `Sign in at ${ACCOUNT_SITE} for a new one.`,
   code_unknown: `Check it against the one on ${ACCOUNT_SITE}, or get a new one there.`,
   code_cap: "That limit is set by the issuer, and nothing was used.",
-  agent_cap: "This agent wasn't registered. Once the limit is raised, run the same command again.",
+  agent_cap: "Once the limit is raised, run cello setup again.",
   rate_limited: "Nothing was used.",
   waitlist_unavailable: "Nothing was used. Run the same command again in a minute.",
   agent_burned: "This agent can't be used again. Set up a new one.",
+  enroll_code_wrong: "",
+  enroll_code_expired: "Only the newest code works.",
+  account_deleting: "Nothing was set up.",
+  bad_email: "Nothing was set up.",
+  enroll_not_offered: "Use a setup code from that issuer instead: cello setup --code <code>.",
 };
 
 export type IssuerStanding = "recognised" | "trusted_by_owner" | "unknown";
@@ -299,7 +303,8 @@ export class Wallet {
 
   #plain(err: unknown, attempted: string): LocalError {
     if (err instanceof IssuerRefused) {
-      const next = NEXT_STEP[err.reason];
+      // The issuer says what raises the limit, never where; a phone is verified on the account site.
+      const next = err.reason === "agent_cap" && /phone/i.test(err.message) ? `Do that at ${ACCOUNT_SITE}, then run cello setup again.` : NEXT_STEP[err.reason];
       return new LocalError(err.reason, `${err.message}${next ? ` ${next}` : ""}`);
     }
     if (err instanceof IssuerUnreachable) return new LocalError("issuer_unreachable", `Couldn't reach the issuer to ${attempted}: ${err.message}. Check your connection, then run the same command again.`);
@@ -331,6 +336,25 @@ export class Wallet {
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
       throw this.#plain(err, "request Usage");
+    }
+  }
+
+  async enrollStart(agentHex: string, email: string, invite?: string): Promise<void> {
+    try {
+      await this.#client().enrollStart(this.#hooks.keys(agentHex), email, invite);
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "send the code");
+    }
+  }
+
+  async enrollVerify(agentHex: string, code: string): Promise<Collected> {
+    try {
+      const client = this.#client();
+      return await this.#keep(agentHex, (await client.enrollVerify(this.#hooks.keys(agentHex), code)).signals);
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "check the code");
     }
   }
 

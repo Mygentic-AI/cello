@@ -2592,7 +2592,7 @@ export class Engine {
     return this.#describeNew(agent);
   }
 
-  async #enrollExisting(agent: AgentContext, code: string | undefined): Promise<unknown> {
+  async #enrollExisting(agent: AgentContext, code: string | undefined, emailCode?: string): Promise<unknown> {
     const holder = this.wallet.holderAmong([...this.#agents.keys()].filter((hex) => hex !== agent.hex));
     const got = await this.#signalThenOnline(agent, async () => {
       if (holder) return this.wallet.copyFromHolder(agent.hex, holder);
@@ -2603,24 +2603,47 @@ export class Engine {
       } catch (err: unknown) {
         if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
       }
+      if (emailCode) return this.wallet.enrollVerify(agent.hex, emailCode);
       if (!code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
       return this.wallet.redeem(agent.hex, code);
     });
     return { ...this.#describeNew(agent), signals_held: got.held, signals_refused: got.refused };
   }
 
+  // Email signup, step one. The key is made here and kept, because the code the issuer mails can only be spent by it. Run
+  // again before the code is typed, it's the same key and a new code. The issuer and the server hold nothing until verify.
+  async enrollStart(name: string | undefined, email: string, invite: string | undefined): Promise<unknown> {
+    const agents = [...this.#agents.values()];
+    let chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
+    if (chosen && this.wallet.hasEmail(chosen.hex)) return { ...this.#describeNew(chosen), already_set_up: true };
+    if (this.wallet.holderAmong(agents.map((a) => a.hex).filter((hex) => hex !== chosen?.hex))) {
+      throw new LocalError("email_not_needed", "This machine already has an agent with a verified email, so a new agent here needs no email. Run cello setup with --name and no email.");
+    }
+    const earlier = chosen !== undefined;
+    if (!chosen) {
+      if (name === undefined) throw new LocalError("name_required", "Give the agent a name.");
+      this.#checkNewName(name);
+      const seeds = generateIdentitySeeds();
+      chosen = this.#newAgent(name, seeds, await signerFromSeeds(seeds), true);
+    }
+    await this.wallet.enrollStart(chosen.hex, email, invite);
+    return { name: chosen.name, agent_id: chosen.hex, code_sent: true, earlier };
+  }
+
   // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
-  async enrollAgent(name: string | undefined, code: string | undefined): Promise<unknown> {
+  async enrollAgent(name: string | undefined, code: string | undefined, emailCode?: string): Promise<unknown> {
     const agents = [...this.#agents.values()];
     const chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
     if (chosen && this.wallet.hasEmail(chosen.hex)) {
       if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
       return { ...this.#describeNew(chosen), already_set_up: true };
     }
-    if (chosen) return this.#enrollExisting(chosen, code);
+    if (chosen) return this.#enrollExisting(chosen, code, emailCode);
     const newName = name ?? DEFAULT_AGENT_NAME;
     this.#checkNewName(newName);
     const holder = this.wallet.holderAmong(agents.map((a) => a.hex));
+    // An emailed code belongs to the key that asked for it, so there's nothing to spend it on yet.
+    if (!holder && emailCode) throw new LocalError("no_code_sent", `No code has been sent for ${newName} on this machine. Run cello setup --name ${newName} --email <address> first.`);
     if (!holder && !code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
     const seeds = generateIdentitySeeds();
     const signer = await signerFromSeeds(seeds);

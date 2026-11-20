@@ -10,7 +10,7 @@ export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;
 const NONCE_BYTES = 16;
 
-export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse" | "request_usage";
+export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse" | "request_usage" | "enroll_start" | "enroll_verify";
 
 export interface AgentRequestFields {
   action: AgentRequestAction;
@@ -126,6 +126,17 @@ export class IssuerClient {
     return this.#send("redeem", "redeem", agent, { code, target: null, holder: null, holderSignal: null });
   }
 
+  // Email signup, step one: the issuer mails a code that only this agent's key can spend. The answer carries no signals,
+  // and is the same whether or not the issuer knows the address. An invite rides beside the request, as Usage does.
+  async enrollStart(agent: AgentKeys, email: string, invite?: string): Promise<void> {
+    await this.#send("enroll/start", "enroll_start", agent, { code: email, target: null, holder: null, holderSignal: null }, undefined, invite === undefined ? {} : { invite }, false);
+  }
+
+  // Step two: the emailed code, from the same key. The answer is the agent's signals.
+  enrollVerify(agent: AgentKeys, code: string): Promise<IssuerAnswer> {
+    return this.#send("enroll/verify", "enroll_verify", agent, { code, target: null, holder: null, holderSignal: null });
+  }
+
   collect(agent: AgentKeys): Promise<IssuerAnswer> {
     return this.#send("collect", "collect", agent, { code: null, target: null, holder: null, holderSignal: null });
   }
@@ -153,7 +164,7 @@ export class IssuerClient {
     }
   }
 
-  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds, beside: Record<string, unknown> = {}): Promise<IssuerAnswer> {
+  async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds, beside: Record<string, unknown> = {}, withSignals = true): Promise<IssuerAnswer> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const bytes = encodeAgentRequest({
       action,
@@ -174,6 +185,8 @@ export class IssuerClient {
     } catch (err: unknown) {
       throw new IssuerUnreachable(`nothing answered at ${this.#base.origin}: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // An issuer from before email signup has no such route. Say so plainly: its operator may run an older version on purpose.
+    if (status === 404 && route.startsWith("enroll/")) throw new IssuerRefused("enroll_not_offered", `The issuer at ${this.#base.origin} doesn't offer signing up by email.`);
     if (text.length > MAX_ANSWER_BYTES) throw new IssuerUnreachable(`the answer from ${this.#base.origin} is too large to be an issuer's`);
     let answer: { ok?: unknown; reason?: unknown; guidance?: unknown; signals?: unknown };
     try {
@@ -185,6 +198,7 @@ export class IssuerClient {
       if (typeof answer.reason !== "string") throw new IssuerUnreachable(`${this.#base.origin} answered with status ${status}, and not as an issuer would`);
       throw new IssuerRefused(answer.reason, typeof answer.guidance === "string" ? answer.guidance : answer.reason);
     }
+    if (!withSignals) return { signals: [] };
     if (!Array.isArray(answer.signals) || !answer.signals.every((s) => typeof s === "string")) throw new IssuerUnreachable(`${this.#base.origin} answered without a list of signals`);
     return { signals: (answer.signals as string[]).map((s) => new Uint8Array(Buffer.from(s, "base64"))) };
   }

@@ -324,7 +324,9 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     case "create_agent":
       return engine.createAgent(text(params, "name"));
     case "enroll_agent":
-      return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"));
+      return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"), optionalText(params, "email_code"));
+    case "enroll_start":
+      return engine.enrollStart(optionalText(params, "name"), text(params, "email"), optionalText(params, "invite"));
     case "signals_list":
       return engine.wallet.list(named(params), params["all"] === true);
     case "signals_view":
