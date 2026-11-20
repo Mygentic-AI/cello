@@ -306,7 +306,12 @@ const serverDir = args["server-dir"] ?? process.env["CELLO_SERVER_DIR"] ?? join(
 const overridePath = join(runDir, "compose-override.yml");
 // Each daemon collects a real signal, from an issuer this server is told to count.
 const issuerDir = process.env["CELLO_ISSUER_DIR"];
-if (!issuerDir) throw new Error("Set CELLO_ISSUER_DIR to the issuer's source: the stand-in issuer reads requests with its code.");
+if (!issuerDir) {
+  // One line, like the scripts, and no empty run folder left behind.
+  process.stderr.write("No issuer source: set CELLO_ISSUER_DIR to it, because the stand-in issuer reads requests with the issuer's own code.\n");
+  rmSync(runDir, { recursive: true, force: true });
+  process.exit(1);
+}
 const standIn = await StandInIssuer.start(issuerDir, { open: true });
 process.env["CELLO_TEST_ISSUER_URL"] = standIn.url;
 process.env["CELLO_TRUSTED_ISSUERS"] = JSON.stringify([{ address: "127.0.0.1", ...identityCodec.encode((await standInKeys()).publicIdentity) }]);

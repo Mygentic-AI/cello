@@ -5,7 +5,7 @@ import { encodeCbor } from "../protocol/cbor.ts";
 import type { DualSignature, IdentitySeeds, PublicIdentity } from "../protocol/identity.ts";
 import { mlDsaProviderFromSeed } from "../protocol/ml-dsa.ts";
 
-// A protocol signing label, not a name: every issuer request ever signed carries it. It must never change.
+// A protocol signing label, not a name: the issuer verifies every request against this exact text. It must never change.
 export const AGENT_REQUEST_DOMAIN = "cello-issuer-request-v1";
 export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;

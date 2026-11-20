@@ -6,7 +6,6 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../../../../cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-concierge-deploy}" CELLO_PORT="${CELLO_PORT:-21100}" CELLO_SERVER_DIR="$server_dir"
 export CONCIERGE_CONTAINER="${CONCIERGE_CONTAINER:-cello-concierge-deploy}" CONCIERGE_IMAGE="${CONCIERGE_IMAGE:-cello-concierge:proof}"
-CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-}"
 # Servers require a verified email signal, and the Concierge's agent redeems a real code at a stand-in issuer.
 . "$here/scripts/test-issuer-env.sh"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
