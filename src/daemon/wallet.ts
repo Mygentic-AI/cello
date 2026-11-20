@@ -25,7 +25,7 @@ const NEXT_STEP: Record<string, string> = {
   code_expired: `Sign in at ${ACCOUNT_SITE} for a new one.`,
   code_unknown: `Check it against the one on ${ACCOUNT_SITE}, or get a new one there.`,
   code_cap: "That limit is set by the issuer, and nothing was used.",
-  agent_cap: "Once the limit is raised, run cello setup again.",
+  agent_cap: "This agent wasn't registered. Once the limit is raised, run the same command again.",
   rate_limited: "Nothing was used.",
   waitlist_unavailable: "Nothing was used. Run the same command again in a minute.",
   agent_burned: "This agent can't be used again. Set up a new one.",
@@ -304,7 +304,7 @@ export class Wallet {
   #plain(err: unknown, attempted: string): LocalError {
     if (err instanceof IssuerRefused) {
       // The issuer says what raises the limit, never where; a phone is verified on the account site.
-      const next = err.reason === "agent_cap" && /phone/i.test(err.message) ? `Do that at ${ACCOUNT_SITE}, then run cello setup again.` : NEXT_STEP[err.reason];
+      const next = err.reason === "agent_cap" && /phone/i.test(err.message) ? `Do that at ${ACCOUNT_SITE}, then run the same command again.` : NEXT_STEP[err.reason];
       return new LocalError(err.reason, `${err.message}${next ? ` ${next}` : ""}`);
     }
     if (err instanceof IssuerUnreachable) return new LocalError("issuer_unreachable", `Couldn't reach the issuer to ${attempted}: ${err.message}. Check your connection, then run the same command again.`);

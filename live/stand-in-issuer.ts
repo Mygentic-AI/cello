@@ -40,6 +40,11 @@ export class StandInIssuer {
   readonly owners = new Map<string, string>();
   readonly requests: { route: string; agentId?: string }[] = [];
   readonly extras = new Map<string, EnvelopeChange[]>();
+  // Email signup: the code each key was last sent, and every email "sent", newest last.
+  readonly enrolling = new Map<string, { email: string; code: string; tries: number }>();
+  readonly mail: { to: string; code: string; agentId: string }[] = [];
+  // An issuer from before email signup answers its routes with a bare 404.
+  enrollOffered = true;
   // Burn the code, then lose the answer: what a dropped connection looks like from the daemon.
   dropNextRedeemAnswer = false;
   #server!: Server;
@@ -109,7 +114,12 @@ export class StandInIssuer {
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
     const route = (req.url ?? "").replace("/api/issuer/", "");
-    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route;
+    if (route.startsWith("enroll/") && !this.enrollOffered) {
+      res.writeHead(404, { "content-type": "text/html" });
+      res.end("<!DOCTYPE html><title>404</title>");
+      return;
+    }
+    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route.replace("/", "_");
     const body = JSON.parse(raw) as { usageFacts?: unknown; usageServer?: unknown };
     const read = this.#contract.agentRequestFromWire(body);
     const checked = await this.#contract.checkAgentRequest(read.bytes, read.signatures, { action, issuerAddress: "127.0.0.1", now: Math.floor(Date.now() / 1000) });
@@ -130,11 +140,43 @@ export class StandInIssuer {
       }
       return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
     }
+    // A small copy of the real issuer's enroll rules: a code bound to the key that asked, five tries, the newest only, and
+    // the agent limit at verify without spending the code. Its words are the real issuer's.
+    if (route === "enroll/start") {
+      const email = (fields.code ?? "").trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return refuse(400, "bad_email", "That doesn't look like an email address.");
+      const code = String(randomBytes(4).readUInt32BE(0) % 1_000_000).padStart(6, "0");
+      this.enrolling.set(agentId, { email, code, tries: 0 });
+      this.mail.push({ to: email, code, agentId });
+      return send(200, { ok: true, sent: true });
+    }
+    if (route === "enroll/verify") {
+      const pending = this.enrolling.get(agentId);
+      if (!pending) return refuse(403, "enroll_code_expired", "That code has expired or was already used. Run cello setup again for a new one.");
+      if (fields.code !== pending.code) {
+        pending.tries += 1;
+        if (pending.tries >= 5) {
+          this.enrolling.delete(agentId);
+          return refuse(403, "enroll_code_expired", "Too many wrong tries, so that code no longer works. Run cello setup again for a new one.");
+        }
+        const left = 5 - pending.tries;
+        return refuse(403, "enroll_code_wrong", `That code isn't right. You have ${left} ${left === 1 ? "try" : "tries"} left.`);
+      }
+      const owner = `email:${pending.email}`;
+      if (!this.owners.has(agentId)) {
+        if (!this.#open && [...this.owners.values()].filter((o) => o === owner).length >= AGENT_CAP) {
+          return refuse(403, "agent_cap", `You're at your limit of ${AGENT_CAP} agents. Verify your phone to raise it to 50.`);
+        }
+        this.owners.set(agentId, owner);
+      }
+      this.enrolling.delete(agentId);
+      return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
+    }
     if (route === "collect") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");
       return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
     }
-    // A small copy of the real issuer's Usage checks and counting (cello-issuer src/server/trust/usage.ts), not its wording.
+    // A small copy of the real issuer's Usage checks and counting, not its wording.
     if (route === "usage") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");
       let facts: ReturnType<typeof signedUsageFacts.decode>;
@@ -168,7 +210,7 @@ export class StandInIssuer {
     const held = await checkSignal(fields.holderSignal, { subject: holderId, now: Math.floor(Date.now() / 1000) });
     if (!held.ok || held.signal.envelope.subject_kind !== "account") return refuse(403, "holder_signal_forged", "This signal can't vouch for anyone.");
     const owner = this.owners.get(holderId) as string;
-    if (!this.#open && [...this.owners.values()].filter((o) => o === owner).length >= AGENT_CAP) return refuse(403, "agent_cap", "This owner has reached its agent limit. Verifying a phone raises it.");
+    if (!this.#open && [...this.owners.values()].filter((o) => o === owner).length >= AGENT_CAP) return refuse(403, "agent_cap", `You're at your limit of ${AGENT_CAP} agents. Verify your phone to raise it to 50.`);
     this.owners.set(agentId, owner);
     return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
   }

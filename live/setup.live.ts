@@ -89,6 +89,68 @@ sys.stdout.write(out.decode())
   });
 }
 
+// A real terminal that holds a conversation: each prompt, in order, is answered by asking this process, so an answer can be
+// a code the stand-in issuer has only just "emailed". Gives up after 60 seconds and returns what it saw.
+function talk(home: string, args: string[], steps: [prompt: string, answer: () => string][]): Promise<string> {
+  const script = `
+import json, os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], sys.argv[1:])
+prompts = json.loads(os.environ["PROMPTS"])
+out = b""
+seen = 0
+step = 0
+end = time.time() + 60
+while time.time() < end:
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if r:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    if step < len(prompts):
+        at = out.find(prompts[step].encode(), seen)
+        if at >= 0:
+            seen = at + len(prompts[step])
+            sys.stdout.write("\\x00ASK %d\\n" % step)
+            sys.stdout.flush()
+            os.write(fd, (sys.stdin.readline().rstrip("\\n") + "\\n").encode())
+            step += 1
+os.waitpid(pid, 0)
+sys.stdout.write("\\x00OUT " + json.dumps(out.decode()) + "\\n")
+`;
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", ["-c", script, process.execPath, cli, ...args], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", PROMPTS: JSON.stringify(steps.map(([prompt]) => prompt)) } });
+    let buffered = "";
+    let seen = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffered += String(chunk);
+      let newline: number;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        if (line.startsWith("\x00ASK ")) child.stdin.write(`${(steps[Number(line.slice(5))] as [string, () => string])[1]()}\n`);
+        else if (line.startsWith("\x00OUT ")) seen = JSON.parse(line.slice(5)) as string;
+      }
+    });
+    child.on("error", reject);
+    child.on("close", () => resolve(seen.replace(/\r/g, "")));
+  });
+}
+
+// Any run that waits on a prompt nobody can answer fails the test instead of hanging it.
+const within = <T,>(ms: number, work: Promise<T>): Promise<T> => Promise.race([work, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`still running after ${ms} ms: it's waiting for something`)), ms))]);
+const lastMail = (to: string): { code: string; agentId: string } => {
+  const found = issuer.mail.filter((m) => m.to === to).at(-1);
+  assert.ok(found, `no code was sent to ${to}`);
+  return found;
+};
+const otherThan = (code: string): string => (code === "000000" ? "111111" : "000000");
+
 const newCode = (): string => {
   const code = `code-${Math.random().toString(36).slice(2)}`;
   issuer.codes.set(code, "good");
@@ -110,16 +172,126 @@ after(async () => {
   for (const home of homes) rmSync(home, { recursive: true, force: true });
 });
 
-test("with no code it says how to get one, and starts nothing", async () => {
+test("with no terminal and nothing to go on, it says in one line what to give, and starts nothing", async () => {
   const home = newHome();
-  const done = await run(home, ["setup"]);
+  const done = await within(10_000, run(home, ["setup"]));
   assert.equal(done.status, 1);
-  assert.match(done.stderr, /Sign in at https:\/\/trust\.celloprotocol\.com/);
-  assert.match(done.stderr, /celloprotocol\.com\/status/);
-  assert.equal(done.stderr.includes("{"), false, "plain words, not JSON");
+  assert.equal(done.stderr, "✗ No setup code and no email. Give --email <address> to get a code, or --code <code>. Nothing was set up.\n");
   assert.equal(running(home), false);
   const asJson = await run(home, ["setup", "--json"]);
-  assert.equal(asJson.json["error"], "code_required");
+  assert.equal(asJson.json["error"], "email_required");
+  const cases: [string[], string][] = [
+    [["--email", "ann@example.test"], "✗ Give the agent a name with --name. Nothing was set up.\n"],
+    [["--email", "not an address", "--name", "Ann"], "✗ That doesn't look like an email address. Nothing was set up.\n"],
+    [["--code", "c", "--email", "ann@example.test"], "✗ Give a setup code or an email, not both.\n"],
+  ];
+  for (const [args, said] of cases) {
+    const refused = await within(10_000, run(home, ["setup", ...args]));
+    assert.equal(refused.status, 1, args.join(" "));
+    assert.equal(refused.stderr, said);
+  }
+  assert.equal(running(home), false);
+  assert.equal(issuer.mail.length, 0, "no code was sent");
+});
+
+test("the email route at a terminal: name, email, a wrong code asked again, and the end line names the account site", async () => {
+  const home = newHome();
+  const email = "ann.terminal@example.test";
+  const said = await talk(home, setupArgs([]), [
+    ["What should your agent be called?", () => "Ann"],
+    ["What's your email?", () => email],
+    ["Type the code from the email:", () => otherThan(lastMail(email).code)],
+    ["Type the code from the email:", () => lastMail(email).code],
+  ]);
+  assert.match(said, /A 6-digit code is on its way to ann\.terminal@example\.test\. It can take a minute\./);
+  assert.match(said, /Not there\? Check spam\. Wrong address\? Press Enter with no code to give a different one\./);
+  assert.match(said, /That code isn't right\. You have 4 tries left\./);
+  assert.match(said, /Ann has its verified email signal\./);
+  assert.match(said, /✓ Ann is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
+  const status = await ok(home, ["status"]) as { agents: { name: string; agent_id: string }[] };
+  assert.equal(status.agents[0]?.agent_id, lastMail(email).agentId, "the key that asked is the agent");
+  assert.equal(serverKnows(lastMail(email).agentId), "1");
+
+  // Run again: nothing changes, and nothing is sent.
+  const sent = issuer.mail.length;
+  const again = await run(home, setupArgs([]));
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /Ann is already set up, so nothing changed/);
+  assert.match(again.stdout, /✓ Ann is set up\.\n/);
+  assert.equal(issuer.mail.length, sent);
+  await ok(home, ["logout"]);
+});
+
+test("Enter with no code goes back to the email: the same key, a new code, and only the newest works", async () => {
+  const home = newHome();
+  const said = await talk(home, setupArgs([]), [
+    ["What should your agent be called?", () => "Bo"],
+    ["What's your email?", () => "bo@exampel.test"],
+    ["Type the code from the email:", () => ""],
+    ["What's your email?", () => "bo@example.test"],
+    ["Type the code from the email:", () => lastMail("bo@example.test").code],
+  ]);
+  assert.match(said, /A new code is on its way to bo@example\.test\. Only the newest code works\./);
+  assert.match(said, /✓ Bo is set up\./);
+  assert.equal(lastMail("bo@exampel.test").agentId, lastMail("bo@example.test").agentId, "one key throughout");
+  await ok(home, ["logout"]);
+});
+
+test("for an agent: two runs; cut short and run again, it's the same key with a new code, and the old one is dead", async () => {
+  const home = newHome();
+  const email = "cy@example.test";
+  const first = await within(30_000, run(home, setupArgs(["--name", "Cy-1", "--email", email])));
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /A 6-digit code is on its way to cy@example\.test\./);
+  assert.match(first.stdout, /Code sent to cy@example\.test\. Next: printf %s <code> \| cello setup --name Cy-1 --email-code -\n/);
+  const old = lastMail(email);
+
+  const again = await within(30_000, run(home, setupArgs(["--name", "Cy-1", "--email", email, "--json"])));
+  assert.equal(again.status, 0, again.stderr);
+  assert.deepEqual(JSON.parse(again.stdout.trim().split("\n").at(-1) as string), { ok: true, done: false, next: "email_code", name: "Cy-1" });
+  const fresh = lastMail(email);
+  assert.equal(fresh.agentId, old.agentId, "the same key");
+  assert.equal((await ok(home, ["agents"]) as { agents: unknown[] }).agents.length, 1, "nothing half-made");
+  assert.equal(serverKnows(old.agentId), "0");
+
+  if (old.code !== fresh.code) {
+    const stale = await run(home, ["setup", "--name", "Cy-1", "--email-code", old.code]);
+    assert.equal(stale.status, 1);
+    assert.equal(stale.stderr, "✗ That code isn't right. You have 4 tries left. Run the same command with the right code.\n");
+  }
+  const done = await run(home, ["setup", "--name", "Cy-1", "--concierge", "none", "--email-code", "-"], fresh.code);
+  assert.equal(done.status, 0, done.stderr);
+  assert.match(done.stdout, /✓ Cy-1 is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
+  assert.equal(serverKnows(old.agentId), "1");
+  await ok(home, ["logout"]);
+});
+
+test("the agent limit and an issuer without email signup each say so in one plain line", async () => {
+  const email = "full@example.test";
+  for (let i = 0; i < 3; i++) {
+    const home = newHome();
+    assert.equal((await run(home, setupArgs(["--name", `Full${i}`, "--email", email]))).status, 0);
+    const done = await run(home, ["setup", "--name", `Full${i}`, "--concierge", "none", "--email-code", lastMail(email).code]);
+    assert.equal(done.status, 0, done.stderr);
+    await ok(home, ["logout"]);
+  }
+  const fourth = newHome();
+  assert.equal((await run(fourth, setupArgs(["--name", "Full3", "--email", email]))).status, 0);
+  const refused = await run(fourth, ["setup", "--name", "Full3", "--email-code", lastMail(email).code]);
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stderr, "✗ You're at your limit of 3 agents. Verify your phone to raise it to 50. Do that at https://trust.celloprotocol.com, then run the same command again.\n");
+  await ok(fourth, ["logout"]);
+
+  issuer.enrollOffered = false;
+  try {
+    const home = newHome();
+    const old = await within(30_000, run(home, setupArgs(["--name", "Old", "--email", "old@example.test"])));
+    assert.equal(old.status, 1);
+    assert.equal(old.stderr, `✗ The issuer at ${issuer.url} doesn't offer signing up by email. Use a setup code from that issuer instead: cello setup --code <code>.\n`);
+    await ok(home, ["logout"]);
+  } finally {
+    issuer.enrollOffered = true;
+  }
 });
 
 test("it asks before starting a background program, and with nobody to ask it starts nothing", async () => {
@@ -285,7 +457,7 @@ test("the whole path: setup ends on a reply, a repeat changes nothing, and a sec
   const fourth = await run(home, ["create-agent", "Dee"]);
   assert.equal(fourth.status, 1);
   assert.equal(fourth.json["error"], "agent_cap");
-  assert.match(fourth.json["message"] as string, /Verifying a phone raises it\. This agent wasn't registered/);
+  assert.match(fourth.json["message"] as string, /Verify your phone to raise it to 50\. Do that at https:\/\/trust\.celloprotocol\.com, then run the same command again\./);
   const dee = (await ok(home, ["agents"]) as { agents: { name: string; agent_id: string; registered: boolean }[] }).agents.find((a) => a.name === "Dee");
   assert.equal(dee?.registered, false);
   assert.equal(serverKnows(dee?.agent_id as string), "0");
