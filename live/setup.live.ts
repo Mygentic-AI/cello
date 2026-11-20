@@ -558,6 +558,23 @@ test("an owner who signed up in a chat app: a phone signal registers, a repeat c
   await ok(home, ["logout"]);
 });
 
+test("holding both, the client sends the email signal first", async () => {
+  // The email one names an issuer this server doesn't count, and the phone one an issuer it does. Sent first, the email one is
+  // refused by name and the agent stays off the server. Had the client sent the phone one, the agent would have registered.
+  const home = newHome();
+  const code = newCode();
+  issuer.proved.set(code, "both, email unlisted");
+  const tried = await run(home, setupArgs(["--code", code, "--name", "Sol", "--json"]));
+  assert.equal(tried.status, 1, tried.stdout);
+  assert.equal(tried.json["error"], "not_registered");
+  // This test server counts only its operator's issuer and holds no signed list, so it says so rather than "unknown issuer".
+  assert.match(tried.json["message"] as string, /the server didn't take it: .*no signed issuer list/);
+  const sol = (await ok(home, ["agents"]) as { agents: { name: string; agent_id: string }[] }).agents.find((a) => a.name === "Sol");
+  assert.equal(serverKnows(sol?.agent_id as string), "0");
+  assert.deepEqual((await listed(home, "Sol", ["--all"])).signals.map((s) => s.type).sort(), ["email", "phone"]);
+  await ok(home, ["logout"]);
+});
+
 test("an issuer that gives neither an email nor a phone signal: nothing is registered, and the words say so", async () => {
   const home = newHome();
   const code = newCode();

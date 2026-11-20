@@ -19,7 +19,7 @@ const fill = (byte: number): Uint8Array => new Uint8Array(32).fill(byte);
 const issuer = await signerFromSeeds({ ed: fill(1), pq: fill(2) });
 const hex = (b: Uint8Array | undefined): string => (b ? Buffer.from(b).toString("hex") : "none");
 
-async function holding(signals: { type: string; expiresIn: number }[]) {
+async function holding(signals: { type: string; expiresIn: number; byAgent?: boolean }[]) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-registration-")), "cello.db"));
   const agent = await signerFromSeeds({ ed: fill(7), pq: fill(8) });
   store.insertAgent(agent.id, "Ann", fill(1), fill(2));
@@ -28,7 +28,7 @@ async function holding(signals: { type: string; expiresIn: number }[]) {
   const now = Math.floor(Date.now() / 1000);
   const files = new Map<string, Uint8Array>();
   for (const [i, s] of signals.entries()) {
-    const file = await signSignal({ subject_kind: "account", subject: toHex(agent.id), issuer_kind: "issuer", issuer_pubkey: issuerPubkeyField(issuer.publicIdentity), type: s.type, schema_version: 1, payload: new Uint8Array(encodeCbor({ claim: "x" })), issued_at: now - 7200, expires_at: now + s.expiresIn, supersedes_hash: null, same_operator: false, issuer_address: "trust.celloprotocol.com", signal_id: new Uint8Array(16).fill(i + 1) }, issuer);
+    const file = await signSignal({ subject_kind: "account", subject: toHex(agent.id), issuer_kind: s.byAgent ? "agent" : "issuer", issuer_pubkey: issuerPubkeyField(issuer.publicIdentity), type: s.type, schema_version: 1, payload: new Uint8Array(encodeCbor({ claim: "x" })), issued_at: now - 7200, expires_at: now + s.expiresIn, supersedes_hash: null, same_operator: false, issuer_address: "trust.celloprotocol.com", signal_id: new Uint8Array(16).fill(i + 1) }, issuer);
     new SignalStore(store).put(agent.id, readSignedSignal(file), file);
     files.set(s.type, file);
   }
@@ -47,6 +47,12 @@ test("an agent holding only a phone signal sends that", async () => {
   assert.equal(wallet.registrationSignal(agentHex)?.type, "phone");
   assert.equal(hex(wallet.registrationSignal(agentHex)?.file), hex(files.get("phone")));
   assert.equal(wallet.hasRegistrationSignal(agentHex), true);
+});
+
+test("an email signal the owner hasn't accepted gives way to an accepted phone", async () => {
+  // One issued by an agent waits for the owner's yes, so it can't be what registration carries.
+  const { wallet, agentHex } = await holding([{ type: "email", expiresIn: 3600, byAgent: true }, { type: "phone", expiresIn: 3600 }]);
+  assert.equal(wallet.registrationSignal(agentHex)?.type, "phone");
 });
 
 test("a lapsed email gives way to a current phone, and neither current means none", async () => {

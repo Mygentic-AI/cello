@@ -42,7 +42,8 @@ export class StandInIssuer {
   readonly requests: { route: string; agentId?: string }[] = [];
   readonly extras = new Map<string, EnvelopeChange[]>();
   // What an owner (keyed as `owners` keys them: a code, or "email:<address>") proved. Unset is an email.
-  readonly proved = new Map<string, "email" | "phone" | "none">();
+  // "both, email unlisted": an email signal under an address no server counts, and a phone one it does, so which one the client sent shows.
+  readonly proved = new Map<string, "email" | "phone" | "none" | "both, email unlisted">();
   // Email signup: the code each key was last sent, and every email "sent", newest last.
   readonly enrolling = new Map<string, { email: string; code: string; tries: number }>();
   readonly mail: { to: string; code: string; agentId: string }[] = [];
@@ -104,7 +105,11 @@ export class StandInIssuer {
   async #files(agentId: string): Promise<string[]> {
     // The real issuer gives an owner who signed up in a chat app a phone signal and no email. "none" plays an answer with neither.
     const proved = this.proved.get(this.owners.get(agentId) ?? "") ?? "email";
-    const files = proved === "none" ? [] : [await this.sign(agentId, proved === "phone" ? { type: "phone", claim: PHONE_CLAIM } : {})];
+    const phone = (): Promise<Uint8Array> => this.sign(agentId, { type: "phone", claim: PHONE_CLAIM });
+    const files = proved === "none" ? []
+      : proved === "phone" ? [await phone()]
+      : proved === "both, email unlisted" ? [await this.sign(agentId, { address: "unlisted.example" }), await phone()]
+      : [await this.sign(agentId)];
     for (const change of this.extras.get(agentId) ?? []) files.push(await this.sign(agentId, change));
     return files.map((file) => Buffer.from(file).toString("base64"));
   }
