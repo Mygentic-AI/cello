@@ -247,7 +247,8 @@ test("for an agent: two runs; cut short and run again, it's the same key with a 
   const first = await within(30_000, run(home, setupArgs(["--name", "Cy-1", "--email", email])));
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /A 6-digit code is on its way to cy@example\.test\./);
-  assert.match(first.stdout, /Code sent to cy@example\.test\. Next: printf %s <code> \| cello setup --name Cy-1 --email-code -\n/);
+  const next = /Next: (.*)\n/.exec(first.stdout)?.[1] as string;
+  assert.equal(next, 'printf %s "$EMAILED_CODE" | cello setup --yes --concierge none --name Cy-1 --email-code -');
   const old = lastMail(email);
 
   const again = await within(30_000, run(home, setupArgs(["--name", "Cy-1", "--email", email, "--json"])));
@@ -263,9 +264,11 @@ test("for an agent: two runs; cut short and run again, it's the same key with a 
     assert.equal(stale.status, 1);
     assert.equal(stale.stderr, "✗ That code isn't right. You have 4 tries left. Run the same command with the right code.\n");
   }
-  const done = await run(home, ["setup", "--name", "Cy-1", "--concierge", "none", "--email-code", "-"], fresh.code);
-  assert.equal(done.status, 0, done.stderr);
-  assert.match(done.stdout, /✓ Cy-1 is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
+  // The line exactly as printed, pasted into a shell after a logout, as after a restart: nothing running, nothing remembered.
+  await ok(home, ["logout"]);
+  const pasted = execFileSync("sh", ["-c", next.replace(/^(.*\| )cello /, `$1"${process.execPath}" "${cli}" `)], { encoding: "utf8", env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", EMAILED_CODE: fresh.code } });
+  assert.match(pasted, /✓ Cy-1 is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
+  assert.match(pasted, /Not calling the Concierge, as asked\./);
   assert.equal(serverKnows(old.agentId), "1");
   await ok(home, ["logout"]);
 });

@@ -301,7 +301,10 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       if (!(err instanceof DaemonRefused) || err.code !== "code_required" || code) throw err;
       const route = await emailRoute(client, host, flags, interactive, say);
       if (!route.done) {
-        say(`Code sent to ${route.email}. Next: printf %s <code> | cello setup --name ${shellWord(route.name)} --email-code -`);
+        // Pasted as printed, it must finish the job: consent and a skipped Concierge last one run, so they're carried over.
+        // The server and issuer were saved in the database by this run.
+        const carried = [flags["yes"] === true ? " --yes" : "", skipConcierge ? " --concierge none" : ""].join("");
+        say(`Code sent to ${route.email}. Next: printf %s "$EMAILED_CODE" | cello setup${carried} --name ${shellWord(route.name)} --email-code -`);
         if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, done: false, next: "email_code", name: route.name })}\n`);
         return 0;
       }
