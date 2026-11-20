@@ -268,6 +268,23 @@ test("Enter with no code goes back to the email: the same key, a new code, and o
   await ok(home, ["logout"]);
 });
 
+test("cut short after the code was sent, the next run at a terminal doesn't ask the name again and finishes on the same key", async () => {
+  const home = newHome();
+  const email = "di@example.test";
+  assert.equal((await run(home, setupArgs(["--name", "Di", "--email", email]))).status, 0);
+  const first = lastMail(email);
+  const said = await talk(home, setupArgs([]), [
+    ["What's your email?", () => email],
+    ["Type the code from the email:", () => lastMail(email).code],
+  ]);
+  assert.match(said, /Di was started earlier and hasn't checked an email yet\./);
+  assert.doesNotMatch(said, /What should your agent be called\?/);
+  assert.match(said, /A new code is on its way to di@example\.test\. Only the newest code works\./);
+  assert.match(said, /✓ Di is set up\./);
+  assert.equal(lastMail(email).agentId, first.agentId);
+  await ok(home, ["logout"]);
+});
+
 test("for an agent: two runs; cut short and run again, it's the same key with a new code, and the old one is dead", async () => {
   const home = newHome();
   const email = "cy@example.test";
@@ -321,11 +338,18 @@ test("the agent limit and an issuer without email signup each say so in one plai
     const home = newHome();
     const old = await within(30_000, run(home, setupArgs(["--name", "Old", "--email", "old@example.test"])));
     assert.equal(old.status, 1);
-    assert.equal(old.stderr, `✗ The issuer at ${issuer.url} doesn't offer signing up by email. Use a setup code from that issuer instead: cello setup --code <code>.\n`);
+    assert.equal(old.stderr, `✗ The issuer at ${issuer.url} doesn't offer signing up by email (it answered 404; if that isn't an issuer, check --issuer). Use a setup code from that issuer instead: cello setup --code <code>.\n`);
     await ok(home, ["logout"]);
   } finally {
     issuer.enrollOffered = true;
   }
+
+  // Nothing answering at all: one line, and the same key can carry on once the issuer is back.
+  const home = newHome();
+  const down = await within(60_000, run(home, ["setup", "--yes", "--server", url, "--issuer", "http://127.0.0.1:9", "--concierge", "none", "--name", "Dot", "--email", "dot@example.test"]));
+  assert.equal(down.status, 1);
+  assert.match(down.stderr, /^✗ Couldn't reach the issuer to send the code: nothing answered at http:\/\/127\.0\.0\.1:9: .*\. Nothing was used\. Check your connection, then run the same command again\.\n$/);
+  await ok(home, ["logout"]);
 });
 
 test("it asks before starting a background program, and with nobody to ask it starts nothing", async () => {

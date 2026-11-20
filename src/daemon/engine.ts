@@ -2632,7 +2632,8 @@ export class Engine {
   // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
   async enrollAgent(name: string | undefined, code: string | undefined, emailCode?: string): Promise<unknown> {
     const agents = [...this.#agents.values()];
-    const chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
+    // Unnamed, a repeat run means the agent that's set up: an earlier run cut short mustn't be finished by copying its signal.
+    const chosen = name === undefined ? (agents.find((a) => this.wallet.hasEmail(a.hex)) ?? agents[0]) : agents.find((a) => a.name === name);
     if (chosen && this.wallet.hasEmail(chosen.hex)) {
       if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
       return { ...this.#describeNew(chosen), already_set_up: true };
