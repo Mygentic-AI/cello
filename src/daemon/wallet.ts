@@ -29,10 +29,10 @@ const NEXT_STEP: Record<string, string> = {
   rate_limited: "Nothing was used.",
   waitlist_unavailable: "Nothing was used. Run the same command again in a minute.",
   agent_burned: "This agent can't be used again. Set up a new one.",
-  enroll_code_wrong: "",
   enroll_code_expired: "Only the newest code works.",
-  account_deleting: "Nothing was set up.",
-  bad_email: "Nothing was set up.",
+  bad_code: "Run the same command with the six digits from the email.",
+  account_deleting: "Nothing was registered.",
+  bad_email: "Nothing was registered.",
   enroll_not_offered: "Use a setup code from that issuer instead: cello setup --code <code>.",
 };
 
@@ -307,7 +307,9 @@ export class Wallet {
       const next = err.reason === "agent_cap" && /phone/i.test(err.message) ? `Do that at ${ACCOUNT_SITE}, then run the same command again.` : NEXT_STEP[err.reason];
       return new LocalError(err.reason, `${err.message}${next ? ` ${next}` : ""}`);
     }
-    if (err instanceof IssuerUnreachable) return new LocalError("issuer_unreachable", `Couldn't reach the issuer to ${attempted}: ${err.message}. Check your connection, then run the same command again.`);
+    // An email code is neither sent nor spent when the issuer can't be reached, so that can be said; a setup code's fate can't.
+    const untouched = attempted === "send the code" || attempted === "check the code" ? " Nothing was used." : "";
+    if (err instanceof IssuerUnreachable) return new LocalError("issuer_unreachable", `Couldn't reach the issuer to ${attempted}: ${err.message}.${untouched} Check your connection, then run the same command again.`);
     throw err;
   }
 

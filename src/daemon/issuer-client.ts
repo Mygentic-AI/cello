@@ -186,7 +186,10 @@ export class IssuerClient {
       throw new IssuerUnreachable(`nothing answered at ${this.#base.origin}: ${err instanceof Error ? err.message : String(err)}`);
     }
     // An issuer from before email signup has no such route. Say so plainly: its operator may run an older version on purpose.
-    if (status === 404 && route.startsWith("enroll/")) throw new IssuerRefused("enroll_not_offered", `The issuer at ${this.#base.origin} doesn't offer signing up by email.`);
+    // An issuer refusal is JSON; only a bare 404 means the route isn't there. The URL might just be wrong, so it's named.
+    if (status === 404 && route.startsWith("enroll/") && !text.trimStart().startsWith("{")) {
+      throw new IssuerRefused("enroll_not_offered", `The issuer at ${this.#base.origin} doesn't offer signing up by email (it answered 404; if that isn't an issuer, check --issuer).`);
+    }
     if (text.length > MAX_ANSWER_BYTES) throw new IssuerUnreachable(`the answer from ${this.#base.origin} is too large to be an issuer's`);
     let answer: { ok?: unknown; reason?: unknown; guidance?: unknown; signals?: unknown };
     try {
