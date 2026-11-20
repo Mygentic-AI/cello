@@ -310,7 +310,15 @@ test("for an agent: two runs; cut short and run again, it's the same key with a 
   }
   // The line exactly as printed, pasted into a shell after a logout, as after a restart: nothing running, nothing remembered.
   await ok(home, ["logout"]);
-  const pasted = execFileSync("sh", ["-c", next.replace(/^(.*\| )cello /, `$1"${process.execPath}" "${cli}" `)], { encoding: "utf8", env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", EMAILED_CODE: fresh.code } });
+  // Not a blocking call: the stand-in issuer answers from this same process.
+  const pasted = await new Promise<string>((resolve, reject) => {
+    const child = spawn("sh", ["-c", next.replace(/^(.*\| )cello /, `$1"${process.execPath}" "${cli}" `)], { env: { ...process.env, HOME: home, CELLO_HOME: home, CELLO_CALLER: "", EMAILED_CODE: fresh.code }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (chunk: Buffer) => { out += String(chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { out += String(chunk); });
+    child.on("error", reject);
+    child.on("close", (status) => (status === 0 ? resolve(out) : reject(new Error(`the pasted line failed: ${out}`))));
+  });
   assert.match(pasted, /✓ Cy-1 is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
   assert.match(pasted, /Not calling the Concierge, as asked\./);
   assert.equal(serverKnows(old.agentId), "1");
