@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import { NO_EXPIRY_NOTE, unknownIssuerNote } from "../src/guidance.ts";
+import { TEXT_SETTINGS } from "../src/daemon/settings.ts";
 import { EMAIL_CLAIM, StandInIssuer } from "./stand-in-issuer.ts";
 
 const url = process.env["CELLO_URL"] as string;
@@ -355,7 +356,7 @@ test("a bad code and a dead issuer say what to do next, and the same key carries
   const home = newHome();
   const wrong = await run(home, setupArgs(["--code", "not-a-code", "--name", "Ann"]));
   assert.equal(wrong.status, 1);
-  assert.match(wrong.stderr, /This code can't be used\. Check it against your email/);
+  assert.match(wrong.stderr, /This code can't be used\. Check it against the one on https:\/\/trust\.celloprotocol\.com, or get a new one there\./);
   const agents = await ok(home, ["agents"]) as { agents: { agent_id: string; registered: boolean; online: boolean }[] };
   assert.deepEqual(agents.agents.map((a) => [a.registered, a.online]), [[false, false]], "with no signal it doesn't go to the server");
   const id = agents.agents[0]?.agent_id as string;
@@ -600,6 +601,7 @@ test("--concierge none sets up without calling anyone, and leaves the setting as
   assert.match(plain.stdout, /Not calling the Concierge, as asked\./);
   assert.doesNotMatch(plain.stdout, /Calling the CELLO Concierge/);
   const settings = await ok(home, ["settings"]) as { settings: { name: string; value: unknown }[] };
-  assert.equal(settings.settings.find((s) => s.name === "concierge_address")?.value, "", "none is not kept as the address");
+  // The default the database starts with stays, rather than "none" taking its place.
+  assert.equal(settings.settings.find((s) => s.name === "concierge_address")?.value, TEXT_SETTINGS.concierge_address.default, "none is not kept as the address");
   assert.equal((await ok(home, ["sessions", "--all", "--agent", "Eve"]) as { sessions: unknown[] }).sessions.length, 0, "no call was made");
 });
