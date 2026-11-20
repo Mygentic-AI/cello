@@ -2561,6 +2561,11 @@ export class Engine {
     return { name: agent.name, agent_id: agent.hex, address: formatAddress(agent.hex, this.#url), registered: agent.registered, online: agent.online, ...note };
   }
 
+  // The kind of signal this agent registers with, as the wallet chooses it: what setup tells the person, so the two never disagree.
+  #registeredWith(agent: AgentContext): string | null {
+    return this.wallet.registrationSignal(agent.hex)?.type ?? null;
+  }
+
   #checkNewName(name: string): void {
     if (validateMoniker(name) === null) throw new LocalError("bad_argument", "an agent name is 1 to 64 letters, digits, underscores or dashes");
   }
@@ -2607,7 +2612,7 @@ export class Engine {
       if (!code) throw new LocalError("code_required", HOW_TO_GET_A_CODE);
       return this.wallet.redeem(agent.hex, code);
     });
-    return { ...this.#describeNew(agent), signals_held: got.held, signals_refused: got.refused };
+    return { ...this.#describeNew(agent), registered_with: this.#registeredWith(agent), signals_held: got.held, signals_refused: got.refused };
   }
 
   // Email signup, step one. The key is made here and kept, because the code the issuer mails can only be spent by it. Run
@@ -2615,7 +2620,7 @@ export class Engine {
   async enrollStart(name: string | undefined, email: string, invite: string | undefined): Promise<unknown> {
     const agents = [...this.#agents.values()];
     let chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
-    if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) return { ...this.#describeNew(chosen), already_set_up: true };
+    if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) return { ...this.#describeNew(chosen), registered_with: this.#registeredWith(chosen), already_set_up: true };
     if (this.wallet.holderAmong(agents.map((a) => a.hex).filter((hex) => hex !== chosen?.hex))) {
       throw new LocalError("email_not_needed", "This machine already has an agent that's set up, so a new agent here needs no email. Run cello setup with --name and no email.");
     }
@@ -2636,7 +2641,7 @@ export class Engine {
     const chosen = name === undefined ? (agents.find((a) => this.wallet.hasRegistrationSignal(a.hex)) ?? agents[0]) : agents.find((a) => a.name === name);
     if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) {
       if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
-      return { ...this.#describeNew(chosen), already_set_up: true };
+      return { ...this.#describeNew(chosen), registered_with: this.#registeredWith(chosen), already_set_up: true };
     }
     if (chosen) return this.#enrollExisting(chosen, code, emailCode);
     const newName = name ?? DEFAULT_AGENT_NAME;

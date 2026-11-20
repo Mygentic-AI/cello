@@ -100,7 +100,7 @@ const emailCodeShape = (typed: string): string | null => {
 // Pasted back into a shell as it is printed, so a name that needs quoting gets it.
 const shellWord = (word: string): string => (/^[A-Za-z0-9_.@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`);
 
-interface Enrolled { name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean }
+interface Enrolled { name: string; agent_id: string; address: string; online: boolean; registered: boolean; note?: string; signals_held?: number; already_set_up?: boolean; registered_with?: string | null }
 type EmailRoute = { done: true; agent: Enrolled } | { done: false; name: string; email: string };
 
 // The email route: name, then email, then the code. The key is made when the code is asked for, so a run cut short leaves
@@ -313,11 +313,11 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       agent = route.agent;
       byEmail = true;
     }
-    const held = await client.call("signals_list", { agent: agent.agent_id }) as { signals: { type: string; counts_as_verified: boolean }[] };
-    // Which one registration uses: email if it has one, else the phone of an owner who signed up in a chat app.
-    const registering = held.signals.find((signal) => signal.type === "email") ?? held.signals.find((signal) => signal.type === "phone");
-    say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified ${registering?.type ?? "email"} signal.`);
+    // The daemon says which signal it registers with (email, or the phone of an owner who signed up in a chat app), so this never guesses.
+    say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified ${agent.registered_with ?? "registration"} signal.`);
     if (!agent.online) throw new SetupFailed("not_registered", `${agent.name} has its signal, and the server didn't take it: ${agent.note ?? "no reason given"}. Your code is safe. Run the same command again.`);
+    const held = await client.call("signals_list", { agent: agent.agent_id }) as { signals: { type: string; counts_as_verified: boolean }[] };
+    const registering = held.signals.find((signal) => signal.type === agent.registered_with);
     if (registering && !registering.counts_as_verified) say("This machine doesn't recognise that issuer yet, because it isn't on a signed issuer list here, so the signal shows as unknown.");
     say(`Your agent's address, which is what you share:\n${agent.address}`);
     host.rememberAgent(agent.agent_id);
