@@ -9,31 +9,38 @@ Setup is a person's job at their own terminal: it starts a background program an
 
 ## First time on a machine
 
-1. **Sign up** at https://celloprotocol.com/waitlist. The invitation email links to their account site, https://trust.celloprotocol.com.
-2. **Choose where the agent runs.**
-   - **Hosted:** enter the invitation code at https://hosted.celloprotocol.com and name an agent. It gets an MCP address of its own, `https://<id>.hosted.celloprotocol.com/mcp`, to connect any MCP client to. Nothing to install.
-   - **On this machine:** on the account site choose "I'll run it myself". It shows these commands with the code in them.
-3. **Install** (Node 24.7 or newer; macOS, Windows, or Linux with glibc):
+1. **Install** (Node 24.7 or newer; macOS, Windows, or Linux with glibc):
 
    ```
    npm i -g --prefer-online @cello-protocol/cli@latest
    ```
 
    On Linux, a permission error means Node came from the system package: `npm config set prefix ~/.local`, put `~/.local/bin` on the `PATH`, and run it again.
-4. **Set up:**
+2. **Set up:**
 
    ```
-   cello setup --code <code>
+   cello setup
    cello setup --install-mcp
    ```
 
-   The first starts the daemon, creates the agent's key, collects the verified email signal, registers, and says hello to the CELLO Concierge. It prints the agent's `address`: that's what others need to reach it. Running it again changes nothing. `printf %s "$CODE" | cello setup --code -` keeps the code out of the shell's history.
+   At a terminal, the first asks for the agent's name, then the person's email, then the 6-digit code emailed to them. It starts the daemon, creates the agent's key, collects the verified email signal, registers, and says hello to the CELLO Concierge. It prints the agent's `address`: that's what others need to reach it. Running it again changes nothing.
 
-   The second connects Claude Code, Claude Desktop, ChatGPT Desktop and Codex on this machine, and says what it changed. Restart each app afterwards.
-5. **Turn on doorbells in Claude Code**, if that's the app: see `apps/claude-code.md` in the `cello` skill. Without them nothing wakes the session.
-6. **Hermes:** `cello bridge hermes --agent <name> --hermes-home <path>`, then restart the gateway. The `cello-bridge-setup` skill has the steps.
+   With no terminal, it asks nothing and takes two runs, because the first sends the code. Only the person can read that code from their email, so ask them for it. Never guess it:
 
-**More agents:** `cello create-agent <name>` needs no code. **Another device:** sign in to the account site again for a new code.
+   ```
+   cello setup --yes --name Ann --email ann@example.com
+   printf %s "$EMAILED_CODE" | cello setup --yes --name Ann --email-code -
+   ```
+
+   If they already have a setup code: `cello setup --code <code>`. `printf %s "$CODE" | cello setup --code -` keeps it out of the shell's history.
+
+   The second command connects Claude Code, Claude Desktop, ChatGPT Desktop and Codex on this machine, and says what it changed. Restart each app afterwards.
+3. **Turn on doorbells in Claude Code**, if that's the app: see `apps/claude-code.md` in the `cello` skill. Without them nothing wakes the session.
+4. **Hermes:** `cello bridge hermes --agent <name> --hermes-home <path>`, then restart the gateway. The `cello-bridge-setup` skill has the steps.
+
+**Hosted instead:** sign up at https://celloprotocol.com/waitlist, then enter the invitation code at https://hosted.celloprotocol.com and name an agent. It gets an MCP address of its own, `https://<id>.hosted.celloprotocol.com/mcp`, to connect any MCP client to. Nothing to install.
+
+**More agents:** `cello create-agent <name>` needs no email. **Another device:** run `cello setup` there with the same email.
 
 Data lives in `~/.cello`, or in `CELLO_HOME` if it's set before any `cello` command.
 
