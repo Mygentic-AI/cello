@@ -268,11 +268,13 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     const flags = options(args);
     const text = (name: string): string | undefined => (typeof flags[name] === "string" ? flags[name] : undefined);
     // --code - takes the code from standard input, so it never sits in a command line or in shell history.
+    // Before anything is read from standard input, so a clash never waits on a pipe.
+    if (text("code") && (text("email") || text("email-code"))) return refuse("bad_argument", "Give a setup code or an email, not both.");
     const code = text("code") === "-" ? await codeFromStandardInput() : text("code");
-    if (code && (text("email") || text("email-code"))) return refuse("bad_argument", "Give a setup code or an email, not both.");
     const email = text("email");
     if (email !== undefined && !EMAIL_SHAPE.test(email)) return refuse("bad_email", `${NOT_AN_EMAIL} Nothing was set up.`);
-    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !text("email-code");
+    // JSON is for a program reading the answer, so it never gets prompts mixed into it.
+    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !text("email-code") && !asJson;
     // Without a terminal nothing can be asked, so what's missing is said now, before anything starts.
     if (!code && !interactive && !existsSync(databasePath())) {
       if (!email && !text("email-code")) return refuse("email_required", "No setup code and no email. Give --email <address> to get a code, or --code <code>. Nothing was set up.");
