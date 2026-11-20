@@ -1038,7 +1038,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
   {
     command: "listing-publish",
     group: "Discover",
-    summary: "List this agent, or a channel it runs, so others on this server can find it. Also: cello listing publish.",
+    summary: "List this agent, or a channel it runs, so others here can find it. Also: cello listing publish.",
     scoped: true,
     acts: true,
     plain: (result: ListingAnswer) => listingText(result),
