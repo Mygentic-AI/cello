@@ -201,9 +201,12 @@ test("the email route at a terminal: name, email, a wrong code asked again, and 
   const said = await talk(home, setupArgs([]), [
     ["What should your agent be called?", () => "Ann"],
     ["What's your email?", () => email],
+    ["Type the code from the email:", () => "123 45"],
     ["Type the code from the email:", () => otherThan(lastMail(email).code)],
-    ["Type the code from the email:", () => lastMail(email).code],
+    ["Type the code from the email:", () => lastMail(email).code.replace(/^(\d{3})/, "$1 ")],
   ]);
+  // The short one was caught here, so the wrong one is the first try spent; a space inside the right one is fine.
+  assert.match(said, /The code is the six digits in the email\. Try again\./);
   assert.match(said, /A 6-digit code is on its way to ann\.terminal@example\.test\. It can take a minute\./);
   assert.match(said, /Not there\? Check spam\. Wrong address\? Press Enter with no code to give a different one\./);
   assert.match(said, /That code isn't right\. You have 4 tries left\./);

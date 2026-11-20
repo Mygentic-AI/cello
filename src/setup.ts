@@ -90,6 +90,12 @@ function codeFromStandardInput(flag = "code"): Promise<string> {
 
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const NOT_AN_EMAIL = "That doesn't look like an email address.";
+const NOT_SIX_DIGITS = "The code is the six digits in the email.";
+// People copy codes with spaces or dashes in them. Anything that isn't six digits once those are gone is a typo.
+const emailCodeShape = (typed: string): string | null => {
+  const code = typed.replace(/[\s-]/g, "");
+  return /^\d{6}$/.test(code) ? code : null;
+};
 
 // Pasted back into a shell as it is printed, so a name that needs quoting gets it.
 const shellWord = (word: string): string => (/^[A-Za-z0-9_.@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`);
@@ -141,12 +147,18 @@ async function emailRoute(client: IpcClient, host: SetupHost, flags: Record<stri
     if (!interactive) return { done: false, name, email };
     say("Not there? Check spam. Wrong address? Press Enter with no code to give a different one.");
     for (;;) {
-      const code = await host.ask("Type the code from the email:\n> ");
-      if (code === "") break;
+      const typed = await host.ask("Type the code from the email:\n> ");
+      if (typed === "") break;
+      // A mistyped length is caught here, so it costs neither a try nor the code.
+      const code = emailCodeShape(typed);
+      if (code === null) {
+        say(`${NOT_SIX_DIGITS} Try again.`);
+        continue;
+      }
       try {
         return { done: true, agent: await client.call("enroll_agent", { name, email_code: code }) as Enrolled };
       } catch (err: unknown) {
-        if (err instanceof DaemonRefused && err.code === "enroll_code_wrong") {
+        if (err instanceof DaemonRefused && (err.code === "enroll_code_wrong" || err.code === "bad_code")) {
           say(err.message);
           continue;
         }
@@ -266,7 +278,9 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       if (!email && !text("email-code")) return refuse("email_required", "No setup code and no email. Give --email <address> to get a code, or --code <code>. Nothing was set up.");
       if (!text("name")) return refuse("name_required", "Give the agent a name with --name. Nothing was set up.");
     }
-    const emailCode = text("email-code") === "-" ? await codeFromStandardInput("email-code") : text("email-code");
+    const givenEmailCode = text("email-code") === "-" ? await codeFromStandardInput("email-code") : text("email-code");
+    const emailCode = givenEmailCode === undefined ? undefined : emailCodeShape(givenEmailCode);
+    if (emailCode === null) return refuse("bad_code", `${NOT_SIX_DIGITS} Run the same command with those six digits. Nothing was used.`);
     await moveOldVersion(host, say);
 
     client = await daemon(host, text("server"), flags["yes"] === true, say);

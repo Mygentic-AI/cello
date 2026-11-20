@@ -151,6 +151,7 @@ export class StandInIssuer {
       return send(200, { ok: true, sent: true });
     }
     if (route === "enroll/verify") {
+      if (!/^\d{6}$/.test(fields.code ?? "")) return refuse(400, "bad_code", "The code is six digits.");
       const pending = this.enrolling.get(agentId);
       if (!pending) return refuse(403, "enroll_code_expired", "That code has expired or was already used. Run cello setup again for a new one.");
       if (fields.code !== pending.code) {

@@ -22,6 +22,7 @@ test("each missing or clashing value is one line, and nothing is started or writ
     [["--email", "ann", "--name", "Ann"], "✗ That doesn't look like an email address. Nothing was set up.\n"],
     [["--code", "c", "--email", "ann@example.test"], "✗ Give a setup code or an email, not both.\n"],
     [["--code", "c", "--email-code", "123456"], "✗ Give a setup code or an email, not both.\n"],
+    [["--name", "Ann", "--email-code", "12345"], "✗ The code is the six digits in the email. Run the same command with those six digits. Nothing was used.\n"],
   ];
   for (const [args, said] of cases) {
     const run = setup(args);
