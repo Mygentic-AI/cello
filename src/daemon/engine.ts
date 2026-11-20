@@ -2619,7 +2619,6 @@ export class Engine {
     if (this.wallet.holderAmong(agents.map((a) => a.hex).filter((hex) => hex !== chosen?.hex))) {
       throw new LocalError("email_not_needed", "This machine already has an agent with a verified email, so a new agent here needs no email. Run cello setup with --name and no email.");
     }
-    const earlier = chosen !== undefined;
     if (!chosen) {
       if (name === undefined) throw new LocalError("name_required", "Give the agent a name.");
       this.#checkNewName(name);
@@ -2627,7 +2626,7 @@ export class Engine {
       chosen = this.#newAgent(name, seeds, await signerFromSeeds(seeds), true);
     }
     await this.wallet.enrollStart(chosen.hex, email, invite);
-    return { name: chosen.name, agent_id: chosen.hex, code_sent: true, earlier };
+    return { name: chosen.name, agent_id: chosen.hex };
   }
 
   // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
