@@ -942,6 +942,17 @@ export class Engine {
         after = listed.after;
       }
       logEvent("agent.caught_up", { agent: agent.hex, pages, sessions: handled.length, from_bookmark: since !== null, bookmarks: asOf !== undefined });
+      // A saved seal was retried only when its conversation came back in the list. With a bookmark, a conversation that hasn't
+      // changed isn't listed, so a seal saved before a restart could wait for ever. Every one not handled above is tried here.
+      const retried = new Set<string>();
+      for (const want of this.#store.sealWants(agent.signer.id)) {
+        const sessionHex = toHex(want.session_id);
+        if (seen.has(sessionHex) || retried.has(sessionHex)) continue;
+        const local = this.#store.session(agent.signer.id, want.session_id);
+        if (!local || this.#urlOf(local) !== route.url) continue;
+        retried.add(sessionHex);
+        this.#background("saved seal", this.#lane(agent.hex, sessionHex, () => this.#retrySeals(agent, want.session_id)));
+      }
       if (asOf !== undefined) {
         const reached = asOf;
         void Promise.allSettled(handled).then((results) => {

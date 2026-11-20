@@ -266,7 +266,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   const kitHome = mkdtempSync(join(tmpdir(), "cello-cli-kit-"));
   okIn(kitHome, ["login", "--server", url]);
   const kit = okIn(kitHome, ["create-agent", "Kit"]);
-  ok(["create-agent", "Jan"]);
+  const jan = ok(["create-agent", "Jan"]);
   okIn(kitHome, ["settings-set", "away.answering", "false", "--agent", "Kit"]);
   ok(["settings-set", "away.answering", "false", "--agent", "Jan"]);
   await until("both online", () => {
@@ -352,6 +352,16 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   assert.equal(verify(saved(forged), sealKey)["fault"], "delivery_ack_mismatch", "a stolen seal key can't raise M");
 
   // ---- A daemon kill. The server is down, the seal is saved, the daemon dies, and it finishes by itself. ----
+  // First a routine catch-up that lists nothing for Jan: his bookmark is now past this conversation, so the server won't list it
+  // after the restart either. A saved seal used to be retried only for a listed conversation, and waited for ever here.
+  const log = join(home, "daemon.log");
+  const logFrom = readFileSync(log, "utf8").length;
+  // The routine catch-up runs every 30 seconds, and the first one after a change still lists it, so this can take two rounds.
+  const emptyCatchUp = (): boolean => readFileSync(log, "utf8").slice(logFrom).split("\n")
+    .some((line) => line.includes(`"event":"agent.caught_up","agent":"${jan["agent_id"] as string}"`) && line.includes(`"sessions":0`));
+  for (const deadline = Date.now() + 75_000; !emptyCatchUp(); await new Promise((resolve) => setTimeout(resolve, 250))) {
+    if (Date.now() > deadline) throw new Error("no catch-up listed nothing for Jan within 75 seconds");
+  }
   compose("stop", "server");
   await until("the daemon to see the server gone", () => !(ok(["status"]) as { connected: boolean }).connected);
   const waiting = ok(["seal", session, "--through", "3", "--agent", "Jan"]);
