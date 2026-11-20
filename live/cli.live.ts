@@ -353,7 +353,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
 
   // ---- A daemon kill. The server is down, the seal is saved, the daemon dies, and it finishes by itself. ----
   // First a routine catch-up that lists nothing for Jan: his bookmark is now past this conversation, so the server won't list it
-  // after the restart either. A saved seal used to be retried only for a listed conversation, and waited for ever here.
+  // after the restart either, and the seal must finish without it.
   const log = join(home, "daemon.log");
   const logFrom = readFileSync(log, "utf8").length;
   // The routine catch-up runs every 30 seconds, and the first one after a change still lists it, so this can take two rounds.
@@ -386,7 +386,7 @@ test("seals: one party, partial, across a daemon kill, and checked offline with 
   assert.equal(afterKill.received_through, 3);
   assert.equal(verify(saved(ok(["export-seal", afterKill.seal_id, "--agent", "Jan"])), sealKey)["ok"], true);
   const notices = ok(["receive", "--agent", "Jan"]) as { notices: { text: string }[] };
-  assert.ok(notices.notices.some((n) => n.text.includes(`Your seal through position 3 is done`)), "the agent is told it finished");
+  assert.equal(notices.notices.filter((n) => n.text.includes(`Your seal through position 3 is done`)).length, 1, "the agent is told it finished, once");
 
   // Kit comes back. Closing seals each side's copy by itself, and the second closer's seal says it has closed.
   okIn(kitHome, ["login", "--server", url]);
