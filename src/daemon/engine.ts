@@ -298,6 +298,8 @@ export class Engine {
   readonly #visiting = new Map<string, Route>();
   readonly #agents = new Map<string, AgentContext>();
   readonly #lanes = new Map<string, Promise<unknown>>();
+  // Why each saved seal is still waiting, as last logged, so the log says it once per change rather than every catch-up.
+  readonly #sealWaitReason = new Map<string, string>();
   readonly #verifiers = new Map<string, ChainVerifier>();
   readonly #activation = new Map<string, () => void>();
   #server: ConnectedServer | undefined;
@@ -942,8 +944,8 @@ export class Engine {
         after = listed.after;
       }
       logEvent("agent.caught_up", { agent: agent.hex, pages, sessions: handled.length, from_bookmark: since !== null, bookmarks: asOf !== undefined });
-      // A saved seal was retried only when its conversation came back in the list. With a bookmark, a conversation that hasn't
-      // changed isn't listed, so a seal saved before a restart could wait for ever. Every one not handled above is tried here.
+      // With a bookmark, a conversation that hasn't changed isn't listed, so a saved seal on an unlisted conversation is tried
+      // here or it would wait for ever.
       const retried = new Set<string>();
       for (const want of this.#store.sealWants(agent.signer.id)) {
         const sessionHex = toHex(want.session_id);
@@ -2504,9 +2506,18 @@ export class Engine {
     for (const want of this.#store.sealWants(agent.signer.id, sessionId)) {
       const label = want.through === SEAL_EVERYTHING_HELD ? "The seal after your close" : `Your seal through position ${want.through}`;
       try {
-        const result = await this.#attemptSeal(agent, sessionId, want.through) as { sealed: boolean; seal_id?: string };
-        // One still waiting mustn't hold up a different one that could finish.
-        if (!result.sealed) continue;
+        const result = await this.#attemptSeal(agent, sessionId, want.through) as { sealed: boolean; seal_id?: string; message?: string };
+        // One still waiting mustn't hold up a different one that could finish. Its reason is logged when it changes, so a seal
+        // a server keeps refusing shows in the log rather than retrying unseen every catch-up.
+        if (!result.sealed) {
+          const key = `${agent.hex}:${toHex(sessionId)}:${want.through}`;
+          if (this.#sealWaitReason.get(key) !== result.message) {
+            this.#sealWaitReason.set(key, result.message ?? "");
+            logEvent("seal.retry_pending", { agent: agent.hex, session: toHex(sessionId), through: want.through, reason: result.message ?? "unknown" });
+          }
+          continue;
+        }
+        this.#sealWaitReason.delete(`${agent.hex}:${toHex(sessionId)}:${want.through}`);
         this.#notify(agent, sessionId, `${label} is done. Its id is ${result.seal_id as string}.`);
       } catch (err: unknown) {
         if (!(err instanceof LocalError)) throw err;
