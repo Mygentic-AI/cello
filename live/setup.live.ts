@@ -152,6 +152,29 @@ const lastMail = (to: string): { code: string; agentId: string } => {
 };
 const otherThan = (code: string): string => (code === "000000" ? "111111" : "000000");
 
+// A Concierge of our own on its own daemon, which answers the first message it gets, once.
+async function standInConcierge(): Promise<{ home: string; id: string; answered: Promise<void> }> {
+  const home = newHome();
+  await ok(home, ["login", "--server", url]);
+  const made = await ok(home, ["setup", "--yes", "--server", url, "--issuer", issuer.url, "--concierge", "none", "--code", newCode(), "--name", "Concierge", "--json"]);
+  await ok(home, ["settings-set", "away.answering", "false", "--agent", "Concierge"]);
+  await ok(home, ["use-agent", "--agent", "Concierge"]);
+  const answered = (async () => {
+    await run(home, ["wait", "--agent", "Concierge", "--timeout-seconds", "60"]);
+    for (let i = 0; i < 50; i++) {
+      const read = await ok(home, ["receive", "--agent", "Concierge"]) as { messages: unknown[] };
+      const session = (await ok(home, ["sessions", "--agent", "Concierge"]) as { sessions: { session_id: string }[] }).sessions[0]?.session_id;
+      if (read.messages.length > 0 && session) {
+        await ok(home, ["send", session, "Hi, I'm a test Concierge.", "--wrap", "--agent", "Concierge"]);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("the Concierge never heard anything");
+  })();
+  return { home, id: made["agent_id"] as string, answered };
+}
+
 const newCode = (): string => {
   const code = `code-${Math.random().toString(36).slice(2)}`;
   issuer.codes.set(code, "good");
@@ -195,10 +218,11 @@ test("with no terminal and nothing to go on, it says in one line what to give, a
   assert.equal(issuer.mail.length, 0, "no code was sent");
 });
 
-test("the email route at a terminal: name, email, a wrong code asked again, and the end line names the account site", async () => {
+test("the email route at a terminal, from nothing to the Concierge's reply: a wrong code asked again, and the end line names the account site", async () => {
+  const concierge = await standInConcierge();
   const home = newHome();
   const email = "ann.terminal@example.test";
-  const said = await talk(home, setupArgs([]), [
+  const said = await talk(home, setupArgs(["--concierge", concierge.id]), [
     ["What should your agent be called?", () => "Ann"],
     ["What's your email?", () => email],
     ["Type the code from the email:", () => "123 45"],
@@ -211,6 +235,8 @@ test("the email route at a terminal: name, email, a wrong code asked again, and 
   assert.match(said, /Not there\? Check spam\. Wrong address\? Press Enter with no code to give a different one\./);
   assert.match(said, /That code isn't right\. You have 4 tries left\./);
   assert.match(said, /Ann has its verified email signal\./);
+  await concierge.answered;
+  assert.match(said, /The Concierge replied, in its own words:\n"Hi, I'm a test Concierge\."/);
   assert.match(said, /✓ Ann is set up\. You can sign in at https:\/\/trust\.celloprotocol\.com with the same email\./);
   const status = await ok(home, ["status"]) as { agents: { name: string; agent_id: string }[] };
   assert.equal(status.agents[0]?.agent_id, lastMail(email).agentId, "the key that asked is the agent");
@@ -224,6 +250,7 @@ test("the email route at a terminal: name, email, a wrong code asked again, and 
   assert.match(again.stdout, /✓ Ann is set up\.\n/);
   assert.equal(issuer.mail.length, sent);
   await ok(home, ["logout"]);
+  await ok(concierge.home, ["logout"]);
 });
 
 test("Enter with no code goes back to the email: the same key, a new code, and only the newest works", async () => {
