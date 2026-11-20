@@ -25,7 +25,7 @@ Setup is a person's job at their own terminal: it starts a background program an
 
    At a terminal, the first asks for the agent's name, then the person's email, then the 6-digit code emailed to them. It starts the daemon, creates the agent's key, collects the verified email signal, registers, and says hello to the CELLO Concierge. It prints the agent's `address`: that's what others need to reach it. Running it again changes nothing.
 
-   With no terminal, it asks nothing and takes two runs, because the first sends the code. Only the person can read that code from their email, so ask them for it. Never guess it:
+   With no terminal, it asks nothing and takes two runs, because the first sends the code. Pass `--yes` only once they've agreed to the background program starting. Only the person can read that code from their email, so ask them for it. Never guess it:
 
    ```
    cello setup --yes --name Ann --email ann@example.com

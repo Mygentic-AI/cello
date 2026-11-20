@@ -19,6 +19,8 @@ cello setup --install-mcp                 # Claude Code
 cello bridge hermes --agent <name>        # Hermes
 ```
 
+Or with an email, in two runs: `cello setup --yes --name <name> --email <address>`, then `printf %s "$EMAILED_CODE" | cello setup --yes --name <name> --email-code -`.
+
 Anything else uses `cello-mcp` or the `cello` commands, as on any machine. To keep the daemon up after a reboot with nobody logged in, `cello bridge daemon-unit` prints a systemd unit and the three commands that install it.
 
 ### The client can only be given a URL
