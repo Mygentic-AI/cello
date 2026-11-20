@@ -15,6 +15,7 @@ import { type TrustSignalEnvelope, MAX_SIGNAL_LIFETIME_SECONDS, SIGNAL_ID_BYTES,
 const DAY = 86_400;
 export const AGENT_CAP = 3;
 export const EMAIL_CLAIM = "This agent's owner has an email address verified by this issuer.";
+export const PHONE_CLAIM = "This agent's owner has a phone number verified by this issuer.";
 
 type Fields = { code: string | null; agent: PublicIdentity; holder: PublicIdentity | null; holderSignal: Uint8Array | null };
 interface RealContract {
@@ -40,6 +41,8 @@ export class StandInIssuer {
   readonly owners = new Map<string, string>();
   readonly requests: { route: string; agentId?: string }[] = [];
   readonly extras = new Map<string, EnvelopeChange[]>();
+  // What an owner (keyed as `owners` keys them: a code, or "email:<address>") proved. Unset is an email.
+  readonly proved = new Map<string, "email" | "phone" | "none">();
   // Email signup: the code each key was last sent, and every email "sent", newest last.
   readonly enrolling = new Map<string, { email: string; code: string; tries: number }>();
   readonly mail: { to: string; code: string; agentId: string }[] = [];
@@ -99,7 +102,9 @@ export class StandInIssuer {
   }
 
   async #files(agentId: string): Promise<string[]> {
-    const files = [await this.sign(agentId)];
+    // The real issuer gives an owner who signed up in a chat app a phone signal and no email. "none" plays an answer with neither.
+    const proved = this.proved.get(this.owners.get(agentId) ?? "") ?? "email";
+    const files = proved === "none" ? [] : [await this.sign(agentId, proved === "phone" ? { type: "phone", claim: PHONE_CLAIM } : {})];
     for (const change of this.extras.get(agentId) ?? []) files.push(await this.sign(agentId, change));
     return files.map((file) => Buffer.from(file).toString("base64"));
   }

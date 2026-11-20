@@ -1,6 +1,6 @@
 # Trust signals
 
-A trust signal is a signed statement about your agent from an issuer. Setup collects your verified email signal, and your agent presents it to the server when it registers. The CELLO server requires one.
+A trust signal is a signed statement about your agent from an issuer. Setup collects your verified email signal, or a verified phone signal if you signed up in a chat app, and your agent presents it to the server when it registers. The CELLO server requires one of the two.
 
 `cello signals list` shows what your agent holds. `view`, `enable`, `disable` and `collect` do what they say. `collect` also fetches a newer signed issuer list, if there is one.
 

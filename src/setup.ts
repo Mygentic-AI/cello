@@ -1,4 +1,4 @@
-// `cello setup`: from nothing to an agent with its verified email, on a server, with a reply on screen.
+// `cello setup`: from nothing to an agent with its verified email or phone, on a server, with a reply on screen.
 // Each step says what it did, and each failure says what to do next, with JSON behind a flag.
 import { existsSync, renameSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -15,7 +15,7 @@ const HELLO = "Hello. I've just been set up.";
 
 export const SETUP_HELP = `Usage: cello setup [--name <agent>] [--email <address>] [--email-code <code>] [--invite <code>] [--code <code>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
 
-Set up CELLO on this machine: start the background program, create an agent's key, check your email with a code we send (or redeem a setup code), get a verified email signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
+Set up CELLO on this machine: start the background program, create an agent's key, check your email with a code we send (or redeem a setup code), get a verified email or phone signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
 At a terminal it asks for the agent's name, your email and the emailed code, one at a time. With no terminal it never asks: give the values as flags, in two runs, because the code is sent by the first:
   cello setup --yes --name Ann --email ann@example.com
@@ -313,10 +313,12 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       agent = route.agent;
       byEmail = true;
     }
-    say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified email signal.`);
-    if (!agent.online) throw new SetupFailed("not_registered", `${agent.name} has its signal, and the server didn't take it: ${agent.note ?? "no reason given"}. Your code is safe. Run the same command again.`);
     const held = await client.call("signals_list", { agent: agent.agent_id }) as { signals: { type: string; counts_as_verified: boolean }[] };
-    if (held.signals.some((signal) => signal.type === "email" && !signal.counts_as_verified)) say("This machine doesn't recognise that issuer yet, because it isn't on a signed issuer list here, so the signal shows as unknown.");
+    // Which one registration uses: email if it has one, else the phone of an owner who signed up in a chat app.
+    const registering = held.signals.find((signal) => signal.type === "email") ?? held.signals.find((signal) => signal.type === "phone");
+    say(agent.already_set_up ? `${agent.name} is already set up, so nothing changed, and no code was used.` : `${agent.name} has its verified ${registering?.type ?? "email"} signal.`);
+    if (!agent.online) throw new SetupFailed("not_registered", `${agent.name} has its signal, and the server didn't take it: ${agent.note ?? "no reason given"}. Your code is safe. Run the same command again.`);
+    if (registering && !registering.counts_as_verified) say("This machine doesn't recognise that issuer yet, because it isn't on a signed issuer list here, so the signal shows as unknown.");
     say(`Your agent's address, which is what you share:\n${agent.address}`);
     host.rememberAgent(agent.agent_id);
 

@@ -63,6 +63,8 @@ export const ERROR_CODES = [
   "signal_forged",
   "signal_wrong_subject",
   "signal_expired",
+  // The name is historical. It now means "this signal isn't one that registration accepts" (email or phone).
+  // Kept, because renaming a wire code would break every client that already knows it.
   "signal_not_email",
   "signal_not_from_issuer",
   "issuer_unknown",

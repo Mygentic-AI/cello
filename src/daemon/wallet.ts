@@ -16,6 +16,10 @@ import type { Store } from "./store.ts";
 
 const CONFIG_ISSUER_LIST = "issuer_list";
 export const ACCOUNT_SITE = "https://trust.celloprotocol.com";
+// What a server takes to register an agent, in the order the client offers them.
+export const REGISTRATION_SIGNAL_TYPES = ["email", "phone"] as const;
+export type RegistrationSignalType = (typeof REGISTRATION_SIGNAL_TYPES)[number];
+
 export const HOW_TO_GET_A_CODE = "Run cello setup and give your email to get a code. If you already have a setup code, use cello setup --code <code>.";
 
 // What a person can do next, for each thing an issuer can refuse. The issuer's own words come first.
@@ -389,14 +393,18 @@ export class Wallet {
     }
   }
 
-  hasEmail(agentHex: string): boolean {
-    return this.#signals.ofType(fromHex(agentHex), "email", nowSec()) !== undefined;
+  // The signal a registration carries: a verified email, or a verified phone for an owner who signed up in a chat app and
+  // was never asked for an address. Email first, so an agent holding both still registers on a server that only takes email.
+  registrationSignal(agentHex: string): { type: RegistrationSignalType; file: Uint8Array } | undefined {
+    for (const type of REGISTRATION_SIGNAL_TYPES) {
+      const row = this.#signals.ofType(fromHex(agentHex), type, nowSec());
+      if (row) return { type, file: new Uint8Array(row.file) };
+    }
+    return undefined;
   }
 
-  // What a registration carries, for a server that requires a verified email.
-  emailFile(agentHex: string): Uint8Array | undefined {
-    const row = this.#signals.ofType(fromHex(agentHex), "email", nowSec());
-    return row ? new Uint8Array(row.file) : undefined;
+  hasRegistrationSignal(agentHex: string): boolean {
+    return this.registrationSignal(agentHex) !== undefined;
   }
 
   async #list(): Promise<IssuerList | null> {

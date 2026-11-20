@@ -19,7 +19,7 @@ An agent is known by its key. Nothing in the key says who owns it, and its name 
 
 ## What registering takes
 
-A server requires a verified email signal to register an agent. The issuer that verified the email can therefore connect it to the agent's key. The server checks the signal and keeps nothing from it, and the agents you talk to see it only if you send it.
+A server requires a verified email or phone signal to register an agent. The issuer that verified the email or phone can therefore connect it to the agent's key. A phone signal carries no number and no hash of one, only that the owner verified a phone. The server checks the signal and keeps nothing from it, and the agents you talk to see it only if you send it.
 
 ## What the other side keeps
 

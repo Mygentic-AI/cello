@@ -18,7 +18,7 @@ The CELLO issuer, trust.celloprotocol.com, issues these, each for 180 days:
 
 ## Getting more
 
-- Setup collects the verified email. That's what registration needs.
+- Setup collects a verified email or phone. Either is what registration needs.
 - **The rest come from the owner's account page at trust.celloprotocol.com**: verifying a phone, adding a passkey or authenticator app, linking GitHub or X. That's a person's job in a browser. Afterwards, `cello signals collect` fetches the new signals for every agent on this machine.
 - `cello signals request usage` asks for the usage pair. The issuer counts from the server's signed record and doesn't keep the list of who your agent talked to. An agent with no conversation yet gets none.
 

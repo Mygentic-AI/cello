@@ -887,9 +887,9 @@ export class Engine {
   async #register(agent: AgentContext): Promise<void> {
     const identity = agent.signer.publicIdentity;
     const signature = await agent.signer.sign("cello-register", registerBytes({ serverId: this.#serverId(), identity }));
-    // The verified email a server asks for. A server that doesn't require one leaves it unread.
-    const email = this.wallet.emailFile(agent.hex);
-    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature), ...(email ? { signal: toB64(email) } : {}) });
+    // The verified email or phone a server asks for. A server that doesn't require one leaves it unread.
+    const signal = this.wallet.registrationSignal(agent.hex);
+    await this.#link.call("register", { identity: identityCodec.encode(identity), signature: signatureCodec.encode(signature), ...(signal ? { signal: toB64(signal.file) } : {}) });
     this.#store.markRegistered(agent.signer.id);
     agent.registered = true;
     logEvent("agent.registered", { agent: agent.hex });
@@ -2567,9 +2567,9 @@ export class Engine {
 
   async #signalThenOnline(agent: AgentContext, get: () => Promise<Collected>): Promise<Collected> {
     const got = await get();
-    if (!this.wallet.hasEmail(agent.hex)) {
+    if (!this.wallet.hasRegistrationSignal(agent.hex)) {
       const why = got.refused.map((r) => r.message).join("; ") || "it sent none";
-      throw new LocalError("no_email_signal", `The issuer didn't give this agent a verified email signal it could keep: ${why}. Nothing was registered. Run the same command again, and if it says the same, write to support@celloprotocol.com.`);
+      throw new LocalError("no_registration_signal", `The issuer didn't give this agent a verified email or phone signal it could keep: ${why}. Nothing was registered. Run the same command again, and if it says the same, write to support@celloprotocol.com.`);
     }
     agent.awaitingSignal = false;
     this.#store.setAwaitingSignal(agent.signer.id, false);
@@ -2599,7 +2599,7 @@ export class Engine {
       // A first answer that was lost, or a signal that has lapsed: the issuer may already know this agent, which spends no code.
       try {
         const collected = await this.wallet.collect(agent.hex);
-        if (this.wallet.hasEmail(agent.hex)) return collected;
+        if (this.wallet.hasRegistrationSignal(agent.hex)) return collected;
       } catch (err: unknown) {
         if (!(err instanceof LocalError) || err.code !== "unknown_agent") throw err;
       }
@@ -2615,9 +2615,9 @@ export class Engine {
   async enrollStart(name: string | undefined, email: string, invite: string | undefined): Promise<unknown> {
     const agents = [...this.#agents.values()];
     let chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
-    if (chosen && this.wallet.hasEmail(chosen.hex)) return { ...this.#describeNew(chosen), already_set_up: true };
+    if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) return { ...this.#describeNew(chosen), already_set_up: true };
     if (this.wallet.holderAmong(agents.map((a) => a.hex).filter((hex) => hex !== chosen?.hex))) {
-      throw new LocalError("email_not_needed", "This machine already has an agent with a verified email, so a new agent here needs no email. Run cello setup with --name and no email.");
+      throw new LocalError("email_not_needed", "This machine already has an agent that's set up, so a new agent here needs no email. Run cello setup with --name and no email.");
     }
     if (!chosen) {
       if (name === undefined) throw new LocalError("name_required", "Give the agent a name.");
@@ -2633,8 +2633,8 @@ export class Engine {
   async enrollAgent(name: string | undefined, code: string | undefined, emailCode?: string): Promise<unknown> {
     const agents = [...this.#agents.values()];
     // Unnamed, a repeat run means the agent that's set up: an earlier run cut short mustn't be finished by copying its signal.
-    const chosen = name === undefined ? (agents.find((a) => this.wallet.hasEmail(a.hex)) ?? agents[0]) : agents.find((a) => a.name === name);
-    if (chosen && this.wallet.hasEmail(chosen.hex)) {
+    const chosen = name === undefined ? (agents.find((a) => this.wallet.hasRegistrationSignal(a.hex)) ?? agents[0]) : agents.find((a) => a.name === name);
+    if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) {
       if (!chosen.online && this.#server) await this.#bringOnline(chosen, this.#server);
       return { ...this.#describeNew(chosen), already_set_up: true };
     }

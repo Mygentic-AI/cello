@@ -532,6 +532,46 @@ test("the whole path: setup ends on a reply, a repeat changes nothing, and a sec
   await ok(home, ["logout"]);
 });
 
+test("an owner who signed up in a chat app: a phone signal registers, a repeat changes nothing, and a second agent gets a copy", async () => {
+  const home = newHome();
+  const code = newCode();
+  issuer.proved.set(code, "phone");
+  const first = await run(home, setupArgs(["--code", code, "--name", "Pia"]));
+  assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+  assert.match(first.stdout, /Pia has its verified phone signal\./);
+  const pia = (await ok(home, ["status"]) as { agents: { name: string; agent_id: string; online: boolean }[] }).agents.find((a) => a.name === "Pia");
+  assert.equal(pia?.online, true);
+  assert.equal(serverKnows(pia?.agent_id as string), "1");
+  assert.deepEqual((await listed(home, "Pia")).signals.map((s) => s.type), ["phone"]);
+
+  const redeemsBefore = issuer.requests.filter((r) => r.route === "redeem").length;
+  const repeat = await run(home, setupArgs(["--code", code, "--name", "Pia"]));
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.match(repeat.stdout, /Pia is already set up, so nothing changed, and no code was used\./);
+  assert.equal(issuer.requests.filter((r) => r.route === "redeem").length, redeemsBefore, "no code spent twice");
+
+  // The phone signal vouches for a second agent on this machine, as an email one does.
+  const second = await ok(home, ["create-agent", "Quin"]);
+  assert.equal(second["online"], true);
+  assert.equal(serverKnows(second["agent_id"] as string), "1");
+  assert.deepEqual((await listed(home, "Quin")).signals.map((s) => s.type), ["phone"]);
+  await ok(home, ["logout"]);
+});
+
+test("an issuer that gives neither an email nor a phone signal: nothing is registered, and the words say so", async () => {
+  const home = newHome();
+  const code = newCode();
+  issuer.proved.set(code, "none");
+  const tried = await run(home, setupArgs(["--code", code, "--name", "Rho", "--json"]));
+  assert.equal(tried.status, 1);
+  assert.equal(tried.json["error"], "no_registration_signal");
+  assert.match(tried.json["message"] as string, /^The issuer didn't give this agent a verified email or phone signal it could keep: it sent none\. Nothing was registered\./);
+  const rho = (await ok(home, ["agents"]) as { agents: { name: string; agent_id: string; registered: boolean }[] }).agents.find((a) => a.name === "Rho");
+  assert.equal(rho?.registered, false);
+  assert.equal(serverKnows(rho?.agent_id as string), "0");
+  await ok(home, ["logout"]);
+});
+
 test("the wallet keeps only what passes, stacks its notes, and survives a restart", async () => {
   const home = newHome();
   const done = await run(home, setupArgs(["--code", newCode(), "--name", "Ann", "--json"]));
