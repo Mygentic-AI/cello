@@ -1,7 +1,7 @@
 // The CELLO Mac app's own code against a real daemon's operator door, with nothing on screen. cello-door-probe runs the
 // app's Controller, the part that reads frames, keeps the state, picks the banner and the menu-bar look, and turns a
 // click into a pick or a reply. Banners are only described, never posted. Run it with:
-//   CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<cello-issuer> MAC_FILES=live/mac-app.live.ts scripts/mac-notifier-test.sh
+//   CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<issuer source> MAC_FILES=live/mac-app.live.ts scripts/mac-notifier-test.sh
 import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";

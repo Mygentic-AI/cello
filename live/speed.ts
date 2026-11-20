@@ -305,7 +305,9 @@ function conversationSummary(turns: Turn[]): Record<string, unknown> {
 const serverDir = args["server-dir"] ?? process.env["CELLO_SERVER_DIR"] ?? join(REPO, "..", "cello-server");
 const overridePath = join(runDir, "compose-override.yml");
 // Each daemon collects a real signal, from an issuer this server is told to count.
-const standIn = await StandInIssuer.start(process.env["CELLO_ISSUER_DIR"] ?? join(REPO, "..", "cello-issuer"), { open: true });
+const issuerDir = process.env["CELLO_ISSUER_DIR"];
+if (!issuerDir) throw new Error("Set CELLO_ISSUER_DIR to the issuer's source: the stand-in issuer reads requests with its code.");
+const standIn = await StandInIssuer.start(issuerDir, { open: true });
 process.env["CELLO_TEST_ISSUER_URL"] = standIn.url;
 process.env["CELLO_TRUSTED_ISSUERS"] = JSON.stringify([{ address: "127.0.0.1", ...identityCodec.encode((await standInKeys()).publicIdentity) }]);
 const serverProfileDir = join(runDir, "server-prof");

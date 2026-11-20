@@ -11,7 +11,7 @@
 #   scripts/mac-hands-on.sh stop-daemon | start-daemon
 #   scripts/mac-hands-on.sh down                stop what up started, and say what the test left on this Mac
 #
-# Needs Docker, ~/code/cello-server (only read, at commit 0527c0a) and ~/code/cello-issuer.
+# Needs Docker, ~/code/cello-server (only read, at commit 0527c0a) and the issuer's source in CELLO_ISSUER_DIR.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,7 +24,7 @@ server_repo="${CELLO_SERVER_REPO:-$HOME/code/cello-server}"
 # The newest server commit whose src/protocol matches this branch.
 server_commit="${HANDS_ON_SERVER_COMMIT:-0527c0a}"
 export COMPOSE_PROJECT_NAME=cello-mac-hands-on
-export CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$HOME/code/cello-issuer}"
+export CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-}"
 app_path="$HOME/Applications/CELLO.app"
 launch_file="$HOME/Library/Application Support/CELLO/launch.json"
 bundle_id="com.celloprotocol.cello"
@@ -85,7 +85,7 @@ up() {
   # it would orphan it.
   if [ -n "$(daemon_pid "$home")" ] || [ -n "$(daemon_pid "$bob_home")" ]; then die "A daemon from an earlier run is still running. Run: scripts/mac-hands-on.sh down"; fi
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then die "Port $port is taken. Set HANDS_ON_PORT to a free one."; fi
-  [ -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ] || die "No cello-issuer at $CELLO_ISSUER_DIR. Set CELLO_ISSUER_DIR."
+  [ -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ] || die "No issuer source at ${CELLO_ISSUER_DIR:-(unset)}. Set CELLO_ISSUER_DIR to it."
   rm -rf "$home" "$bob_home" "$server_copy"
   mkdir -p "$run" "$server_copy"
   chmod 700 "$run"

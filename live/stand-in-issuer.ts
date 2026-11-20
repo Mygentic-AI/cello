@@ -1,4 +1,4 @@
-// A local issuer for tests only. It reads requests with cello-issuer's own checking code and signs real signals, so
+// A local issuer for tests only. It reads requests with the issuer's own checking code (from CELLO_ISSUER_DIR) and signs real signals, so
 // a format that drifts from that repo fails here. Its caps and codes are a small copy of that repo's rules, not the real thing.
 import { sha256 } from "@noble/hashes/sha2.js";
 import { randomBytes } from "node:crypto";

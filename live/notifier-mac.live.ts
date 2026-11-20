@@ -1,6 +1,6 @@
 // The Mac notifier through the real command line, a real daemon and a real server, with a stand-in for the CELLO app that
 // speaks to the operator's door as the app will. Run it with:
-//   CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<cello-issuer> scripts/mac-notifier-test.sh
+//   CELLO_SERVER_DIR=<server> CELLO_ISSUER_DIR=<issuer source> scripts/mac-notifier-test.sh
 import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";

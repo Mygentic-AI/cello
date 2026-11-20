@@ -3,7 +3,11 @@
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../cello-server}"
-export CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$here/../cello-issuer}"
+export CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-}"
+if [ ! -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ]; then
+  echo "No issuer source at ${CELLO_ISSUER_DIR:-(unset)}. Set CELLO_ISSUER_DIR to it, because this test reads requests with the issuer's own code." >&2
+  exit 1
+fi
 CELLO_TRUSTED_ISSUERS=$(CELLO_ISSUER_DIR="$CELLO_ISSUER_DIR" node "$here/live/issuer-service.ts" --print-trusted)
 export CELLO_TRUSTED_ISSUERS
 # The server a test starts must not fetch the real issuer's list.
@@ -13,10 +17,6 @@ POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -he
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 if ! diff -r "$here/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from this repo's. In cello-server, run scripts/sync-protocol.sh and commit." >&2
-  exit 1
-fi
-if [ ! -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ]; then
-  echo "No cello-issuer at $CELLO_ISSUER_DIR. Set CELLO_ISSUER_DIR, because this test reads requests with that repo's code." >&2
   exit 1
 fi
 cd "$server_dir"

@@ -5,7 +5,7 @@ set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 server_dir="${CELLO_SERVER_DIR:-$here/../../../../cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-concierge}" CELLO_PORT="${CELLO_PORT:-21000}" CELLO_SERVER_DIR="$server_dir"
-CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$here/../../../../cello-issuer}"
+CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-}"
 # Servers require a verified email signal, and each daemon here collects a real one.
 . "$here/scripts/test-issuer-env.sh"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)

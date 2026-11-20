@@ -3,10 +3,10 @@
 # The servers a test starts fetch the signed issuer list from the real issuer unless told not to, which would make a test need the internet and a live site.
 # Off means they use only the operator-added stand-in above, as before the server learned to fetch.
 export CELLO_ISSUER_LIST_URL=off
-CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$here/../cello-issuer}"
+CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-}"
 export CELLO_ISSUER_DIR
 if [ ! -f "$CELLO_ISSUER_DIR/src/server/trust/agent-request.ts" ]; then
-  echo "No cello-issuer at $CELLO_ISSUER_DIR. Set CELLO_ISSUER_DIR, because the stand-in issuer reads requests with that repo's code." >&2
+  echo "No issuer source at ${CELLO_ISSUER_DIR:-(unset)}. Set CELLO_ISSUER_DIR to it, because the stand-in issuer reads requests with the issuer's own code." >&2
   exit 1
 fi
 CELLO_TRUSTED_ISSUERS=$(node "$here/live/issuer-service.ts" --print-trusted)

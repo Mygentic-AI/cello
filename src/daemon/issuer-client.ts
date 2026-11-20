@@ -1,10 +1,11 @@
-// Every call to an issuer, and nothing else. It matches cello-issuer's src/server/trust/agent-request.ts and its api/issuer routes.
+// Every call to an issuer, and nothing else. It matches the issuer's signed-request format and its /api/issuer routes.
 // The request's format and framing are copied from there by script: its signing label isn't in the protocol's list.
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { encodeCbor } from "../protocol/cbor.ts";
 import type { DualSignature, IdentitySeeds, PublicIdentity } from "../protocol/identity.ts";
 import { mlDsaProviderFromSeed } from "../protocol/ml-dsa.ts";
 
+// A protocol signing label, not a name: every issuer request ever signed carries it. It must never change.
 export const AGENT_REQUEST_DOMAIN = "cello-issuer-request-v1";
 export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;
