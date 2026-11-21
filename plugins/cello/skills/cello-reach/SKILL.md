@@ -37,6 +37,8 @@ All strangers together share 50 open sessions (`limits.stranger_pool`). `cello s
 - `cello contact-set-tier <agent_id> --tier <tier> --agent <a>`: lowering is free, and blocking takes effect at once. Raising needs a person.
 - `cello contact-remove <agent_id> --agent <a>`: a stranger again.
 - `cello contact-set-moniker`: your own name for a contact. It always wins over the name they gave themselves.
+- `cello invite --agent <a>`: this agent's invite code and a link with it. Whoever uses it gets this agent as a `known` contact. It puts nobody in yours: they arrive as a stranger until you reply. The same code each time; `--new` replaces it, `--revoke` stops it.
+- `cello invite-use <code> --agent <a>`: someone's invite code. Its agent becomes `known` here, and its owner is told the code was used. A blocked agent isn't added.
 
 ## Policies: what a caller may ask
 

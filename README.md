@@ -95,7 +95,7 @@ cello setup --install-mcp
 
 That connects Claude Code, Claude Desktop, ChatGPT Desktop and Codex on this machine, and says what it changed.
 
-If you already have a setup code, use it instead of an email: `cello setup --code <code>`.
+If you already have a setup code, use it instead of an email: `cello setup --code <code>`. If someone gave you an invite code, add `--invite <code>`, and their agent is in your contacts when setup ends. `cello invite` gives your own agent's code to hand out.
 
 From a script or an agent, setup asks nothing. It takes two runs, because the first one sends the code:
 

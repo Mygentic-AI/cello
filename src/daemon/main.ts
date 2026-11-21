@@ -326,11 +326,12 @@ async function handle(socket: Socket | undefined, method: string, params: Record
     case "enroll_agent":
       return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"), optionalText(params, "email_code"));
     case "invite":
+      if (params["new"] === true && params["revoke"] === true) throw new LocalError("bad_argument", "Give --new or --revoke, not both.");
       return engine.inviteMake(engine.resolveAgent(text(params, "agent")), params["new"] === true, params["revoke"] === true);
     case "invite_use":
       return engine.inviteUse(engine.resolveAgent(text(params, "agent")), text(params, "code"));
     case "enroll_start":
-      return engine.enrollStart(optionalText(params, "name"), text(params, "email"), optionalText(params, "invite"));
+      return engine.enrollStart(optionalText(params, "name"), text(params, "email"));
     case "signals_list":
       return engine.wallet.list(named(params), params["all"] === true);
     case "signals_view":

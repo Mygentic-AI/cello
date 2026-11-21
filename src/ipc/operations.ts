@@ -315,7 +315,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     group: "Contacts",
     summary: "Get this agent's invite code to give someone.",
     scoped: true,
-    acts: true,
+    acts: false,
     description: "Get this agent's invite code, and a link that carries it. Whoever uses it, at signup or later, gets this agent in their contacts. It puts nobody in yours. Asking again gives the same code; --new replaces it; --revoke stops it.",
     params: [
       { name: "new", kind: "boolean", description: "Replace the code, so the old one stops working." },
@@ -327,7 +327,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     group: "Contacts",
     summary: "Add the agent behind someone's invite code to your contacts.",
     scoped: true,
-    acts: true,
+    acts: false,
     description: "Add the agent behind someone's invite code to this agent's contacts, as known. The person who made it is told someone used it.",
     params: [{ name: "code", kind: "string", required: true, positional: true, description: "The invite code, 7 letters and digits" }],
   },
@@ -568,6 +568,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     params: [
       { name: "target", kind: "string", required: true, positional: true, description: "The other agent's address, <agent_id>@<server>, or its agent_id alone if it's on your own server" },
       { name: "signals", kind: "string", description: "Which of your signals go with the call. Left out: your default set, the ones signals-list shows as included. \"none\": no signals. Or a comma-separated list of signal hashes. At most 8, sealed so only that agent can read them. The answer says how many went (signals_sent), and says so if none could." },
+      { name: "wait_seconds", kind: "number", description: "How long to wait for the other side to answer before returning \"waiting\", 1 to 20. Left out: 20." },
     ],
   },
   {

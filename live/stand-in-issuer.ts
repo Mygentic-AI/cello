@@ -41,6 +41,8 @@ export class StandInIssuer {
   // Invite codes: a small copy of the real issuer's rules (one per agent, reused when asked again), and every use made.
   readonly invites = new Map<string, { agentId: string; name: string }>();
   readonly inviteUses: { code: string; inviter: string; invitee: string; name: unknown }[] = [];
+  // The address the use answer gives, as the real issuer's agent_id@server. A test sets it to the inviter's real address.
+  addressFor: (agentId: string) => string = (agentId) => agentId;
   readonly owners = new Map<string, string>();
   readonly requests: { route: string; agentId?: string }[] = [];
   readonly extras = new Map<string, EnvelopeChange[]>();
@@ -123,6 +125,13 @@ export class StandInIssuer {
       res.end(JSON.stringify(body));
     };
     const refuse = (status: number, reason: string, guidance: string): void => send(status, { ok: false, reason, guidance });
+    // The public invite lookup, as the real issuer's GET /api/invites/:code (no rate limit here).
+    const looked = req.method === "GET" ? /^\/api\/invites\/([^/?]+)$/.exec(req.url ?? "") : null;
+    if (looked) {
+      const invite = this.invites.get(decodeURIComponent(looked[1] as string).toUpperCase().replace(/[\s-]+/g, ""));
+      if (!invite) return refuse(404, "unknown", "That invite code isn't one we know.");
+      return send(200, { ok: true, agent_id: invite.agentId, name: invite.name });
+    }
     if (req.method === "GET") return refuse(404, "not_found", "No list here.");
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
@@ -206,9 +215,10 @@ export class StandInIssuer {
       const invite = this.invites.get(code);
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This agent isn't enrolled with this issuer, so it can't use an invite code.");
       if (!invite) return refuse(404, "unknown", "That invite code isn't one we know.");
-      if (invite.agentId === agentId) return refuse(409, "own", "That's your own invite code.");
+      // Own, as the real issuer has it: the same agent, or any agent on the same account.
+      if (invite.agentId === agentId || this.owners.get(invite.agentId) === this.owners.get(agentId)) return refuse(409, "own", "That's your own invite code.");
       this.inviteUses.push({ code, inviter: invite.agentId, invitee: agentId, name: body.name });
-      return send(200, { ok: true, agent_id: invite.agentId, address: invite.agentId, name: invite.name });
+      return send(200, { ok: true, agent_id: invite.agentId, address: this.addressFor(invite.agentId), name: invite.name });
     }
     if (route === "collect") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");

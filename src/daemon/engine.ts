@@ -2639,7 +2639,7 @@ export class Engine {
 
   // Email signup, step one. The key is made here and kept, because the code the issuer mails can only be spent by it. Run
   // again before the code is typed, it's the same key and a new code. The issuer and the server hold nothing until verify.
-  async enrollStart(name: string | undefined, email: string, invite: string | undefined): Promise<unknown> {
+  async enrollStart(name: string | undefined, email: string): Promise<unknown> {
     const agents = [...this.#agents.values()];
     let chosen = name === undefined ? agents[0] : agents.find((a) => a.name === name);
     if (chosen && this.wallet.hasRegistrationSignal(chosen.hex)) return { ...this.#describeNew(chosen), registered_with: this.#registeredWith(chosen), already_set_up: true };
@@ -2652,7 +2652,7 @@ export class Engine {
       const seeds = generateIdentitySeeds();
       chosen = this.#newAgent(name, seeds, await signerFromSeeds(seeds), true);
     }
-    await this.wallet.enrollStart(chosen.hex, email, invite);
+    await this.wallet.enrollStart(chosen.hex, email);
     return { name: chosen.name, agent_id: chosen.hex };
   }
 
@@ -2668,7 +2668,12 @@ export class Engine {
   // changes on the inviter's side. The inviter's name is self-declared.
   async inviteUse(agentHex: string, code: string): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
-    const used = await this.wallet.inviteUse(agent.hex, code, agent.name);
+    const used = await this.wallet.inviteUse(agent.hex, code, agent.name, (inviterHex) => {
+      // Checked between the issuer naming the agent and recording the use, so a blocked inviter is never told of a use.
+      if (this.governance.contacts.tierOf(agent.signer.id, new Uint8Array(Buffer.from(inviterHex, "hex"))) === TIER.BLOCKED) {
+        throw new LocalError("blocked", "This agent has blocked the agent behind that code. Lifting a block needs a person: cello contact-set-tier.");
+      }
+    });
     this.governance.contactAdd(agent.signer.id, agent.hex, { contact: used.agentId });
     return { agent: agent.name, contact_id: used.agentId, address: used.address, name: used.name };
   }
@@ -2825,7 +2830,7 @@ export class Engine {
     const warning = this.#strangerWarning(agent, targetId);
     const route = await this.#reach(agent, address.server);
     try {
-      const started = await this.#initiateOn(agent, route, targetId, typeof params["signals"] === "string" ? params["signals"] : undefined);
+      const started = await this.#initiateOn(agent, route, targetId, typeof params["signals"] === "string" ? params["signals"] : undefined, typeof params["wait_seconds"] === "number" ? params["wait_seconds"] : undefined);
       return warning ? { ...(started as Record<string, unknown>), warning } : started;
     } finally {
       this.#doneOpening(route);
@@ -2839,7 +2844,7 @@ export class Engine {
   }
 
   // The callee's server hosts, and each side connects to it directly. No server relays for another.
-  async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array, signalsSpec?: string): Promise<unknown> {
+  async #initiateOn(agent: AgentContext, route: Route, targetId: Uint8Array, signalsSpec?: string, waitFor?: number): Promise<unknown> {
     const agentHex = agent.hex;
     // The set is chosen first, so a bad choice stops here, before anything is looked up or sent.
     const presented = this.wallet.presentable(agentHex, signalsSpec);
@@ -2908,7 +2913,9 @@ export class Engine {
     const signalsInfo = { signals_sent: sealedSignals.sealedSignals.length > 0 ? presented.files.length : 0, ...(signalsNote ? { signals_note: signalsNote } : {}) };
     this.governance.engaged(agent.signer.id, targetId, "initiated");
     let timer: NodeJS.Timeout | undefined;
-    await Promise.race([activated, new Promise((resolve) => { timer = setTimeout(resolve, INITIATE_WAIT_MS); })]);
+    // A caller that only wants to know whether the other side is there now (setup's hello) can wait less than the default.
+    const waitSeconds = waitFor !== undefined && waitFor > 0 ? Math.min(waitFor, INITIATE_WAIT_MS / 1000) : INITIATE_WAIT_MS / 1000;
+    await Promise.race([activated, new Promise((resolve) => { timer = setTimeout(resolve, waitSeconds * 1000); })]);
     clearTimeout(timer);
     this.#activation.delete(agent.hex + sessionHex);
     const state = (this.#store.session(agent.signer.id, sessionId) as SessionRow).state;

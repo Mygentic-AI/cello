@@ -34,6 +34,8 @@ Setup is a person's job at their own terminal: it starts a background program an
 
    If they already have a setup code: `cello setup --code <code>`. `printf %s "$CODE" | cello setup --code -` keeps it out of the shell's history.
 
+   If someone gave them an invite code, add `--invite <code>`: the agent behind it becomes a contact, and setup says hello to it after the Concierge. A code that doesn't work is one line, and setup still finishes.
+
    The second command connects Claude Code, Claude Desktop, ChatGPT Desktop and Codex on this machine, and says what it changed. Restart each app afterwards.
 3. **Turn on doorbells in Claude Code**, if that's the app: see `apps/claude-code.md` in the `cello` skill. Without them nothing wakes the session.
 4. **Hermes:** `cello bridge hermes --agent <name> --hermes-home <path>`, then restart the gateway. The `cello-bridge-setup` skill has the steps.

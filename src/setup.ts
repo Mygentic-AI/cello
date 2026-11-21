@@ -13,15 +13,19 @@ const CONNECT_WAIT_MS = 200;
 const REPLY_WAIT_SECONDS = 60;
 const HELLO = "Hello. I've just been set up.";
 const INVITE_HELLO = "Hello. I've just been set up with your invite.";
+// How long setup waits for the inviter to pick up before saying it's offline: the hello isn't something setup waits on.
+const HELLO_WAIT_SECONDS = 5;
 
 /** What setup says about an invite code. The inviting agent's name is self-declared, so it's shown as the name it gave itself. */
 export const INVITE_LINES = {
-  inContacts: (name: string) => `The agent that calls itself "${name}" is in your contacts, and I've said hello to it. It will answer when it's next there.`,
-  inContactsNoHello: (name: string) => `The agent that calls itself "${name}" is in your contacts. The hello didn't go through, so say hello to it yourself.`,
+  inContacts: (name: string) => `The agent that calls itself "${name}" is in your contacts, and I've said hello to it.`,
+  offline: (name: string) => `The agent that calls itself "${name}" is in your contacts. It isn't online right now, so say hello to it later.`,
+  inContactsNoHello: (name: string, why: string) => `The agent that calls itself "${name}" is in your contacts. The hello didn't go through (${why}), so say hello to it yourself.`,
+  blocked: "Your agent has blocked the agent behind that code, so it wasn't added. Lifting a block needs a person: cello contact-set-tier.",
   unknown: "That invite code isn't valid, so setup carries on without it.",
   expired: "That invite has run out, so setup carries on without it. Ask whoever gave it to you for a new one.",
   own: "That's your own invite code, so there's nothing to add.",
-  unreachable: (code: string) => `Couldn't check the invite code just now, so setup carries on without it. Add it later with: cello invite-use ${code}`,
+  unreachable: (why: string, code: string) => `Couldn't use the invite code (${why}), so setup carries on without it. Add it later with: cello invite-use ${code}`,
   refused: (why: string, code: string) => `The invite code wasn't used: ${why} Setup carries on without it. Add it later with: cello invite-use ${code}`,
   alreadyHello: (name: string) => `The agent that calls itself "${name}" is in your contacts.`,
 };
@@ -144,7 +148,7 @@ async function emailRoute(client: IpcClient, host: SetupHost, flags: Record<stri
       }
     }
     try {
-      const started = await client.call("enroll_start", { name, email, ...(text("invite") ? { invite: text("invite") } : {}) }) as { already_set_up?: boolean } & Enrolled;
+      const started = await client.call("enroll_start", { name, email }) as { already_set_up?: boolean } & Enrolled;
       if (started.already_set_up) return { done: true, agent: started };
     } catch (err: unknown) {
       // A name the daemon won't take is asked for again, in its words. Everything else stops here.
@@ -337,14 +341,19 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
 
     // An invite code: the inviting agent becomes a known contact before setup ends. A code that isn't good never stops setup.
     const inviteCode = text("invite");
-    let invited: { address: string; name: string } | null = null;
+    let invited: { address: string; name: string; contact_id: string } | null = null;
+    // What setup --json reports about the code: the contact and the hello, or why it wasn't used.
+    let inviteOutcome: Record<string, unknown> | null = null;
     if (inviteCode) {
       try {
-        const used = await client.call("invite_use", { agent: agent.agent_id, code: inviteCode, caller: host.caller }) as { address: string; name: string };
-        invited = { address: used.address, name: used.name };
+        const used = await client.call("invite_use", { agent: agent.agent_id, code: inviteCode, caller: host.caller }) as { address: string; name: string; contact_id: string };
+        invited = { address: used.address, name: used.name, contact_id: used.contact_id };
+        inviteOutcome = { contact_id: used.contact_id, name: used.name, hello: "not_sent" };
       } catch (err: unknown) {
         if (!(err instanceof DaemonRefused)) throw err;
-        say(err.code === "expired" ? INVITE_LINES.expired : err.code === "own" ? INVITE_LINES.own : err.code === "unknown" ? INVITE_LINES.unknown : err.code === "issuer_unreachable" ? INVITE_LINES.unreachable(inviteCode) : INVITE_LINES.refused(err.message, inviteCode));
+        inviteOutcome = { error: err.code, message: err.message };
+        say(err.code === "expired" ? INVITE_LINES.expired : err.code === "own" ? INVITE_LINES.own : err.code === "unknown" ? INVITE_LINES.unknown : err.code === "blocked" ? INVITE_LINES.blocked
+          : err.code === "issuer_unreachable" ? INVITE_LINES.unreachable(err.message.replace(/\.$/, ""), inviteCode) : INVITE_LINES.refused(err.message, inviteCode));
       }
     }
 
@@ -377,12 +386,22 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     if (invited && !agent.already_set_up) {
       const fields = { agent: agent.agent_id, caller: host.caller };
       try {
-        const started = await client.call("initiate_session", { ...fields, target: invited.address }) as { session_id: string };
-        await client.call("send", { ...fields, session_id: started.session_id, text: INVITE_HELLO, signal: "over" });
-        say(INVITE_LINES.inContacts(invited.name));
+        // A short wait: the hello isn't waited for. An inviter that isn't there now can't be handed a message to read later,
+        // so the call is taken back (it's then never shown an empty call) and the person is told to say hello later.
+        const started = await client.call("initiate_session", { ...fields, target: invited.address, wait_seconds: HELLO_WAIT_SECONDS }) as { session_id: string; state: string; message?: string };
+        if (started.state === "active") {
+          await client.call("send", { ...fields, session_id: started.session_id, text: INVITE_HELLO, signal: "over" });
+          say(INVITE_LINES.inContacts(invited.name));
+          inviteOutcome = { ...inviteOutcome, hello: "sent" };
+        } else {
+          if (started.state === "waiting") await client.call("close_session", { ...fields, session_id: started.session_id }).catch(() => undefined);
+          say(started.state === "waiting" ? INVITE_LINES.offline(invited.name) : INVITE_LINES.inContactsNoHello(invited.name, started.message ?? started.state));
+          inviteOutcome = { ...inviteOutcome, hello: started.state === "waiting" ? "offline" : "refused" };
+        }
       } catch (err: unknown) {
         if (!(err instanceof DaemonRefused)) throw err;
-        say(INVITE_LINES.inContactsNoHello(invited.name));
+        say(INVITE_LINES.inContactsNoHello(invited.name, err.message.replace(/\.$/, "")));
+        inviteOutcome = { ...inviteOutcome, hello: "failed", hello_error: err.code };
       } finally {
         await client.call("stop_using_agent", fields).catch(() => undefined);
       }
@@ -399,7 +418,7 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       say("Or let setup connect the apps on this machine: cello setup --install-mcp");
     }
     say(byEmail && !agent.already_set_up ? `✓ ${agent.name} is set up. You can sign in at ${ACCOUNT_SITE} with the same email.` : `✓ ${agent.name} is set up.`);
-    if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, server, name: agent.name, agent_id: agent.agent_id, address: agent.address, already_set_up: agent.already_set_up === true, signals_held: agent.signals_held ?? null, concierge: reply, install_mcp: installed })}\n`);
+    if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, server, name: agent.name, agent_id: agent.agent_id, address: agent.address, already_set_up: agent.already_set_up === true, signals_held: agent.signals_held ?? null, concierge: reply, ...(inviteOutcome ? { invite: inviteOutcome } : {}), install_mcp: installed })}\n`);
     return installed?.some((line) => line.outcome === "failed") ? 1 : 0;
   } catch (err: unknown) {
     // At a terminal a wrong code is asked for again; a scripted run says how to try again instead.

@@ -345,9 +345,9 @@ export class Wallet {
     }
   }
 
-  async enrollStart(agentHex: string, email: string, invite?: string): Promise<void> {
+  async enrollStart(agentHex: string, email: string): Promise<void> {
     try {
-      await this.#client().enrollStart(this.#hooks.keys(agentHex), email, invite);
+      await this.#client().enrollStart(this.#hooks.keys(agentHex), email);
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
       throw this.#plain(err, "send the code");
@@ -372,9 +372,9 @@ export class Wallet {
     }
   }
 
-  async inviteUse(agentHex: string, code: string, name: string): Promise<{ agentId: string; address: string; name: string }> {
+  async inviteUse(agentHex: string, code: string, name: string, before: (inviterHex: string) => void): Promise<{ agentId: string; address: string; name: string }> {
     try {
-      return await this.#client().inviteUse(this.#hooks.keys(agentHex), code, name);
+      return await this.#client().inviteUse(this.#hooks.keys(agentHex), code, name, before);
     } catch (err: unknown) {
       if (err instanceof LocalError) throw err;
       throw this.#plain(err, "use the invite code");

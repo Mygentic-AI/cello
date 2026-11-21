@@ -197,35 +197,42 @@ after(async () => {
 });
 
 test("an invite code at setup: the inviting agent is a known contact, a hello reaches it after the Concierge step, and a bad code never stops setup", async () => {
-  // The inviter: an agent set up on its own machine, which asks for its code.
+  // The inviter: an agent set up on its own machine, which asks for its code. Its hello is answered by a person here.
   const inviterHome = newHome();
   const inviter = await ok(inviterHome, setupArgs(["--code", newCode(), "--name", "Inviter", "--json"]));
+  const inviterId = inviter["agent_id"] as string;
+  // The real issuer answers with agent_id@server, so the stand-in does too, and the hello dials that.
+  issuer.addressFor = (id) => (id === inviterId ? inviter["address"] as string : id);
   await ok(inviterHome, ["settings-set", "away.answering", "false", "--agent", "Inviter"]);
+  await ok(inviterHome, ["use-agent", "--agent", "Inviter"]);
   const made = await ok(inviterHome, ["invite", "--agent", "Inviter"]) as { code: string; link: string };
   assert.match(made.code, /^[2-9A-HJKMNP-Z]{7}$/);
   assert.equal(made.link, `https://t.me/JoinCelloBot?start=${made.code}`);
   assert.equal((await ok(inviterHome, ["invite", "--agent", "Inviter"]) as { code: string }).code, made.code, "asking again gives the same code");
 
-  // The invitee sets up with the code, typed loosely.
+  // The invitee sets up with the code, typed loosely, and doesn't wait on the hello.
   const home = newHome();
   const loose = `${made.code.slice(0, 3).toLowerCase()}-${made.code.slice(3)}`;
-  const set = await run(home, setupArgs(["--code", newCode(), "--name", "Bea", "--invite", loose]));
+  const set = await run(home, setupArgs(["--code", newCode(), "--name", "Bea", "--invite", loose, "--json"]));
   assert.equal(set.status, 0, set.stderr);
-  assert.match(set.stdout, /Not calling the Concierge, as asked\.\n[\s\S]*The agent that calls itself "Inviter" is in your contacts, and I've said hello to it\./);
   const bea = (await ok(home, ["status"]) as { agents: { name: string; agent_id: string }[] }).agents.find((a) => a.name === "Bea")!;
-  const contacts = JSON.stringify(await ok(home, ["contacts", "--agent", "Bea"]));
-  assert.match(contacts, new RegExp(`${inviter["agent_id"] as string}[^}]*known|known[^}]*${inviter["agent_id"] as string}`), "the inviter is a known contact");
-  assert.deepEqual(issuer.inviteUses.map((u) => [u.inviter, u.invitee, u.name]), [[inviter["agent_id"], bea.agent_id, "Bea"]]);
-  // The hello lands with the inviter, from Bea.
+  assert.deepEqual(set.json["invite"], { contact_id: inviterId, name: "Inviter", hello: "sent" });
+  const row = (await ok(home, ["contacts", "--agent", "Bea"]) as { contacts: { contact_id: string; tier: string }[] }).contacts.find((c) => c.contact_id === inviterId);
+  assert.equal(row?.tier, "known", "the inviter is a known contact");
+  assert.deepEqual(issuer.inviteUses.map((u) => [u.inviter, u.invitee, u.name]), [[inviterId, bea.agent_id, "Bea"]]);
+  // The hello lands with the inviter, from Bea, with its words.
   await run(inviterHome, ["wait", "--agent", "Inviter", "--timeout-seconds", "30"]);
-  const sessions = await ok(inviterHome, ["sessions", "--agent", "Inviter"]) as { sessions: { with_id: string }[] };
-  assert.ok(sessions.sessions.some((s) => bea.agent_id.startsWith(s.with_id) || s.with_id.startsWith(bea.agent_id.slice(0, 8))), "the hello reached the inviter");
+  const heard = await ok(inviterHome, ["receive", "--agent", "Inviter"]) as { messages: { text?: string; from_id?: string }[] };
+  assert.ok(heard.messages.some((m) => m.text === "Hello. I've just been set up with your invite."), JSON.stringify(heard));
+  const fromBea = async () => (await ok(inviterHome, ["sessions", "--agent", "Inviter", "--all"]) as { sessions: { with_id: string }[] }).sessions.filter((x) => bea.agent_id.startsWith(x.with_id)).length;
+  assert.equal(await fromBea(), 1);
 
   // Run again: no second hello, the contact only named.
   const again = await run(home, setupArgs(["--name", "Bea", "--invite", made.code]));
   assert.equal(again.status, 0, again.stderr);
   assert.match(again.stdout, /The agent that calls itself "Inviter" is in your contacts\.\n/);
   assert.doesNotMatch(again.stdout, /said hello/);
+  assert.equal(await fromBea(), 1, "still one session from Bea");
 
   // A code nobody made, and your own code: one line each, and setup finishes.
   const other = newHome();
@@ -236,16 +243,38 @@ test("an invite code at setup: the inviting agent is a known contact, a hello re
   assert.notEqual(own.status, 0);
   assert.match(own.stderr + own.stdout, /your own invite code/);
 
-  // invite-use after setup, then revoke: the code stops working.
-  const used = await ok(other, ["invite-use", made.code, "--agent", "Cy"]) as { contact_id: string; name: string };
-  assert.deepEqual([used.contact_id, used.name], [inviter["agent_id"], "Inviter"]);
+  // A blocked inviter: refused here, and the issuer records nothing, so the inviter is never told.
+  await ok(other, ["contact-set-tier", inviterId, "--tier", "blocked", "--agent", "Cy"]);
+  const uses = issuer.inviteUses.length;
+  const blocked = await run(other, ["invite-use", made.code, "--agent", "Cy"]);
+  assert.notEqual(blocked.status, 0);
+  assert.match(blocked.stderr + blocked.stdout, /blocked the agent behind that code/);
+  assert.equal(issuer.inviteUses.length, uses);
+
+  // The email route's printed next step carries the code.
+  const dee = await run(newHome(), setupArgs(["--name", "Dee", "--email", "dee@example.test", "--invite", made.code]));
+  assert.equal(dee.status, 0, dee.stderr);
+  assert.match(dee.stdout, new RegExp(`cello setup --yes --concierge none --invite ${made.code} --name Dee --email-code -`));
+
+  // The inviter offline: setup doesn't wait on it, takes the call back, and says to say hello later.
+  await ok(inviterHome, ["logout"]);
+  const started = Date.now();
+  const late = await run(newHome(), setupArgs(["--code", newCode(), "--name", "Eli", "--invite", made.code, "--json"]));
+  assert.equal(late.status, 0, late.stderr);
+  assert.equal((late.json["invite"] as { hello: string }).hello, "offline");
+  assert.ok(Date.now() - started < 60_000, `setup took ${Date.now() - started} ms`);
+
+  // Revoke: the code stops working. (The inviter comes back for it.)
+  await ok(inviterHome, ["login", "--server", url]);
   assert.equal((await ok(inviterHome, ["invite", "--revoke", "--agent", "Inviter"]) as { revoked: boolean }).revoked, true);
-  const late = await run(other, ["invite-use", made.code, "--agent", "Cy"]);
-  assert.notEqual(late.status, 0);
-  for (const h of [home, other, inviterHome]) await ok(h, ["logout"]);
+  const gone = await run(newHome(), setupArgs(["--code", newCode(), "--name", "Flo", "--invite", made.code]));
+  assert.match(gone.stdout, /That invite code isn't valid/);
+  issuer.addressFor = (id) => id;
+  for (const h of [home, other, inviterHome]) await run(h, ["logout"]);
 });
 
 test("with no terminal and nothing to go on, it says in one line what to give, and starts nothing", async () => {
+  const mailed = issuer.mail.length;
   const home = newHome();
   const done = await within(10_000, run(home, ["setup"]));
   assert.equal(done.status, 1);
@@ -264,7 +293,7 @@ test("with no terminal and nothing to go on, it says in one line what to give, a
     assert.equal(refused.stderr, said);
   }
   assert.equal(running(home), false);
-  assert.equal(issuer.mail.length, 0, "no code was sent");
+  assert.equal(issuer.mail.length, mailed, "no code was sent");
 });
 
 test("the email route at a terminal, from nothing to the Concierge's reply: a wrong code asked again, and the end line names the account site", async () => {

@@ -128,9 +128,9 @@ export class IssuerClient {
   }
 
   // Email signup, step one: the issuer mails a code that only this agent's key can spend. The answer carries no signals,
-  // and is the same whether or not the issuer knows the address. An invite rides beside the request, as Usage does.
-  async enrollStart(agent: AgentKeys, email: string, invite?: string): Promise<void> {
-    await this.#send("enroll/start", "enroll_start", agent, { code: email, target: null, holder: null, holderSignal: null }, undefined, invite === undefined ? {} : { invite }, false);
+  // and is the same whether or not the issuer knows the address.
+  async enrollStart(agent: AgentKeys, email: string): Promise<void> {
+    await this.#send("enroll/start", "enroll_start", agent, { code: email, target: null, holder: null, holderSignal: null }, undefined, {}, false);
   }
 
   // Step two: the emailed code, from the same key. The answer is the agent's signals.
@@ -169,11 +169,42 @@ export class IssuerClient {
 
   // Using someone's invite code: the issuer records it (the inviter is told once) and answers with the inviting agent, which the
   // caller adds as a contact. The code goes inside the signed request.
-  async inviteUse(agent: AgentKeys, code: string, name: string): Promise<{ agentId: string; address: string; name: string }> {
+  // `before` runs once the public lookup has named the inviting agent, and before the signed use, which the issuer records and
+  // tells the inviter about. It may refuse (a blocked inviter), and then nothing is recorded anywhere.
+  async inviteUse(agent: AgentKeys, code: string, name: string, before: (inviterHex: string) => void = () => undefined): Promise<{ agentId: string; address: string; name: string }> {
+    const looked = await this.#lookupInvite(code);
+    before(looked);
     const answer = await this.#ask("invites/use", "invite_use", agent, { code, target: null, holder: null, holderSignal: null }, undefined, { name });
     const id = answer["agent_id"], address = answer["address"], inviter = answer["name"];
     if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id) || typeof address !== "string" || typeof inviter !== "string") throw new IssuerUnreachable(`${this.#base.origin} answered without the inviting agent`);
-    return { agentId: id, address, name: inviter };
+    if (id !== looked) throw new IssuerUnreachable(`${this.#base.origin} named a different agent for that code than its lookup did`);
+    // The address is dialled for the hello, so it must name the same agent the contact is added for: an issuer can't point the
+    // hello, and the signals that go with it, at anyone else.
+    if (address.slice(0, address.includes("@") ? address.indexOf("@") : address.length).toLowerCase() !== id) throw new IssuerUnreachable(`${this.#base.origin} answered with an address for a different agent than the one it named`);
+    // A self-declared name is shown on a terminal: no control characters, and no longer than a name can be.
+    return { agentId: id, address, name: inviter.replace(/\p{Cc}/gu, " ").slice(0, 64) };
+  }
+
+  // The public lookup: the agent a code stands for. A code it doesn't know or that has run out is the issuer's refusal.
+  async #lookupInvite(code: string): Promise<string> {
+    let status: number;
+    let text: string;
+    try {
+      const response = await this.#fetch(new URL(`/api/invites/${encodeURIComponent(code.toUpperCase().replace(/[\s-]+/g, ""))}`, this.#base), { redirect: "error", signal: AbortSignal.timeout(ISSUER_WAIT_MS) });
+      status = response.status;
+      text = await response.text();
+    } catch (err: unknown) {
+      throw new IssuerUnreachable(`nothing answered at ${this.#base.origin}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    let answer: { ok?: unknown; agent_id?: unknown; reason?: unknown; guidance?: unknown };
+    try {
+      answer = JSON.parse(text) as typeof answer;
+    } catch {
+      throw new IssuerUnreachable(`${this.#base.origin} answered the invite lookup with status ${status}, and not as an issuer would (it may not offer invites yet)`);
+    }
+    if (answer.ok === true && typeof answer.agent_id === "string" && /^[0-9a-f]{64}$/.test(answer.agent_id)) return answer.agent_id;
+    if (typeof answer.reason === "string") throw new IssuerRefused(answer.reason, typeof answer.guidance === "string" ? answer.guidance : answer.reason);
+    throw new IssuerUnreachable(`${this.#base.origin} answered the invite lookup without the inviting agent`);
   }
 
   // Null when this issuer serves none. A list proves itself by its root signatures, so who hands it over doesn't matter.
