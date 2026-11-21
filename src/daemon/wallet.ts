@@ -354,6 +354,33 @@ export class Wallet {
     }
   }
 
+  async inviteMake(agentHex: string, name: string, replace: boolean): Promise<{ code: string; link: string }> {
+    try {
+      return await this.#client().inviteMake(this.#hooks.keys(agentHex), name, replace);
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "get the invite code");
+    }
+  }
+
+  async inviteRevoke(agentHex: string): Promise<boolean> {
+    try {
+      return await this.#client().inviteRevoke(this.#hooks.keys(agentHex));
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "stop the invite code");
+    }
+  }
+
+  async inviteUse(agentHex: string, code: string, name: string): Promise<{ agentId: string; address: string; name: string }> {
+    try {
+      return await this.#client().inviteUse(this.#hooks.keys(agentHex), code, name);
+    } catch (err: unknown) {
+      if (err instanceof LocalError) throw err;
+      throw this.#plain(err, "use the invite code");
+    }
+  }
+
   async enrollVerify(agentHex: string, code: string): Promise<Collected> {
     try {
       const client = this.#client();

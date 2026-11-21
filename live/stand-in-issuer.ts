@@ -38,6 +38,9 @@ export async function standInSignal(agentId: string): Promise<string> {
 
 export class StandInIssuer {
   readonly codes = new Map<string, "good" | "used">();
+  // Invite codes: a small copy of the real issuer's rules (one per agent, reused when asked again), and every use made.
+  readonly invites = new Map<string, { agentId: string; name: string }>();
+  readonly inviteUses: { code: string; inviter: string; invitee: string; name: unknown }[] = [];
   readonly owners = new Map<string, string>();
   readonly requests: { route: string; agentId?: string }[] = [];
   readonly extras = new Map<string, EnvelopeChange[]>();
@@ -129,8 +132,8 @@ export class StandInIssuer {
       res.end("<!DOCTYPE html><title>404</title>");
       return;
     }
-    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route.replace("/", "_");
-    const body = JSON.parse(raw) as { usageFacts?: unknown; usageServer?: unknown };
+    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route === "invites" ? "invite_make" : route === "invites/use" ? "invite_use" : route.replace("/", "_");
+    const body = JSON.parse(raw) as { usageFacts?: unknown; usageServer?: unknown; name?: unknown; replace?: unknown; revoke?: unknown };
     const read = this.#contract.agentRequestFromWire(body);
     const checked = await this.#contract.checkAgentRequest(read.bytes, read.signatures, { action, issuerAddress: "127.0.0.1", now: Math.floor(Date.now() / 1000) });
     if (!checked.ok) return refuse(401, checked.fault, checked.message);
@@ -182,6 +185,30 @@ export class StandInIssuer {
       }
       this.enrolling.delete(agentId);
       return send(200, { ok: true, agentId, signals: await this.#files(agentId) });
+    }
+    if (route === "invites") {
+      if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This agent isn't enrolled with this issuer, so it can't have an invite code.");
+      let code = [...this.invites.entries()].find(([, v]) => v.agentId === agentId)?.[0];
+      if (body.revoke === true) {
+        if (code) this.invites.delete(code);
+        return send(200, { ok: true, revoked: code !== undefined });
+      }
+      if (typeof body.name !== "string") return refuse(400, "bad_name", "Give the agent's name with the request.");
+      if (!code || body.replace === true) {
+        if (code) this.invites.delete(code);
+        code = Array.from(randomBytes(7), (b) => "23456789ABCDEFGHJKMNPQRSTUVWXYZ"[b % 31]).join("");
+      }
+      this.invites.set(code, { agentId, name: body.name });
+      return send(200, { ok: true, code, link: `https://t.me/JoinCelloBot?start=${code}` });
+    }
+    if (route === "invites/use") {
+      const code = (fields.code ?? "").toUpperCase().replace(/[\s-]+/g, "");
+      const invite = this.invites.get(code);
+      if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This agent isn't enrolled with this issuer, so it can't use an invite code.");
+      if (!invite) return refuse(404, "unknown", "That invite code isn't one we know.");
+      if (invite.agentId === agentId) return refuse(409, "own", "That's your own invite code.");
+      this.inviteUses.push({ code, inviter: invite.agentId, invitee: agentId, name: body.name });
+      return send(200, { ok: true, agent_id: invite.agentId, address: invite.agentId, name: invite.name });
     }
     if (route === "collect") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");

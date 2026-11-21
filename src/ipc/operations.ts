@@ -311,6 +311,27 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     ],
   },
   {
+    command: "invite",
+    group: "Contacts",
+    summary: "Get this agent's invite code to give someone.",
+    scoped: true,
+    acts: true,
+    description: "Get this agent's invite code, and a link that carries it. Whoever uses it, at signup or later, gets this agent in their contacts. It puts nobody in yours. Asking again gives the same code; --new replaces it; --revoke stops it.",
+    params: [
+      { name: "new", kind: "boolean", description: "Replace the code, so the old one stops working." },
+      { name: "revoke", kind: "boolean", description: "Stop the code, with no new one." },
+    ],
+  },
+  {
+    command: "invite-use",
+    group: "Contacts",
+    summary: "Add the agent behind someone's invite code to your contacts.",
+    scoped: true,
+    acts: true,
+    description: "Add the agent behind someone's invite code to this agent's contacts, as known. The person who made it is told someone used it.",
+    params: [{ name: "code", kind: "string", required: true, positional: true, description: "The invite code, 7 letters and digits" }],
+  },
+  {
     command: "contact-add",
     group: "Contacts",
     summary: "Add a contact, as known. Lifting a block needs a person.",

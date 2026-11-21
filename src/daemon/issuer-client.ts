@@ -11,7 +11,7 @@ export const AGENT_REQUEST_CONTEXT = "cello-issuer-request";
 export const MAX_REQUEST_LIFETIME_SECONDS = 300;
 const NONCE_BYTES = 16;
 
-export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse" | "request_usage" | "enroll_start" | "enroll_verify";
+export type AgentRequestAction = "redeem" | "collect" | "add_agent" | "endorse" | "withdraw" | "refuse" | "request_usage" | "enroll_start" | "enroll_verify" | "invite_make" | "invite_use";
 
 export interface AgentRequestFields {
   action: AgentRequestAction;
@@ -153,6 +153,29 @@ export class IssuerClient {
     return this.#send("usage", "request_usage", agent, { code: null, target: null, holder: null, holderSignal: null }, undefined, { usageFacts, usageServer });
   }
 
+  // This agent's invite code: a short alias the issuer keeps for it, which anyone can use to add it as a contact. The agent's own
+  // name rides beside the request, kept with the code and always shown as self-declared. `replace` makes a new code.
+  async inviteMake(agent: AgentKeys, name: string, replace: boolean): Promise<{ code: string; link: string }> {
+    const answer = await this.#ask("invites", "invite_make", agent, { code: null, target: null, holder: null, holderSignal: null }, undefined, { name, replace });
+    if (typeof answer["code"] !== "string" || typeof answer["link"] !== "string") throw new IssuerUnreachable(`${this.#base.origin} answered without an invite code`);
+    return { code: answer["code"], link: answer["link"] };
+  }
+
+  // Stops this agent's invite code, with no new one. Answers whether there was one.
+  async inviteRevoke(agent: AgentKeys): Promise<boolean> {
+    const answer = await this.#ask("invites", "invite_make", agent, { code: null, target: null, holder: null, holderSignal: null }, undefined, { revoke: true });
+    return answer["revoked"] === true;
+  }
+
+  // Using someone's invite code: the issuer records it (the inviter is told once) and answers with the inviting agent, which the
+  // caller adds as a contact. The code goes inside the signed request.
+  async inviteUse(agent: AgentKeys, code: string, name: string): Promise<{ agentId: string; address: string; name: string }> {
+    const answer = await this.#ask("invites/use", "invite_use", agent, { code, target: null, holder: null, holderSignal: null }, undefined, { name });
+    const id = answer["agent_id"], address = answer["address"], inviter = answer["name"];
+    if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id) || typeof address !== "string" || typeof inviter !== "string") throw new IssuerUnreachable(`${this.#base.origin} answered without the inviting agent`);
+    return { agentId: id, address, name: inviter };
+  }
+
   // Null when this issuer serves none. A list proves itself by its root signatures, so who hands it over doesn't matter.
   async latestIssuerList(): Promise<Uint8Array | null> {
     try {
@@ -166,6 +189,14 @@ export class IssuerClient {
   }
 
   async #send(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds, beside: Record<string, unknown> = {}, withSignals = true): Promise<IssuerAnswer> {
+    const answer = await this.#ask(route, action, agent, extra, holderSeeds, beside);
+    if (!withSignals) return { signals: [] };
+    if (!Array.isArray(answer["signals"]) || !(answer["signals"] as unknown[]).every((s) => typeof s === "string")) throw new IssuerUnreachable(`${this.#base.origin} answered without a list of signals`);
+    return { signals: (answer["signals"] as string[]).map((s) => new Uint8Array(Buffer.from(s, "base64"))) };
+  }
+
+  // One signed request, and the issuer's answer when it said ok. A refusal says why; anything else is unreachable.
+  async #ask(route: string, action: AgentRequestAction, agent: AgentKeys, extra: Pick<AgentRequestFields, "code" | "target" | "holder" | "holderSignal">, holderSeeds?: IdentitySeeds, beside: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const issuedAt = Math.floor(Date.now() / 1000);
     const bytes = encodeAgentRequest({
       action,
@@ -202,8 +233,6 @@ export class IssuerClient {
       if (typeof answer.reason !== "string") throw new IssuerUnreachable(`${this.#base.origin} answered with status ${status}, and not as an issuer would`);
       throw new IssuerRefused(answer.reason, typeof answer.guidance === "string" ? answer.guidance : answer.reason);
     }
-    if (!withSignals) return { signals: [] };
-    if (!Array.isArray(answer.signals) || !answer.signals.every((s) => typeof s === "string")) throw new IssuerUnreachable(`${this.#base.origin} answered without a list of signals`);
-    return { signals: (answer.signals as string[]).map((s) => new Uint8Array(Buffer.from(s, "base64"))) };
+    return answer as Record<string, unknown>;
   }
 }

@@ -12,6 +12,19 @@ const CONNECT_WAIT_TRIES = 50;
 const CONNECT_WAIT_MS = 200;
 const REPLY_WAIT_SECONDS = 60;
 const HELLO = "Hello. I've just been set up.";
+const INVITE_HELLO = "Hello. I've just been set up with your invite.";
+
+/** What setup says about an invite code. The inviting agent's name is self-declared, so it's shown as the name it gave itself. */
+export const INVITE_LINES = {
+  inContacts: (name: string) => `The agent that calls itself "${name}" is in your contacts, and I've said hello to it. It will answer when it's next there.`,
+  inContactsNoHello: (name: string) => `The agent that calls itself "${name}" is in your contacts. The hello didn't go through, so say hello to it yourself.`,
+  unknown: "That invite code isn't valid, so setup carries on without it.",
+  expired: "That invite has run out, so setup carries on without it. Ask whoever gave it to you for a new one.",
+  own: "That's your own invite code, so there's nothing to add.",
+  unreachable: (code: string) => `Couldn't check the invite code just now, so setup carries on without it. Add it later with: cello invite-use ${code}`,
+  refused: (why: string, code: string) => `The invite code wasn't used: ${why} Setup carries on without it. Add it later with: cello invite-use ${code}`,
+  alreadyHello: (name: string) => `The agent that calls itself "${name}" is in your contacts.`,
+};
 
 export const SETUP_HELP = `Usage: cello setup [--name <agent>] [--email <address>] [--email-code <code>] [--invite <code>] [--code <code>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
 
@@ -305,7 +318,7 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       if (!route.done) {
         // Pasted as printed, it must finish the job: consent and a skipped Concierge last one run, so they're carried over.
         // The server and issuer were saved in the database by this run.
-        const carried = [flags["yes"] === true ? " --yes" : "", skipConcierge ? " --concierge none" : ""].join("");
+        const carried = [flags["yes"] === true ? " --yes" : "", skipConcierge ? " --concierge none" : "", text("invite") ? ` --invite ${shellWord(text("invite") as string)}` : ""].join("");
         say(`Code sent to ${route.email}. Next: printf %s "$EMAILED_CODE" | cello setup${carried} --name ${shellWord(route.name)} --email-code -`);
         if (asJson) process.stdout.write(`${JSON.stringify({ ok: true, done: false, next: "email_code", name: route.name })}\n`);
         return 0;
@@ -321,6 +334,19 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
     if (registering && !registering.counts_as_verified) say("This machine doesn't recognise that issuer yet, because it isn't on a signed issuer list here, so the signal shows as unknown.");
     say(`Your agent's address, which is what you share:\n${agent.address}`);
     host.rememberAgent(agent.agent_id);
+
+    // An invite code: the inviting agent becomes a known contact before setup ends. A code that isn't good never stops setup.
+    const inviteCode = text("invite");
+    let invited: { address: string; name: string } | null = null;
+    if (inviteCode) {
+      try {
+        const used = await client.call("invite_use", { agent: agent.agent_id, code: inviteCode, caller: host.caller }) as { address: string; name: string };
+        invited = { address: used.address, name: used.name };
+      } catch (err: unknown) {
+        if (!(err instanceof DaemonRefused)) throw err;
+        say(err.code === "expired" ? INVITE_LINES.expired : err.code === "own" ? INVITE_LINES.own : err.code === "unknown" ? INVITE_LINES.unknown : err.code === "issuer_unreachable" ? INVITE_LINES.unreachable(inviteCode) : INVITE_LINES.refused(err.message, inviteCode));
+      }
+    }
 
     const settings = await client.call("settings", {}) as { settings: { name: string; value: unknown }[] };
     const concierge = settings.settings.find((setting) => setting.name === "concierge_address")?.value;
@@ -345,6 +371,22 @@ export async function setup(args: string[], host: SetupHost): Promise<number> {
       say("There's no Concierge to call yet, so this hasn't shown a reply from another agent.");
     }
     if (reply?.replied) say(`The Concierge replied, in its own words:\n"${(reply.text as string).replace(/\p{Cc}/gu, " ")}"`);
+    // After the Concierge, a hello to the inviting agent, not waited for: it may not be there now, and nothing here depends on it.
+    // A rerun of a setup that already finished has said hello once already; the contact is there, so it's only named.
+    if (invited && agent.already_set_up) say(INVITE_LINES.alreadyHello(invited.name));
+    if (invited && !agent.already_set_up) {
+      const fields = { agent: agent.agent_id, caller: host.caller };
+      try {
+        const started = await client.call("initiate_session", { ...fields, target: invited.address }) as { session_id: string };
+        await client.call("send", { ...fields, session_id: started.session_id, text: INVITE_HELLO, signal: "over" });
+        say(INVITE_LINES.inContacts(invited.name));
+      } catch (err: unknown) {
+        if (!(err instanceof DaemonRefused)) throw err;
+        say(INVITE_LINES.inContactsNoHello(invited.name));
+      } finally {
+        await client.call("stop_using_agent", fields).catch(() => undefined);
+      }
+    }
     if (reply && !reply.replied) throw new SetupFailed("concierge_silent", `Your agent is set up, and the Concierge didn't answer: ${reply.problem as string}. Run the same command again to retry. Nothing is lost.`);
 
     const installed = flags["install-mcp"] === true ? installMcp() : null;

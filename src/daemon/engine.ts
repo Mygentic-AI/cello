@@ -2656,6 +2656,23 @@ export class Engine {
     return { name: chosen.name, agent_id: chosen.hex };
   }
 
+  // This agent's invite code and link. Anyone who uses it adds this agent as a contact; it puts nobody in this agent's contacts.
+  async inviteMake(agentHex: string, replace: boolean, revoke = false): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    if (revoke) return { agent: agent.name, agent_id: agent.hex, revoked: await this.wallet.inviteRevoke(agent.hex) };
+    const made = await this.wallet.inviteMake(agent.hex, agent.name, replace);
+    return { agent: agent.name, agent_id: agent.hex, code: made.code, link: made.link };
+  }
+
+  // Someone's invite code, used by this agent: the inviting agent becomes a known contact, as contact-add makes it. Nothing
+  // changes on the inviter's side. The inviter's name is self-declared.
+  async inviteUse(agentHex: string, code: string): Promise<unknown> {
+    const agent = this.#requireAgent(agentHex);
+    const used = await this.wallet.inviteUse(agent.hex, code, agent.name);
+    this.governance.contactAdd(agent.signer.id, agent.hex, { contact: used.agentId });
+    return { agent: agent.name, contact_id: used.agentId, address: used.address, name: used.name };
+  }
+
   // What setup does for an agent. Run again, it changes nothing: a code isn't spent on an agent that already has its signal.
   async enrollAgent(name: string | undefined, code: string | undefined, emailCode?: string): Promise<unknown> {
     const agents = [...this.#agents.values()];

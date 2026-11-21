@@ -325,6 +325,10 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.createAgent(text(params, "name"));
     case "enroll_agent":
       return engine.enrollAgent(optionalText(params, "name"), optionalText(params, "code"), optionalText(params, "email_code"));
+    case "invite":
+      return engine.inviteMake(engine.resolveAgent(text(params, "agent")), params["new"] === true, params["revoke"] === true);
+    case "invite_use":
+      return engine.inviteUse(engine.resolveAgent(text(params, "agent")), text(params, "code"));
     case "enroll_start":
       return engine.enrollStart(optionalText(params, "name"), text(params, "email"), optionalText(params, "invite"));
     case "signals_list":

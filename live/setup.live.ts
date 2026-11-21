@@ -196,6 +196,55 @@ after(async () => {
   for (const home of homes) rmSync(home, { recursive: true, force: true });
 });
 
+test("an invite code at setup: the inviting agent is a known contact, a hello reaches it after the Concierge step, and a bad code never stops setup", async () => {
+  // The inviter: an agent set up on its own machine, which asks for its code.
+  const inviterHome = newHome();
+  const inviter = await ok(inviterHome, setupArgs(["--code", newCode(), "--name", "Inviter", "--json"]));
+  await ok(inviterHome, ["settings-set", "away.answering", "false", "--agent", "Inviter"]);
+  const made = await ok(inviterHome, ["invite", "--agent", "Inviter"]) as { code: string; link: string };
+  assert.match(made.code, /^[2-9A-HJKMNP-Z]{7}$/);
+  assert.equal(made.link, `https://t.me/JoinCelloBot?start=${made.code}`);
+  assert.equal((await ok(inviterHome, ["invite", "--agent", "Inviter"]) as { code: string }).code, made.code, "asking again gives the same code");
+
+  // The invitee sets up with the code, typed loosely.
+  const home = newHome();
+  const loose = `${made.code.slice(0, 3).toLowerCase()}-${made.code.slice(3)}`;
+  const set = await run(home, setupArgs(["--code", newCode(), "--name", "Bea", "--invite", loose]));
+  assert.equal(set.status, 0, set.stderr);
+  assert.match(set.stdout, /Not calling the Concierge, as asked\.\n[\s\S]*The agent that calls itself "Inviter" is in your contacts, and I've said hello to it\./);
+  const bea = (await ok(home, ["status"]) as { agents: { name: string; agent_id: string }[] }).agents.find((a) => a.name === "Bea")!;
+  const contacts = JSON.stringify(await ok(home, ["contacts", "--agent", "Bea"]));
+  assert.match(contacts, new RegExp(`${inviter["agent_id"] as string}[^}]*known|known[^}]*${inviter["agent_id"] as string}`), "the inviter is a known contact");
+  assert.deepEqual(issuer.inviteUses.map((u) => [u.inviter, u.invitee, u.name]), [[inviter["agent_id"], bea.agent_id, "Bea"]]);
+  // The hello lands with the inviter, from Bea.
+  await run(inviterHome, ["wait", "--agent", "Inviter", "--timeout-seconds", "30"]);
+  const sessions = await ok(inviterHome, ["sessions", "--agent", "Inviter"]) as { sessions: { with_id: string }[] };
+  assert.ok(sessions.sessions.some((s) => bea.agent_id.startsWith(s.with_id) || s.with_id.startsWith(bea.agent_id.slice(0, 8))), "the hello reached the inviter");
+
+  // Run again: no second hello, the contact only named.
+  const again = await run(home, setupArgs(["--name", "Bea", "--invite", made.code]));
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /The agent that calls itself "Inviter" is in your contacts\.\n/);
+  assert.doesNotMatch(again.stdout, /said hello/);
+
+  // A code nobody made, and your own code: one line each, and setup finishes.
+  const other = newHome();
+  const bad = await run(other, setupArgs(["--code", newCode(), "--name", "Cy", "--invite", "K7QM4TX"]));
+  assert.equal(bad.status, 0, bad.stderr);
+  assert.match(bad.stdout, /That invite code isn't valid, so setup carries on without it\./);
+  const own = await run(inviterHome, ["invite-use", made.code, "--agent", "Inviter"]);
+  assert.notEqual(own.status, 0);
+  assert.match(own.stderr + own.stdout, /your own invite code/);
+
+  // invite-use after setup, then revoke: the code stops working.
+  const used = await ok(other, ["invite-use", made.code, "--agent", "Cy"]) as { contact_id: string; name: string };
+  assert.deepEqual([used.contact_id, used.name], [inviter["agent_id"], "Inviter"]);
+  assert.equal((await ok(inviterHome, ["invite", "--revoke", "--agent", "Inviter"]) as { revoked: boolean }).revoked, true);
+  const late = await run(other, ["invite-use", made.code, "--agent", "Cy"]);
+  assert.notEqual(late.status, 0);
+  for (const h of [home, other, inviterHome]) await ok(h, ["logout"]);
+});
+
 test("with no terminal and nothing to go on, it says in one line what to give, and starts nothing", async () => {
   const home = newHome();
   const done = await within(10_000, run(home, ["setup"]));
