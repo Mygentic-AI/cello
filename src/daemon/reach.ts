@@ -64,7 +64,7 @@ export const CALLING_RAISES_KEY = "contacts.calling_raises_to_known";
 
 // loosensWhen: which way needs a person. Text settings go neither way. A switch loosens when it's turned on.
 // agents is "own", "all" or agent ids, and loosens when it names anyone it didn't. labels is a list that loosens when one is taken off.
-interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier" | "agents" | "labels"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
+interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier" | "agents" | "labels"; allowed?: readonly string[]; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
 
 export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // Ruled off on 4 November: a lure could get itself raised just by persuading an agent to dial it.
@@ -83,6 +83,7 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "notes.body_max_bytes": { default: "16384", kind: "number", min: 1, max: 1_048_576, loosensWhen: "higher", description: "The largest body one note holds, in bytes." },
   "notes.history_default": { default: "10", kind: "number", min: 1, max: MAX_NOTE_HISTORY, loosensWhen: "higher", description: "The fewest past versions a note keeps while its kind is listed in notes.history_kinds. Raising it takes a person, and so does lowering it while any kind is listed." },
   "notes.start_max": { default: "20", kind: "number", min: 1, max: 200, loosensWhen: "higher", description: "The most notes shown to this agent unasked at once, as a session starts or a channel is first read. The most recently changed come first, and the answer says how many were left out." },
+  "notes.ring": { default: "agent_then_operator", kind: "text", allowed: ["agent_then_operator", "agent", "operator", "both"], description: "Who is rung, once, when a note's check_by time passes. agent: whoever holds the agent gets a doorbell with the note's id, and the note is listed on its next read; with nobody holding it, the ring waits until someone does. operator: the agent's notifiers get a fixed line with the note's id and none of its words; with no notifier, the note is listed on the agent's next read instead. both: each of those, once. agent_then_operator: the agent, or the operator when nobody holds the agent at that moment and it has a notifier. Anyone can change this." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },
@@ -207,6 +208,8 @@ export class Reach {
     if (setting.kind === "number") {
       const value = Number(to);
       if (!Number.isInteger(value) || value < (setting.min as number) || value > (setting.max as number)) throw new LocalError("bad_setting", `${key} must be a whole number from ${setting.min as number} to ${setting.max as number}, not ${to}`);
+    } else if (setting.allowed && !setting.allowed.includes(to)) {
+      throw new LocalError("bad_setting", `${key} must be one of ${setting.allowed.join(", ")}, not ${to}`);
     } else if (key.startsWith("away.") && to.length > this.number(agentId, "away.max_chars")) {
       throw new LocalError("bad_setting", `an away message must be ${this.setting(agentId, "away.max_chars")} characters or fewer`);
     }

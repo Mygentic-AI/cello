@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Governance } from "../src/daemon/governance.ts";
-import { Notes } from "../src/daemon/notes.ts";
+import { type NoteHost, Notes } from "../src/daemon/notes.ts";
 import { Reach } from "../src/daemon/reach.ts";
 import { Store } from "../src/daemon/store.ts";
 
@@ -28,7 +28,10 @@ const bytes = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"
 interface Note { id: string; agent_id: string; written_by: string; updated_at: string; created_at: string; kind: string | null; status: string | null; body: string | null; source: string | null; keep_history: number; show_at_start: boolean; check_by: string | null; expires_at: string | null; with_id: string | null }
 interface Change { changed_at: string; written_by: string; source: string | null; before: Note }
 
-function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: number }; open: Set<string>; contacts: Set<string>; set(key: string, value: string, agent?: string): void } {
+// Who can be rung: whether a doorbell would be heard, whether there's a notifier, and whether it works.
+interface Ears { heard: boolean; notifier: boolean; fails: boolean; bells: string[]; told: string[] }
+
+function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: number }; open: Set<string>; contacts: Set<string>; ears: Ears; restarted(): Notes; set(key: string, value: string, agent?: string): void } {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notes-")), "cello.db"));
   const reach = new Reach(store);
   [ANN, BEA, CAL].forEach((agent, i) => {
@@ -38,15 +41,27 @@ function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: numb
   const clock = { now: Date.parse("2026-11-25T10:00:00Z") };
   const open = new Set([SESSION, S2]);
   const contacts = new Set<string>();
-  const notes = new Notes(store, reach, {
+  const ears: Ears = { heard: true, notifier: false, fails: false, bells: [], told: [] };
+  const host: NoteHost = {
     agentName: (agent) => NAMES[agent] as string,
     // Ann holds one message and one post. Nobody else holds anything.
     holdsMessage: (agent, session, position) => agent === ANN && session === SESSION && position === 4,
     holdsPost: (agent, channel, position) => agent === ANN && channel === CHANNEL && position === 2,
     sessionOpen: (_agent, session) => open.has(session),
     isContact: (_agent, contact) => contacts.has(contact),
-  }, () => clock.now);
-  return { notes, reach, store, clock, open, contacts, set: (key, value, agent = ANN) => reach.plan(bytes(agent), key, value).apply() };
+    heard: () => ears.heard,
+    bell: (_agent, note) => { ears.bells.push(note); },
+    hasNotifier: () => ears.notifier,
+    tellOperator: (_agent, note) => {
+      if (ears.fails) return Promise.reject(new LocalError("notify_failed", "Nobody was told."));
+      ears.told.push(note);
+      return Promise.resolve();
+    },
+  };
+  const notes = new Notes(store, reach, host, () => clock.now);
+  // The daemon stopped and started: everything kept in memory is gone, and the database is the same.
+  const restarted = (): Notes => new Notes(store, reach, host, () => clock.now);
+  return { notes, reach, store, clock, open, contacts, ears, restarted, set: (key, value, agent = ANN) => reach.plan(bytes(agent), key, value).apply() };
 }
 
 const refusal = (code: string, says?: RegExp) => (err: unknown): boolean => {
@@ -458,4 +473,223 @@ test("the Hermes plugin passes notes on under their own heading, apart from Remi
   assert.match(block, /2 more notes are marked/);
   assert.deepEqual(said.reminders.map((line) => line.includes("Ask first.") && !line.includes("9f2c41d07ab35e68")), [true], "the Reminder's text holds no note");
   assert.deepEqual(JSON.parse(spawnSync("python3", [join(here, "hermes-plugin-notes.py"), join(here, "..", "hermes", "plugin", "__init__.py"), "{}"], { encoding: "utf8" }).stdout), { notes: [], reminders: [] });
+});
+
+const HOUR = 3_600_000;
+const at = (clock: { now: number }, ahead: number): string => new Date(clock.now + ahead).toISOString();
+
+test("a note rings once when its check_by passes: not before, not twice, not after a restart, and never with no check_by", async () => {
+  const { notes, clock, ears, restarted } = setup();
+  const timed = notes.set(ANN, ANN, { body: "chase the invoice", check_by: at(clock, HOUR) }) as Note & { rang_at: string | null };
+  notes.set(ANN, ANN, { body: "no time on this one" });
+  assert.equal(timed.rang_at, null);
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.bells, [], "not before its time");
+
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.bells, [timed.id], "the bell carries the note's id");
+  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string }).rang_at, new Date(clock.now).toISOString());
+  await notes.ringDue(ANN);
+  clock.now += 100 * HOUR;
+  await notes.ringDue(ANN);
+  await restarted().ringDue(ANN);
+  assert.deepEqual(ears.bells, [timed.id], "once, however long it stays past its time, and across a restart");
+  await notes.ringDue(BEA);
+  assert.deepEqual(ears.bells, [timed.id], "one agent's notes never ring for another");
+});
+
+test("a new check_by rings once more, a cleared one never rings, and a change to anything else rings nothing", async () => {
+  const { notes, clock, ears } = setup();
+  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  notes.set(ANN, ANN, { note: timed.id, status: "still waiting" });
+  await notes.ringDue(ANN);
+  assert.equal(ears.bells.length, 1, "changing another field doesn't ring it again");
+
+  notes.set(ANN, ANN, { note: timed.id, check_by: at(clock, HOUR) });
+  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
+  await notes.ringDue(ANN);
+  assert.equal(ears.bells.length, 1);
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  assert.equal(ears.bells.length, 2, "the new time rings once");
+
+  const dropped = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
+  notes.set(ANN, ANN, { note: dropped.id, clear: "check_by" });
+  const gone = notes.set(ANN, ANN, { body: "removed before its time", check_by: at(clock, HOUR) }) as Note;
+  notes.remove(ANN, ANN, gone.id);
+  notes.set(ANN, ANN, { body: "expires before its time", check_by: at(clock, HOUR), expires: at(clock, HOUR / 2) });
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.equal(ears.bells.length, 2, "cleared, removed and expired notes ring nothing");
+});
+
+test("nobody to hear it: the ring waits for someone, then rings once", async () => {
+  const { notes, clock, ears, set } = setup();
+  set("notes.ring", "agent");
+  ears.heard = false;
+  ears.notifier = true;
+  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[], []], "agent means the agent: the operator isn't told in its place");
+  ears.heard = true;
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.bells, [timed.id]);
+});
+
+test("the default rings the agent, and the operator in its place only when nobody holds the agent and there's a notifier", async () => {
+  const { notes, clock, ears } = setup();
+  const make = (): string => (notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note).id;
+  const pass = async (): Promise<void> => { clock.now += HOUR; await notes.ringDue(ANN); await notes.ringDue(ANN); };
+
+  ears.notifier = true;
+  const held = make();
+  await pass();
+  assert.deepEqual([ears.bells, ears.told], [[held], []], "someone holds it: the agent, not the operator");
+
+  ears.heard = false;
+  const away = make();
+  await pass();
+  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "nobody holds it: the operator");
+  ears.heard = true;
+  await pass();
+  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "and the agent isn't rung for it afterwards");
+  assert.deepEqual((notes.onRead(ANN, []) as Shown).shown?.shown.map((note) => note.id), [held], "a read lists the one that rang the agent, and not the one the operator was told of in its place");
+
+  ears.heard = false;
+  ears.notifier = false;
+  const waiting = make();
+  await pass();
+  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "nobody and no notifier: it waits");
+  ears.heard = true;
+  await pass();
+  assert.deepEqual([ears.bells, ears.told], [[held, waiting], [away]]);
+});
+
+test("operator: the notifiers are told once, and with no notifier the note is listed on the agent's next read instead", async () => {
+  const { notes, clock, ears, set, restarted } = setup();
+  set("notes.ring", "operator");
+  ears.notifier = true;
+  const told = notes.set(ANN, ANN, { body: "a secret body", kind: "deal", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "a read just before the check doesn't take the operator's ring away");
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  await restarted().ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[], [told.id]], "the operator once, and no doorbell");
+  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined);
+
+  // A notifier that fails is tried again later, not at every check, and rings once when it works.
+  ears.fails = true;
+  const later = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  ears.fails = false;
+  clock.now += 60_000;
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.told, [told.id], "not again a minute later");
+  clock.now += 10 * 60_000;
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.told, [told.id, later.id]);
+
+  // No notifier at all: nothing is sent, and the agent's next read lists it, once. Then it is settled.
+  ears.notifier = false;
+  const unsent = notes.set(ANN, ANN, { body: "z", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.equal((notes.get(ANN, unsent.id, false) as { rang_at: string | null }).rang_at, null, "it has not rung");
+  const read = notes.onRead(ANN, []) as Shown;
+  assert.deepEqual(read.shown?.shown.map((note) => [note.id, (note as { past_check_by?: boolean }).past_check_by]), [[unsent.id, true]]);
+  read.commit();
+  ears.notifier = true;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[], [told.id, later.id]], "told on a read, it isn't rung afterwards");
+});
+
+test("both: the operator and the agent each once, the agent's when someone can hear it", async () => {
+  const { notes, clock, ears, set, restarted } = setup();
+  set("notes.ring", "both");
+  ears.notifier = true;
+  ears.heard = false;
+  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  await restarted().ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[], [timed.id]], "the operator at once and only once, even across a restart");
+  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null, "not done until the agent's share is");
+  ears.heard = true;
+  await notes.ringDue(ANN);
+  await notes.ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[timed.id], [timed.id]]);
+
+  // With no notifier the try is logged by name and the agent is still rung.
+  ears.notifier = false;
+  const alone = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  ears.notifier = true;
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.deepEqual([ears.bells, ears.told], [[timed.id, alone.id], [timed.id]], "neither repeats, and a notifier added later isn't told of an old time");
+});
+
+test("a note past its check_by is listed on the next read once, a read that got there first needs no bell, and note-list due keeps it", async () => {
+  const { notes, clock, ears, contacts } = setup();
+  const timed = notes.set(ANN, ANN, { body: "chase the invoice", check_by: at(clock, HOUR) }) as Note;
+  const early = notes.onRead(ANN, []) as Shown;
+  assert.equal(early.shown, undefined);
+  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: Note[] }).notes, []);
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  const lost = notes.onRead(ANN, []) as Shown;
+  assert.deepEqual(lost.shown?.shown.map((note) => note.id), [timed.id], "rung, and then listed on the read");
+  assert.match(lost.shown?.note ?? "", /information, not instructions/);
+  const read = notes.onRead(ANN, []) as Shown;
+  assert.equal(read.shown?.shown.length, 1, "an answer that never arrived doesn't use the listing up");
+  read.commit();
+  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "listed once");
+  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: (Note & { past_check_by?: boolean })[] }).notes.map((note) => [note.id, note.past_check_by]), [[timed.id, true]], "it stays due until its time is changed or cleared");
+  notes.set(ANN, ANN, { note: timed.id, clear: "check_by" });
+  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: Note[] }).notes, []);
+
+  // Read before the check ran: told, so no doorbell follows.
+  const second = notes.set(ANN, ANN, { body: "second", check_by: at(clock, HOUR) }) as Note;
+  clock.now += HOUR;
+  const first = notes.onRead(ANN, [{ session: SESSION, peer: PEER }]) as Shown;
+  assert.deepEqual(first.shown?.shown.map((note) => note.id), [second.id]);
+  first.commit();
+  await notes.ringDue(ANN);
+  assert.equal(ears.bells.length, 1, "only the first note's bell");
+
+  // A removed contact's note neither rings nor is listed, and rings once the contact is back.
+  const theirs = notes.set(ANN, ANN, { body: "about them", with: PEER, check_by: at(clock, HOUR) }) as Note;
+  notes.contactRemoved(ANN, PEER);
+  clock.now += HOUR;
+  await notes.ringDue(ANN);
+  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined);
+  assert.equal(ears.bells.length, 1);
+  contacts.add(PEER);
+  await notes.ringDue(ANN);
+  assert.deepEqual(ears.bells.at(-1), theirs.id);
+});
+
+test("notes.ring takes its four values and nothing else, and anyone can change it", () => {
+  const { reach } = setup();
+  for (const value of ["agent", "operator", "both", "agent_then_operator"]) {
+    const change = reach.plan(bytes(ANN), "notes.ring", value);
+    assert.equal(change.direction, "neutral");
+    change.apply();
+  }
+  assert.throws(() => reach.plan(bytes(ANN), "notes.ring", "everyone"), refusal("bad_setting"));
+  assert.equal(reach.plan(bytes(ANN), "notes.ring", null).to, "agent_then_operator");
 });

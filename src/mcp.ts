@@ -79,6 +79,7 @@ function doorbellText(frame: IpcNotification): string {
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "operator_message": return "CELLO: your human operator has replied. Call cello_receive to read it.";
     case "reminder": return "CELLO: a Reminder set for this agent is due. Call cello_receive to read it.";
+    case "note_due": return "CELLO: one of this agent's own notes has passed its check-by time. Call cello_receive to see it, or cello_note_get with the note_id.";
     case "notice": return "CELLO: there's a notice about one of your messages or seals. Call cello_receive to read it.";
     case "standby_overdue": return "CELLO: a follow-up promised in this session is past its time. Nothing has changed, and either side can still send. Call cello_receive to read the notice.";
     case "agent_status": return "CELLO: this agent's status has changed. Call cello_agent_status to see it.";
@@ -95,7 +96,7 @@ function onNotification(frame: IpcNotification): void {
   const agentId = frame.data["agent_id"];
   if (frame.notification === "agent_displaced" && typeof agentId === "string") heldAgents.delete(agentId);
   const meta: Record<string, string> = { type: frame.notification };
-  for (const key of ["agent", "session_id", "from_id", "channel_id"]) {
+  for (const key of ["agent", "session_id", "from_id", "channel_id", "note_id"]) {
     const value = frame.data[key];
     if (typeof value === "string") meta[key] = value;
   }

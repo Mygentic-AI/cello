@@ -159,7 +159,7 @@ export const SIGNALS = ["over", "standby", "wrap"] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 export interface Doorbell {
-  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "operator_message" | "reminder" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status" | "agent_displaced";
+  type: "session_started" | "message" | "peer_closed" | "session_closed" | "notice" | "operator_message" | "reminder" | "note_due" | "standby_overdue" | "screening_delayed" | "away_greeting" | "channel_post" | "channel_notice" | "channel_request" | "agent_status" | "agent_displaced";
   // Your own operator's admission policy for this caller. It's the one place a doorbell carries text, and no other party wrote it.
   policy?: unknown;
   policy_error?: string;
@@ -168,6 +168,8 @@ export interface Doorbell {
   session_id?: string;
   from_id?: string;
   channel_id?: string;
+  // The note a note_due doorbell is about. Its id only.
+  note_id?: string;
   // Fixed words, chosen here: what a channel_notice doorbell says.
   notice_kind?: ChannelNoticeKind;
   position?: number;
@@ -256,8 +258,11 @@ export interface EngineEvents {
   channelPush(frame: PushFrame): void;
   // Whether anyone holds this agent right now. The away greeting and the doorbell go by the same answer.
   reachable(agentHex: string): boolean;
-  // The agent's own notes that are due as these sessions start for it, and what to run once the answer has reached it.
-  notesAtStart(agentHex: string, sessions: readonly { session: string; peer: string }[]): { shown?: Record<string, unknown>; commit(): void };
+  // The agent's own notes that ride on a read: those past their check-by time, and those due as these sessions start
+  // for it. commit is run once the answer has reached it.
+  notesOnRead(agentHex: string, sessions: readonly { session: string; peer: string }[]): { shown?: Record<string, unknown>; commit(): void };
+  // The daemon's periodic check, for what lives outside the engine.
+  tick(): void;
 }
 
 // A way to a server. The home route is the server this daemon logged in to, where its agents live and can be called.
@@ -455,6 +460,7 @@ export class Engine {
       this.#retryOutbox();
       this.#retireIdleVisits();
       this.#wakeForReminders();
+      this.#events.tick();
       // A replaced public signal that the server hasn't yet been told to drop. The wallet limits this to one try a minute.
       for (const agent of this.#agents.values()) if (agent.online) this.#background("encryption key", this.#publishKey(agent));
       for (const agent of this.#agents.values()) this.wallet.settlePublic(agent.hex).catch((err: unknown) => logEvent("signal.public.settle_failed", { agent: agent.hex, message: err instanceof Error ? err.message : String(err) }));
@@ -2933,7 +2939,7 @@ export class Engine {
       // The caller speaks first, so what it's to be reminded of at the start comes with the call's answer, not its first read.
       // It counts as shown only once this answer is written, as a read does, so a caller that hung up first still gets it.
       const reminded = this.reminders.due(agent.hex, sessionHex, toHex(targetId), 0, true);
-      const noted = this.#events.notesAtStart(agent.hex, [{ session: sessionHex, peer: toHex(targetId) }]);
+      const noted = this.#events.notesOnRead(agent.hex, [{ session: sessionHex, peer: toHex(targetId) }]);
       return { session_id: sessionHex, state, ...signalsInfo, ...(reminded.due.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminded.due } } : {}), ...(noted.shown ? { notes: noted.shown } : {}), [ONCE_WRITTEN]: () => { reminded.commit(); noted.commit(); } };
     }
     return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back. A send waits until then. To take the call back, close the session: the agent you called is then never shown it.` };
@@ -3031,7 +3037,7 @@ export class Engine {
         }
       }
     }
-    const noted = this.#events.notesAtStart(agent.hex, starting);
+    const noted = this.#events.notesOnRead(agent.hex, starting);
     const notices = this.#store.notices(agent.signer.id);
     const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
     // A read of one session takes the operator's replies about that session and the ones about none. One about another

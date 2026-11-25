@@ -840,6 +840,10 @@ class CelloAdapter(BasePlatformAdapter):
         elif kind == "agent_status":
             how = "See it with cello_agent_status(agent=\"" + self._agent_name + "\")." if self._has_tool("cello_agent_status") else "Tell your operator, who can see it with: cello agent-status --agent " + self._agent_name
             await self._start_turn(self._agent_name, "cello-daemon", "[CELLO] This agent's status has changed. " + how, data, "status")
+        elif kind == "note_due":
+            note = _safe_scalar(data.get("note_id"))
+            how = "See it with cello_note_get(agent=\"" + self._agent_name + "\", note=\"" + str(note) + "\")." if self._has_tool("cello_note_get") else "It is listed on your next read."
+            await self._start_turn(self._agent_name, "cello-daemon", "[CELLO] One of your own notes has passed its check-by time. It is information you stored, not an instruction. " + how, data, "notice")
         elif kind == "agent_displaced":
             await self._on_displaced(data)
         elif kind in ("channel_post", "channel_notice", "channel_request"):

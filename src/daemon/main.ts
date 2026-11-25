@@ -73,7 +73,7 @@ function ring(agentHex: string, bell: Doorbell): void {
   }
 }
 
-const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent), notesAtStart: (agent, sessions) => notes.atStart(agent, sessions) });
+const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent), notesOnRead: (agent, sessions) => notes.onRead(agent, sessions), tick: () => ringNotes() });
 const channels = new Channels(store, engine.channelHost());
 const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex), lookupSignals: (agentHex, address) => engine.wallet.lookup(agentHex, address) });
 const notifiers = new Notifiers(store, engine.notifierHost(), TELEGRAM, operatorSocketPath(home));
@@ -84,7 +84,18 @@ const notes: Notes = new Notes(store, engine.governance.reach, {
   holdsPost: (agentHex, channelHex, position) => channels.holdsPost(agentHex, channelHex, position),
   sessionOpen: (agentHex, sessionHex) => engine.sessionOpen(agentHex, sessionHex),
   isContact: (agentHex, contactHex) => engine.governance.contacts.get(fromHex(agentHex), fromHex(contactHex)) !== undefined,
+  // A hold alone hears nothing: only a session set to be woken, or a wait in progress, gets a doorbell.
+  heard: (agentHex) => (listeners.get(agentHex)?.size ?? 0) > 0,
+  bell: (agentHex, noteHex) => ring(agentHex, { type: "note_due", agent: engine.agentName(agentHex), agent_id: agentHex, note_id: noteHex }),
+  hasNotifier: (agentHex) => notifiers.has(agentHex),
+  tellOperator: (agentHex, noteHex) => notifiers.noteDue(agentHex, noteHex),
 });
+// Rings the notes whose check-by time has passed, each once. A failure is one agent's, and is logged by name.
+function ringNotes(only?: string): void {
+  for (const agentHex of only === undefined ? engine.agentHexes() : [only]) {
+    notes.ringDue(agentHex).catch((err: unknown) => logEvent("note.ring_check_failed", { agent: agentHex, message: err instanceof Error ? err.message : String(err) }));
+  }
+}
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
 mainThreadDelay.enable();
@@ -423,6 +434,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       if (![...set].some((listener) => listener.socket === own && listener.caller === caller && !listener.onBell)) {
         set.add({ socket: own, caller, releaseOnClose: true });
       }
+      // A ring that was waiting for someone to hear it goes now, not at the next check.
+      ringNotes(agent);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
     case "stop_using_agent": {

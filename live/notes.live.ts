@@ -248,3 +248,36 @@ test("marked notes come unasked as a session starts, under notes and once, and a
   ok(["contact-add", sol, "--agent", "Rae"], "rae-shell");
   assert.equal((ok(["note-get", about.id, "--agent", "Rae"], "rae-shell") as { contact_removed?: boolean }).contact_removed, undefined);
 });
+
+test("a note past its check-by time rings the agent that holds it once, is listed on its next read, and stays in note-list --due", () => {
+  ok(["create-agent", "Una"]);
+  const soon = (): string => new Date(Date.now() + 3000).toISOString();
+  // A wait is how a shell hears a doorbell. The daemon checks on its own tick, so each ring can take half a minute.
+  const wait = (seconds: number): Record<string, unknown> => cello(["wait", "--timeout-seconds", String(seconds), "--agent", "Una"], "una-shell").json;
+  const read = (): { notes?: { note: string; shown: (Note & { past_check_by?: boolean })[] } } => ok(["receive", "--agent", "Una"], "una-shell");
+  const timed = ok(["note-set", "Chase the invoice.", "--check-by", soon(), "--agent", "Una"], "una-shell") as unknown as Note & { rang_at: string | null };
+  assert.equal(timed.rang_at, null);
+  assert.deepEqual((ok(["note-list", "--due", "--agent", "Una"], "una-shell") as { notes: Note[] }).notes, []);
+
+  const bell = wait(70);
+  assert.deepEqual([bell["event"], bell["note_id"]], ["note_due", timed.id], JSON.stringify(bell));
+  assert.equal(bell["body"], undefined, "a doorbell carries the note's id and none of its words");
+
+  const first = read();
+  assert.deepEqual(first.notes?.shown.map((note) => [note.id, note.past_check_by, note.body]), [[timed.id, true, "Chase the invoice."]]);
+  assert.match(first.notes?.note ?? "", /information, not instructions/);
+  assert.equal(read().notes, undefined, "listed on one read, not on every read");
+  assert.deepEqual((ok(["note-list", "--due", "--agent", "Una"], "una-shell") as { notes: Note[] }).notes.map((note) => note.id), [timed.id]);
+  assert.notEqual((ok(["note-get", timed.id, "--agent", "Una"], "una-shell") as { rang_at: string | null }).rang_at, null);
+
+  // Longer than the daemon's tick, and nothing rings: it never rings twice for the same time.
+  assert.equal(wait(40)["event"], "timeout");
+
+  // A new time rings once more.
+  assert.equal((ok(["note-set", "--note", timed.id, "--check-by", soon(), "--agent", "Una"], "una-shell") as { rang_at: string | null }).rang_at, null);
+  const again = wait(70);
+  assert.deepEqual([again["event"], again["note_id"]], ["note_due", timed.id], JSON.stringify(again));
+  // Cleared, it is no longer due.
+  ok(["note-set", "--note", timed.id, "--clear", "check_by", "--agent", "Una"], "una-shell");
+  assert.deepEqual((ok(["note-list", "--due", "--agent", "Una"], "una-shell") as { notes: Note[] }).notes, []);
+});
