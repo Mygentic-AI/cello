@@ -94,11 +94,13 @@ function id(params: Record<string, unknown>, name: string, chars: number, what: 
 function time(params: Record<string, unknown>, name: string): number | undefined {
   const value = params[name];
   if (value === undefined) return undefined;
-  const shape = typeof value === "string" ? /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value) : null;
-  const at = shape ? Date.parse(shape[1] !== undefined && shape[4] === undefined ? `${value as string}Z` : value as string) : NaN;
+  const refuse = (): never => { throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`); };
+  if (typeof value !== "string") return refuse();
+  const shape = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  const at = shape ? Date.parse(shape[1] !== undefined && shape[4] === undefined ? `${value}Z` : value) : NaN;
   // A day that doesn't exist, such as 31 February, would otherwise roll into the next month without a word.
-  const day = (value as string).slice(0, 10);
-  if (Number.isNaN(at) || new Date(Date.parse(`${day}T00:00:00Z`)).toISOString().slice(0, 10) !== day) throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`);
+  const day = value.slice(0, 10);
+  if (Number.isNaN(at) || new Date(Date.parse(`${day}T00:00:00Z`)).toISOString().slice(0, 10) !== day) return refuse();
   return at;
 }
 
@@ -176,7 +178,7 @@ export class Notes {
     const names = typeof clear === "string" ? clear.split(",").map((name) => name.trim()).filter((name) => name !== "") : [];
     if (names.length === 0) throw new LocalError("bad_argument", `clear takes field names with commas between: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
     return names.map((name) => {
-      // The stamp's source is emptied by any change that doesn't give one, so naming it here is allowed and changes nothing more.
+      // The stamp's source is emptied by any change that doesn't give one, so clearing it is a change of its own and needs no column.
       const column = name === "source" ? undefined : FIELD_COLUMNS[name];
       if (name !== "source" && column === undefined) throw new LocalError("bad_argument", `clear doesn't know the field ${name}. It takes: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
       if ((column !== undefined && given[column] !== undefined) || (name === "source" && params["source"] !== undefined)) throw new LocalError("bad_argument", `${name} is both given and cleared. Do one.`);
@@ -197,9 +199,13 @@ export class Notes {
   }
 
   // How many versions a note keeps. A kind listed in notes.history_kinds keeps at least the default, and can't ask for fewer.
-  #keep(ownerHex: string, kind: string | null, asked: number | undefined, had: number): number {
+  // kinds is every kind the note has had a hand in: the one it has, the one it's given, and those of the versions it keeps.
+  // Otherwise giving a note another kind would be a way to drop what a listed kind had to keep.
+  #keep(ownerHex: string, kinds: readonly (string | null)[], asked: number | undefined, had: number): number {
     const owner = bytesOf(ownerHex);
-    const floor = kind !== null && listOf(this.#reach.setting(owner, "notes.history_kinds")).includes(kind) ? this.#reach.number(owner, "notes.history_default") : 0;
+    const listed = listOf(this.#reach.setting(owner, "notes.history_kinds"));
+    const kind = kinds.find((one) => one !== null && listed.includes(one));
+    const floor = kind === undefined ? 0 : this.#reach.number(owner, "notes.history_default");
     if (asked !== undefined && asked < floor) throw new LocalError("history_required", `Notes of kind ${kind as string} must keep at least ${floor} past versions for ${this.#host.agentName(ownerHex)}, and this asked for ${asked}. The kind is listed in the setting notes.history_kinds, and taking it off takes a person.`);
     return asked ?? Math.max(had, floor);
   }
@@ -219,7 +225,7 @@ export class Notes {
       const count = (this.#store.prepare("SELECT count(*) AS c FROM notes WHERE agent_id = ?").get(owner) as { c: number }).c;
       if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} ${count === 1 ? "note" : "notes"}, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it takes a person.`);
       const row: Supplied = { ...EMPTY, ...given };
-      row.keep_history = this.#keep(ownerHex, row.kind, given.keep_history, 0);
+      row.keep_history = this.#keep(ownerHex, [row.kind], given.keep_history, 0);
       const noteId = new Uint8Array(randomBytes(8));
       this.#store.prepare(`INSERT INTO notes (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(noteId, owner, bytesOf(writerHex), now, now, row.kind, row.status, row.entity, row.with_id, row.session_id, row.channel_id, row.check_by, row.expires_at, row.show_at_start, row.keep_history, source, row.body);
@@ -227,11 +233,12 @@ export class Notes {
       return { set: true, created: true, agent: name, ...this.#describe(this.#find(ownerHex, hex(noteId))) };
     }
     const old = this.#find(ownerHex, params["note"]);
-    if (Object.keys(given).length === 0 && cleared.length === 0 && source === null) throw new LocalError("bad_argument", "Nothing to change: give a field, or clear one.");
+    if (Object.keys(given).length === 0 && params["clear"] === undefined && source === null) throw new LocalError("bad_argument", "Nothing to change: give a field, or clear one.");
     const next: Supplied = { ...old, ...given };
     for (const column of cleared) (next as unknown as Record<string, unknown>)[column] = EMPTY[column];
     // Clearing keep_history goes back to what the note's kind requires, which is none unless the kind is listed.
-    next.keep_history = this.#keep(ownerHex, next.kind, given.keep_history, cleared.includes("keep_history") ? 0 : old.keep_history);
+    const keptKinds = (this.#store.prepare("SELECT before FROM note_changes WHERE note_id = ?").all(old.id) as { before: string }[]).map((change) => (JSON.parse(change.before) as { kind: string | null }).kind);
+    next.keep_history = this.#keep(ownerHex, [old.kind, next.kind, ...keptKinds], given.keep_history, cleared.includes("keep_history") ? 0 : old.keep_history);
     this.#store.transaction(() => {
       this.#store.prepare("UPDATE notes SET written_by = ?, updated_at = ?, kind = ?, status = ?, entity = ?, with_id = ?, session_id = ?, channel_id = ?, check_by = ?, expires_at = ?, show_at_start = ?, keep_history = ?, source = ?, body = ? WHERE agent_id = ? AND id = ?")
         .run(bytesOf(writerHex), now, next.kind, next.status, next.entity, next.with_id, next.session_id, next.channel_id, next.check_by, next.expires_at, next.show_at_start, next.keep_history, source, next.body, owner, old.id);

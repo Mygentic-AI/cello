@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { LocalError } from "../src/daemon/errors.ts";
+import { Governance } from "../src/daemon/governance.ts";
 import { Notes } from "../src/daemon/notes.ts";
 import { Reach } from "../src/daemon/reach.ts";
 import { Store } from "../src/daemon/store.ts";
@@ -62,6 +63,8 @@ test("every field is optional: a note can be only a body or only a label, and an
   assert.throws(() => notes.set(ANN, ANN, { body: "" }), refusal("bad_argument"));
   assert.throws(() => notes.set(ANN, ANN, { with: "Bob" }), refusal("bad_argument"));
   assert.throws(() => notes.set(ANN, ANN, { body: "x", check_by: "next Tuesday" }), refusal("bad_argument"));
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", check_by: 1764579600 }), refusal("bad_argument"), "a time that isn't text is refused by name, not by a crash");
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: true }), refusal("bad_argument"));
 });
 
 test("a change touches only the fields it names, clear empties one, and times with no zone are UTC", () => {
@@ -144,6 +147,18 @@ test("a kind that must keep history: the default number at least, never fewer, a
   assert.throws(() => notes.set(ANN, ANN, { note: other.id, kind: "price", keep_history: 1 }), refusal("history_required"));
   assert.equal((notes.set(ANN, ANN, { note: other.id, kind: "price" }) as Note).keep_history, 3);
   assert.equal((notes.set(BEA, BEA, { body: "x", kind: "promise" }) as Note).keep_history, 0, "one agent's list is never another's");
+
+  // Another kind is no way out: not in one call, not by clearing the kind, and not in a second call while a listed version is kept.
+  const bodies = (id: string): (string | null)[] => historyOf(notes, id).map((change) => change.before.body);
+  assert.deepEqual(bodies(before.id), ["p0"]);
+  assert.throws(() => notes.set(ANN, ANN, { note: before.id, kind: "other", keep_history: 0 }), refusal("history_required"));
+  assert.throws(() => notes.set(ANN, ANN, { note: before.id, clear: "kind,keep_history", keep_history: 0 }), refusal("bad_argument"));
+  assert.throws(() => notes.set(ANN, ANN, { note: before.id, clear: "kind", keep_history: 0 }), refusal("history_required"));
+  const moved = notes.set(ANN, ANN, { note: before.id, kind: "other" }) as Note;
+  assert.equal(moved.keep_history, 3, "the change of kind is itself kept");
+  assert.deepEqual(bodies(before.id), ["p1", "p0"]);
+  assert.throws(() => notes.set(ANN, ANN, { note: before.id, keep_history: 0 }), refusal("history_required"), "its kept versions are still of the listed kind");
+  assert.deepEqual(bodies(before.id), ["p1", "p0"], "nothing was trimmed by the refused calls");
 });
 
 test("the cap refuses by name and drops nothing, and a body is measured in bytes", () => {
@@ -212,6 +227,21 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.max", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.body_max_bytes", [["100", "tighten"], ["101", "loosen"]]);
   way("notes.history_default", [["5", "tighten"], ["6", "loosen"]]);
+  // With a kind listed, fewer versions weakens what it must keep, so both ways take a person.
+  way("notes.history_kinds", [["promise", "tighten"]]);
+  way("notes.history_default", [["4", "loosen"], ["4", "neutral"], ["7", "loosen"]]);
+});
+
+test("widening notes.write warns only when the agent is open to strangers, and narrowing never does", () => {
+  const { store } = setup();
+  const governance = new Governance(store, { notify: () => undefined, isLocalAgent: () => true });
+  governance.writeDefaults(bytes(ANN));
+  const set = (name: string, value: string): { warning?: string } => governance.settingsSet(bytes(ANN), ANN, { name, value, caller: "cli", person_confirmed: true }) as { warning?: string };
+  assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from strangers/);
+  assert.equal(set("notes.write", "own").warning, undefined, "narrowing says nothing");
+  assert.equal(set("notes.max", "20000").warning, undefined, "another setting says nothing");
+  set("bounds.unknown.not_accepting", "true");
+  assert.equal(set("notes.write", "all").warning, undefined, "shut to strangers, there is nothing to warn of");
 });
 
 test("a source must be a message or a post the writer holds, and each change's stamp replaces the last", () => {
@@ -229,6 +259,12 @@ test("a source must be a message or a post the writer holds, and each change's s
   assert.equal(next.source, null);
   const history = historyOf(notes, made.id);
   assert.deepEqual(history.map((change) => [change.source, change.before.source]), [[null, `${CHANNEL}:2`], [`${CHANNEL}:2`, `${SESSION}:4`]]);
+
+  // Clearing the source alone is a change of its own.
+  notes.set(ANN, ANN, { note: made.id, source: `${SESSION}:4` });
+  assert.equal((notes.set(ANN, ANN, { note: made.id, clear: "source" }) as Note).source, null);
+  assert.equal(historyOf(notes, made.id)[0]?.before.source, `${SESSION}:4`);
+  assert.throws(() => notes.set(ANN, ANN, { note: made.id, clear: "source", source: `${SESSION}:4` }), refusal("bad_argument", /both given and cleared/));
 });
 
 test("listing filters by each label and scope, newest change first, and cuts long bodies", () => {

@@ -136,9 +136,11 @@ export class Channels {
     this.#schedule();
   }
 
-  // Whether this agent's store has a post at that position, whatever its state.
+  // Whether this agent's store has a post at that position, whatever its state: one it was sent, or one it posted itself.
   holdsPost(agentHex: string, channelHex: string, position: number): boolean {
-    return this.#db.hasPost(new Uint8Array(Buffer.from(agentHex, "hex")), new Uint8Array(Buffer.from(channelHex, "hex")), position);
+    const agent = new Uint8Array(Buffer.from(agentHex, "hex"));
+    const channel = new Uint8Array(Buffer.from(channelHex, "hex"));
+    return this.#db.hasPost(agent, channel, position) || this.#db.logOwnsPosition(agent, channel, position);
   }
 
   start(): void {

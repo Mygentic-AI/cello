@@ -81,7 +81,7 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "notes.history_kinds": { default: "", kind: "labels", description: "Kinds of note that must keep history, with commas between, such as promise,price. A note of a listed kind keeps at least notes.history_default versions. Anyone can add a kind. Taking one off takes a person." },
   "notes.max": { default: "10000", kind: "number", min: 1, max: 1_000_000, loosensWhen: "higher", description: "The most notes this agent holds. At the limit a new one is refused, and none is dropped to make room." },
   "notes.body_max_bytes": { default: "16384", kind: "number", min: 1, max: 1_048_576, loosensWhen: "higher", description: "The largest body one note holds, in bytes." },
-  "notes.history_default": { default: "10", kind: "number", min: 1, max: MAX_NOTE_HISTORY, loosensWhen: "higher", description: "The fewest past versions a note keeps while its kind is listed in notes.history_kinds." },
+  "notes.history_default": { default: "10", kind: "number", min: 1, max: MAX_NOTE_HISTORY, loosensWhen: "higher", description: "The fewest past versions a note keeps while its kind is listed in notes.history_kinds. Raising it takes a person, and so does lowering it while any kind is listed." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },
@@ -210,6 +210,8 @@ export class Reach {
       throw new LocalError("bad_setting", `an away message must be ${this.setting(agentId, "away.max_chars")} characters or fewer`);
     }
     const by = byMagnitude(Number(from), Number(to));
+    // Fewer kept versions weakens a kind that must keep history, so while one is listed, lowering takes a person as raising does.
+    if (key === "notes.history_default" && by === "tighten" && this.setting(agentId, "notes.history_kinds") !== "") return { direction: "loosen", from, to, apply: () => write() };
     const direction: Direction = setting.loosensWhen === "higher" ? by : setting.loosensWhen === "lower" ? (by === "loosen" ? "tighten" : by === "tighten" ? "loosen" : "neutral") : "neutral";
     return { direction, from, to, apply: () => write() };
   }

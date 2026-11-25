@@ -4,7 +4,8 @@
 import { cliFor } from "./cli-path.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import Database from "@signalapp/sqlcipher";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -117,6 +118,19 @@ test("an agent keeps notes by command line: write, change, history, source, list
   ok(["close-session", session, "--agent", "Rae"], "rae-shell");
   ok(["close-session", session, "--agent", "Sol"], "sol-shell");
 
+  // A channel post is a source too: for the one who posted it, and for a reader once it has arrived.
+  const news = ok(["channel-create", "Rae's news", "--type", "public", "--posting", "admin", "--agent", "Rae"], "rae-shell")["channel_id"] as string;
+  ok(["channel-join", news, "--agent", "Sol"], "sol-shell");
+  const posted = ok(["channel-post", news, "Prices rise in January.", "--title", "Prices", "--agent", "Rae"], "rae-shell")["position"] as number;
+  assert.equal((ok(["note-set", "Told the channel about January.", "--source", `${news}:${posted}`, "--agent", "Rae"], "rae-shell") as unknown as Note).source, `${news}:${posted}`);
+  const fromPost = await until("the post to reach Sol", () => {
+    const run = cello(["note-set", "Rae's prices rise in January.", "--channel", news, "--source", `${news}:${posted}`, "--agent", "Sol"], "sol-shell");
+    return run.status === 0 ? run.json as unknown as Note : undefined;
+  });
+  assert.equal(fromPost.source, `${news}:${posted}`);
+  assert.match(refused(["note-set", "made up", "--source", `${news}:${posted + 50}`, "--agent", "Sol"], "no_such_source", "sol-shell"), /holds no post/);
+  ok(["note-remove", fromPost.id, "--agent", "Sol"], "sol-shell");
+
   // Sol can't write Rae's notes, or let itself. A person can, and is told Sol is open to strangers.
   assert.match(refused(["note-set", "from Sol", "--owner", "Rae", "--agent", "Sol"], "not_allowed_to_write", "sol-shell"), /notes\.write/);
   refused(["settings-set", "notes.write", rae, "--agent", "Sol"], "person_required", "sol-shell");
@@ -125,9 +139,16 @@ test("an agent keeps notes by command line: write, change, history, source, list
   const forRae = ok(["note-set", "from Sol", "--owner", "Rae", "--agent", "Sol"], "sol-shell") as unknown as Note;
   assert.deepEqual([forRae.agent_id, forRae.written_by], [rae, sol], "Rae's note, stamped as written by Sol");
   assert.equal((ok(["note-get", forRae.id, "--agent", "Rae"], "rae-shell") as unknown as Note).body, "from Sol");
-  // Narrowing needs nobody.
-  ok(["settings-set", "notes.write", "own", "--agent", "Sol"], "sol-shell");
+  // Narrowing needs nobody, and warns of nothing.
+  assert.equal(ok(["settings-set", "notes.write", "own", "--agent", "Sol"], "sol-shell")["warning"], undefined);
   refused(["note-remove", forRae.id, "--owner", "Rae", "--agent", "Sol"], "not_allowed_to_write", "sol-shell");
+  // Shut to strangers, widening has nothing to warn of.
+  ok(["settings-set", "bounds.unknown.not_accepting", "true", "--agent", "Sol"], "sol-shell");
+  const quiet = person(["settings-set", "notes.write", rae, "--agent", "Sol"]);
+  assert.match(quiet, /"was":\s*"own"/, quiet);
+  assert.doesNotMatch(quiet, /"warning"/, quiet);
+  ok(["settings-set", "notes.write", "own", "--agent", "Sol"], "sol-shell");
+  person(["settings-set", "bounds.unknown.not_accepting", "false", "--agent", "Sol"]);
 
   // The cap refuses and drops nothing. Raising it takes a person.
   ok(["settings-set", "notes.max", "1", "--agent", "Sol"], "sol-shell");
@@ -144,4 +165,20 @@ test("an agent keeps notes by command line: write, change, history, source, list
   // Removing a note takes it for good.
   assert.equal(ok(["note-remove", asked.id, "--agent", "Sol"], "sol-shell")["removed"], true);
   refused(["note-get", asked.id, "--agent", "Sol"], "no_such_note", "sol-shell");
+});
+
+test("an agent that is removed takes its notes and their history with it", () => {
+  const tom = ok(["create-agent", "Tom"])["agent_id"] as string;
+  const kept = ok(["note-set", "v0", "--keep-history", "3", "--agent", "Tom"], "tom-shell") as unknown as Note;
+  ok(["note-set", "--note", kept.id, "v1", "--agent", "Tom"], "tom-shell");
+  ok(["note-set", "another", "--agent", "Tom"], "tom-shell");
+  // Read from the database itself, since a removed agent can no longer be asked.
+  const db = new Database(join(home, "cello.db"));
+  db.pragma(`key = "x'${readFileSync(join(home, "cello.db.key")).toString("hex")}'"`);
+  const rows = (table: string): number => (db.prepare(`SELECT count(*) AS c FROM ${table} WHERE agent_id = ?`).get([Buffer.from(tom, "hex")]) as { c: number }).c;
+  assert.deepEqual([rows("notes"), rows("note_changes")], [2, 1]);
+  assert.match(person(["remove-agent", "--agent", "Tom"]), /"removed":\s*true/);
+  assert.deepEqual([rows("notes"), rows("note_changes")], [0, 0]);
+  assert.ok(rows("notes") === 0 && (db.prepare("SELECT count(*) AS c FROM notes").get([]) as { c: number }).c > 0, "the other agents' notes stay");
+  db.close();
 });
