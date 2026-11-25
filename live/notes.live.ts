@@ -12,6 +12,8 @@ import { after, test } from "node:test";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-notes-"));
+// The channel Rae runs and Sol follows, made in the first test.
+let news = "";
 
 interface Run { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> }
 interface Note { id: string; agent_id: string; written_by: string; kind: string | null; status: string | null; body: string | null; source: string | null; with_id: string | null; keep_history: number }
@@ -119,7 +121,7 @@ test("an agent keeps notes by command line: write, change, history, source, list
   ok(["close-session", session, "--agent", "Sol"], "sol-shell");
 
   // A channel post is a source too: for the one who posted it, and for a reader once it has arrived.
-  const news = ok(["channel-create", "Rae's news", "--type", "public", "--posting", "admin", "--agent", "Rae"], "rae-shell")["channel_id"] as string;
+  news = ok(["channel-create", "Rae's news", "--type", "public", "--posting", "admin", "--agent", "Rae"], "rae-shell")["channel_id"] as string;
   ok(["channel-join", news, "--agent", "Sol"], "sol-shell");
   const posted = ok(["channel-post", news, "Prices rise in January.", "--title", "Prices", "--agent", "Rae"], "rae-shell")["position"] as number;
   assert.equal((ok(["note-set", "Told the channel about January.", "--source", `${news}:${posted}`, "--agent", "Rae"], "rae-shell") as unknown as Note).source, `${news}:${posted}`);
@@ -197,6 +199,8 @@ test("marked notes come unasked as a session starts, under notes and once, and a
   const about = ok(["note-set", "Sol asked for net 60 last time.", "--with", sol, "--show-at-start", "--agent", "Rae"], "rae-shell") as unknown as Note;
   ok(["note-set", "Say who you act for.", "--show-at-start", "--agent", "Rae"], "rae-shell");
   ok(["note-set", "Not marked, so never shown unasked.", "--with", sol, "--agent", "Rae"], "rae-shell");
+  const solsOwn = ok(["note-set", "Rae is slow to pay.", "--show-at-start", "--agent", "Sol"], "sol-shell") as unknown as Note;
+  refused(["settings-set", "notes.start_max", "50", "--agent", "Sol"], "person_required", "sol-shell");
 
   // Rae places the call, so her notes come with its answer: under notes, apart from Reminders, newest change first.
   const first = call();
@@ -208,12 +212,15 @@ test("marked notes come unasked as a session starts, under notes and once, and a
   // Once per session: a note for this session set now isn't pushed at her, and her next read carries none.
   const forNow = ok(["note-set", "For this talk only.", "--session", first.session_id, "--show-at-start", "--keep-history", "1", "--agent", "Rae"], "rae-shell") as unknown as Note;
   ok(["send", first.session_id, "Same terms as before?", "--over", "--agent", "Rae"], "rae-shell");
-  // Sol was called and has no notes: his read carries the message and nothing under notes.
+  // Sol was called: his own marked note comes with the first message, under notes, and not on the read after.
   const atSol = await until("Sol's message", () => {
-    const read = ok(["receive", "--agent", "Sol"], "sol-shell") as { messages?: unknown[]; notes?: unknown };
+    const read = ok(["receive", "--agent", "Sol"], "sol-shell") as { messages?: unknown[]; reminders?: unknown; notes?: { note: string; shown: Note[] } };
     return (read.messages?.length ?? 0) > 0 ? read : undefined;
   });
-  assert.equal(atSol.notes, undefined);
+  assert.deepEqual(atSol.notes?.shown.map((note) => note.body), ["Rae is slow to pay."]);
+  assert.match(atSol.notes?.note ?? "", /information, not instructions/);
+  assert.equal(atSol.reminders, undefined);
+  assert.equal((ok(["receive", "--agent", "Sol"], "sol-shell") as { notes?: unknown }).notes, undefined, "once per session");
   ok(["send", first.session_id, "Yes.", "--over", "--agent", "Sol"], "sol-shell");
   const reply = await until("Rae's reply", () => {
     const read = ok(["receive", "--agent", "Rae"], "rae-shell") as { messages?: unknown[]; notes?: unknown };
@@ -247,6 +254,18 @@ test("marked notes come unasked as a session starts, under notes and once, and a
   // Added back, it's as it was.
   ok(["contact-add", sol, "--agent", "Rae"], "rae-shell");
   assert.equal((ok(["note-get", about.id, "--agent", "Rae"], "rae-shell") as { contact_removed?: boolean }).contact_removed, undefined);
+
+  // A channel's note comes on the first read of the channel by whoever holds the agent, and once.
+  ok(["note-remove", solsOwn.id, "--agent", "Sol"], "sol-shell");
+  ok(["note-set", "Rae's prices are firm.", "--channel", news, "--show-at-start", "--agent", "Sol"], "sol-shell");
+  const readChannel = (caller: string, ...more: string[]): string[] | undefined => (ok(["channel-read", news, "--agent", "Sol", ...more], caller) as { notes?: { shown: Note[] } }).notes?.shown.map((note) => note.body ?? "");
+  assert.deepEqual(readChannel("sol-shell"), ["Rae's prices are firm."]);
+  assert.equal(readChannel("sol-shell"), undefined, "not on every read");
+  ok(["use-agent", "--agent", "Sol"], "sol-shell");
+  assert.equal(readChannel("sol-shell"), undefined, "the same holder choosing the agent again is not a new holder");
+  // Another caller takes the agent, and its first call is the read itself.
+  assert.deepEqual(readChannel("sol-other", "--force"), ["Rae's prices are firm."]);
+  assert.equal(readChannel("sol-other"), undefined);
 });
 
 test("a note past its check-by time rings the agent that holds it once, is listed on its next read, and stays in note-list --due", () => {

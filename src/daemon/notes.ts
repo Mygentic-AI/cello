@@ -506,7 +506,9 @@ export class Notes {
   }
 
   // The notes for a channel, on the agent's first read of it since the agent was taken up.
-  atChannelRead(agentHex: string, channelHex: string): ShownNotes {
+  atChannelRead(agentHex: string, channelId: string): ShownNotes {
+    // A channel's id is read in either case, and a note holds it in lower.
+    const channelHex = channelId.toLowerCase();
     const key = `${agentHex}:${channelHex}`;
     if (this.#channelsRead.has(key)) return NOTHING_SHOWN;
     const shown = this.#shown(agentHex, this.#startNotes(agentHex).filter((row) => row.channel_id !== null && hex(row.channel_id) === channelHex));

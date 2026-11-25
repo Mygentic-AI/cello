@@ -250,6 +250,7 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.history_kinds", [["promise", "tighten"], ["price,promise", "tighten"], [" promise , price ", "neutral"], ["price", "loosen"], ["promise", "loosen"], [null, "loosen"], ["", "neutral"]]);
   way("notes.max", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.body_max_bytes", [["100", "tighten"], ["101", "loosen"]]);
+  way("notes.start_max", [["5", "tighten"], ["6", "loosen"]]);
   way("notes.history_default", [["5", "tighten"], ["6", "loosen"]]);
   // With a kind listed, fewer versions weakens what it must keep, so both ways take a person.
   way("notes.history_kinds", [["promise", "tighten"]]);
@@ -338,7 +339,10 @@ test("removing a note takes its history, and a removed agent takes all of its no
   assert.throws(() => notes.get(ANN, one.id, false), refusal("no_such_note"));
   assert.equal(count("note_changes"), 2);
 
+  notes.contactRemoved(ANN, PEER);
+  notes.contactRemoved(BEA, PEER);
   notes.forget(ANN);
+  assert.deepEqual(store.prepare("SELECT agent_id FROM note_removed_contacts").all().map((row) => Buffer.from((row as { agent_id: Uint8Array }).agent_id).toString("hex")), [BEA], "what it remembered of removed contacts goes too");
   assert.deepEqual((notes.list(ANN, {}) as { notes: unknown[] }).notes, []);
   assert.equal(count("notes"), 1);
   assert.equal(count("note_changes"), 1, "another agent's notes and history stay");
@@ -384,7 +388,7 @@ test("shown at the start: only marked notes, where they belong, once per session
   assert.deepEqual(bodiesOf(fresh.notes.atStart(BEA, both) as Shown), [], "one agent's notes are never another's");
 
   // A channel's notes come on the first read of it after the agent is taken up, and not at a session's start.
-  assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown, false), ["for the channel or the peer", "for a channel"]);
+  assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, CHANNEL.toUpperCase()) as Shown, false), ["for the channel or the peer", "for a channel"], "a channel id in capitals is the same channel");
   assert.equal(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown).length, 2);
   assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown), []);
   assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, "dd".repeat(32)) as Shown), []);

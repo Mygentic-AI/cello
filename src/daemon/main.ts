@@ -127,7 +127,11 @@ function takeHold(agentHex: string, caller: string, force: boolean): void {
       listeners.get(agentHex)?.delete(listener);
     }
   }
-  if (holder?.caller !== caller) holders.set(agentHex, { caller, since: Date.now() });
+  if (holder?.caller !== caller) {
+    holders.set(agentHex, { caller, since: Date.now() });
+    // A new holder hasn't seen this agent's channel notes, whichever call it took the agent with.
+    notes.takenUp(agentHex);
+  }
 }
 
 // Every call that acts as an agent passes through here, with its identity in the call itself.
@@ -301,10 +305,11 @@ function governed(method: string, params: Record<string, unknown>): unknown {
     case "contacts": return g.listContacts(id);
     case "contact_add": return g.contactAdd(id, named, params);
     case "contact_remove": {
-      const answer = g.contactRemove(id, named, params) as { removed: boolean; contact_id: string };
-      // Remembered, so a note about this contact can tell it was removed from one that was never added.
-      if (answer.removed) notes.contactRemoved(named, answer.contact_id);
-      return answer;
+      // Remembered, so a note about this contact can tell it was removed from one that was never added. Written before the
+      // contact goes: a daemon that stops between the two leaves a record that means nothing while the contact is still there.
+      const contact = typeof params["contact"] === "string" && /^[0-9a-fA-F]{64}$/.test(params["contact"]) ? params["contact"].toLowerCase() : undefined;
+      if (contact !== undefined && g.contacts.get(id, fromHex(contact)) !== undefined) notes.contactRemoved(named, contact);
+      return g.contactRemove(id, named, params);
     }
     case "contact_set_tier": return g.contactSetTier(id, named, params);
     case "contact_set_away": return g.contactSetAway(id, params);
@@ -419,13 +424,11 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.wallet.untrustIssuer(named(params), text(params, "hash"));
     case "use_agent": {
       const agent = acting(params);
-      notes.takenUp(agent);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
     // Takes hold, and keeps this socket as the way to reach the caller with doorbells. Used by a session that can be woken.
     case "subscribe": {
       const agent = acting(params);
-      notes.takenUp(agent);
       const set = listeners.get(agent) ?? new Set<Listener>();
       listeners.set(agent, set);
       const caller = text(params, "caller");
