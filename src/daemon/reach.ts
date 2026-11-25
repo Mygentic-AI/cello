@@ -82,6 +82,7 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "notes.max": { default: "10000", kind: "number", min: 1, max: 1_000_000, loosensWhen: "higher", description: "The most notes this agent holds. At the limit a new one is refused, and none is dropped to make room." },
   "notes.body_max_bytes": { default: "16384", kind: "number", min: 1, max: 1_048_576, loosensWhen: "higher", description: "The largest body one note holds, in bytes." },
   "notes.history_default": { default: "10", kind: "number", min: 1, max: MAX_NOTE_HISTORY, loosensWhen: "higher", description: "The fewest past versions a note keeps while its kind is listed in notes.history_kinds. Raising it takes a person, and so does lowering it while any kind is listed." },
+  "notes.start_max": { default: "20", kind: "number", min: 1, max: 200, loosensWhen: "higher", description: "The most notes shown to this agent unasked at once, as a session starts or a channel is first read. The most recently changed come first, and the answer says how many were left out." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },

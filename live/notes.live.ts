@@ -182,3 +182,69 @@ test("an agent that is removed takes its notes and their history with it", () =>
   assert.ok(rows("notes") === 0 && (db.prepare("SELECT count(*) AS c FROM notes").get([]) as { c: number }).c > 0, "the other agents' notes stay");
   db.close();
 });
+
+test("marked notes come unasked as a session starts, under notes and once, and a note for a session or with an end goes by itself", async () => {
+  const rae = (ok(["agents"]) as { agents: { name: string; agent_id: string }[] }).agents;
+  const sol = rae.find((agent) => agent.name === "Sol")?.agent_id as string;
+  interface Started { session_id: string; state: string; reminders?: unknown; notes?: { note: string; shown: (Note & { contact_removed?: boolean })[] } }
+  const call = (): Started => ok(["initiate-session", sol, "--agent", "Rae"], "rae-shell") as unknown as Started;
+  const closeBoth = (session: string): void => {
+    ok(["close-session", session, "--agent", "Rae"], "rae-shell");
+    ok(["close-session", session, "--agent", "Sol"], "sol-shell");
+  };
+  const gone = (id: string): boolean => cello(["note-get", id, "--agent", "Rae"], "rae-shell").json["error"] === "no_such_note";
+
+  const about = ok(["note-set", "Sol asked for net 60 last time.", "--with", sol, "--show-at-start", "--agent", "Rae"], "rae-shell") as unknown as Note;
+  ok(["note-set", "Say who you act for.", "--show-at-start", "--agent", "Rae"], "rae-shell");
+  ok(["note-set", "Not marked, so never shown unasked.", "--with", sol, "--agent", "Rae"], "rae-shell");
+
+  // Rae places the call, so her notes come with its answer: under notes, apart from Reminders, newest change first.
+  const first = call();
+  assert.equal(first.state, "active");
+  assert.deepEqual(first.notes?.shown.map((note) => note.body), ["Say who you act for.", "Sol asked for net 60 last time."]);
+  assert.match(first.notes?.note ?? "", /information, not instructions/);
+  assert.equal(first.reminders, undefined, "a note is never a Reminder");
+
+  // Once per session: a note for this session set now isn't pushed at her, and her next read carries none.
+  const forNow = ok(["note-set", "For this talk only.", "--session", first.session_id, "--show-at-start", "--keep-history", "1", "--agent", "Rae"], "rae-shell") as unknown as Note;
+  ok(["send", first.session_id, "Same terms as before?", "--over", "--agent", "Rae"], "rae-shell");
+  // Sol was called and has no notes: his read carries the message and nothing under notes.
+  const atSol = await until("Sol's message", () => {
+    const read = ok(["receive", "--agent", "Sol"], "sol-shell") as { messages?: unknown[]; notes?: unknown };
+    return (read.messages?.length ?? 0) > 0 ? read : undefined;
+  });
+  assert.equal(atSol.notes, undefined);
+  ok(["send", first.session_id, "Yes.", "--over", "--agent", "Sol"], "sol-shell");
+  const reply = await until("Rae's reply", () => {
+    const read = ok(["receive", "--agent", "Rae"], "rae-shell") as { messages?: unknown[]; notes?: unknown };
+    return (read.messages?.length ?? 0) > 0 ? read : undefined;
+  });
+  assert.equal(reply.notes, undefined, "shown with the call's answer, so not again");
+
+  // A note with an end goes when the time passes.
+  const brief = ok(["note-set", "Gone in two seconds.", "--expires", new Date(Date.now() + 2000).toISOString(), "--agent", "Rae"], "rae-shell") as unknown as Note;
+  assert.equal(gone(brief.id), false);
+  await until("the note's time to pass", () => gone(brief.id));
+
+  // A session's note goes when the session closes, and one for a session that isn't open is refused.
+  assert.equal(gone(forNow.id), false);
+  closeBoth(first.session_id);
+  await until("the session's note to go", () => gone(forNow.id));
+  refused(["note-set", "too late", "--session", first.session_id, "--agent", "Rae"], "no_such_session", "rae-shell");
+
+  // The next session with Sol starts, and the notes are due again. Sol was never a contact: a stranger's notes are shown.
+  const second = call();
+  assert.deepEqual(second.notes?.shown.map((note) => note.body), ["Say who you act for.", "Sol asked for net 60 last time."]);
+  closeBoth(second.session_id);
+
+  // Removed from Rae's contacts, Sol's note is kept and marked, and no longer comes unasked.
+  ok(["contact-add", sol, "--agent", "Rae"], "rae-shell");
+  ok(["contact-remove", sol, "--agent", "Rae"], "rae-shell");
+  assert.equal((ok(["note-get", about.id, "--agent", "Rae"], "rae-shell") as { contact_removed?: boolean }).contact_removed, true);
+  const third = call();
+  assert.deepEqual(third.notes?.shown.map((note) => note.body), ["Say who you act for."]);
+  closeBoth(third.session_id);
+  // Added back, it's as it was.
+  ok(["contact-add", sol, "--agent", "Rae"], "rae-shell");
+  assert.equal((ok(["note-get", about.id, "--agent", "Rae"], "rae-shell") as { contact_removed?: boolean }).contact_removed, undefined);
+});

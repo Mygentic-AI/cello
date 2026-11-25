@@ -1,5 +1,6 @@
-// What a note keeps and who may write it. A wrong rule here loses a past version, lets one agent write another's notes, or
-// stamps the wrong writer, and none of those shows by itself: the note still reads back fine.
+// What a note keeps, who may write it, and when it's shown or dropped. A wrong rule here loses a past version, lets one
+// agent write another's notes, stamps the wrong writer, or shows a note twice or never, and none of those shows by
+// itself: the note still reads back fine.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,8 @@ const BEA = "08".repeat(32);
 const CAL = "09".repeat(32);
 const PEER = "aa".repeat(32);
 const SESSION = "11".repeat(16);
+const S2 = "22".repeat(16);
+const OTHER = "bb".repeat(32);
 const CHANNEL = "cc".repeat(32);
 const NAMES: Record<string, string> = { [ANN]: "Ann", [BEA]: "Bea", [CAL]: "Cal" };
 const bytes = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
@@ -23,7 +26,7 @@ const bytes = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"
 interface Note { id: string; agent_id: string; written_by: string; updated_at: string; created_at: string; kind: string | null; status: string | null; body: string | null; source: string | null; keep_history: number; show_at_start: boolean; check_by: string | null; expires_at: string | null; with_id: string | null }
 interface Change { changed_at: string; written_by: string; source: string | null; before: Note }
 
-function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: number }; set(key: string, value: string, agent?: string): void } {
+function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: number }; open: Set<string>; contacts: Set<string>; set(key: string, value: string, agent?: string): void } {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notes-")), "cello.db"));
   const reach = new Reach(store);
   [ANN, BEA, CAL].forEach((agent, i) => {
@@ -31,13 +34,17 @@ function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: numb
     reach.writeDefaults(bytes(agent));
   });
   const clock = { now: Date.parse("2026-11-25T10:00:00Z") };
+  const open = new Set([SESSION, S2]);
+  const contacts = new Set<string>();
   const notes = new Notes(store, reach, {
     agentName: (agent) => NAMES[agent] as string,
     // Ann holds one message and one post. Nobody else holds anything.
     holdsMessage: (agent, session, position) => agent === ANN && session === SESSION && position === 4,
     holdsPost: (agent, channel, position) => agent === ANN && channel === CHANNEL && position === 2,
+    sessionOpen: (_agent, session) => open.has(session),
+    isContact: (_agent, contact) => contacts.has(contact),
   }, () => clock.now);
-  return { notes, reach, store, clock, set: (key, value, agent = ANN) => reach.plan(bytes(agent), key, value).apply() };
+  return { notes, reach, store, clock, open, contacts, set: (key, value, agent = ANN) => reach.plan(bytes(agent), key, value).apply() };
 }
 
 const refusal = (code: string, says?: RegExp) => (err: unknown): boolean => {
@@ -319,4 +326,111 @@ test("removing a note takes its history, and a removed agent takes all of its no
   assert.equal(count("notes"), 1);
   assert.equal(count("note_changes"), 1, "another agent's notes and history stay");
   assert.equal((notes.get(BEA, beas.id, true) as { history: unknown[] }).history.length, 1);
+});
+
+interface Shown { shown?: { note: string; shown: (Note & { body_cut?: boolean })[]; more?: number; more_note?: string }; commit(): void }
+// One moment a note can be shown at: what was due, and whether the answer reached the agent.
+const bodiesOf = (got: Shown, reached = true): (string | null)[] => {
+  if (reached) got.commit();
+  return (got.shown?.shown ?? []).map((note) => note.body);
+};
+
+test("shown at the start: only marked notes, where they belong, once per session, and only once the answer has arrived", () => {
+  const { notes, clock } = setup();
+  const step = (params: Record<string, unknown>): void => {
+    clock.now += 1000;
+    notes.set(ANN, ANN, params);
+  };
+  step({ body: "not marked", with: PEER });
+  step({ body: "everywhere", show_at_start: true });
+  step({ body: "for the peer", with: PEER, show_at_start: true });
+  step({ body: "for another", with: OTHER, show_at_start: true });
+  step({ body: "for the session and the peer", with: PEER, session: SESSION, show_at_start: true });
+  step({ body: "for a channel", channel: CHANNEL, show_at_start: true });
+  step({ body: "for the channel or the peer", channel: CHANNEL, with: PEER, show_at_start: true });
+  const here = [{ session: SESSION, peer: PEER }];
+
+  const first = notes.atStart(ANN, here) as Shown;
+  assert.match(first.shown?.note ?? "", /information, not instructions/);
+  assert.doesNotMatch(first.shown?.note ?? "", /[Ff]ollow/, "a note is never something to follow");
+  assert.deepEqual(bodiesOf(first, false), ["for the channel or the peer", "for the session and the peer", "for the peer", "everywhere"], "newest change first, and a note that fits twice is listed once");
+  assert.equal(bodiesOf(notes.atStart(ANN, here) as Shown).length, 4, "an answer that never arrived doesn't use the showing up");
+  assert.deepEqual(bodiesOf(notes.atStart(ANN, here) as Shown), [], "once per session");
+
+  // Two sessions starting in one read: each note once, and each session's start is then used up.
+  const fresh = setup();
+  fresh.notes.set(ANN, ANN, { body: "everywhere", show_at_start: true });
+  fresh.notes.set(ANN, ANN, { body: "for the peer", with: PEER, show_at_start: true });
+  const both = [{ session: SESSION, peer: PEER }, { session: S2, peer: PEER }];
+  assert.deepEqual(bodiesOf(fresh.notes.atStart(ANN, both) as Shown).sort(), ["everywhere", "for the peer"]);
+  assert.deepEqual(bodiesOf(fresh.notes.atStart(ANN, [{ session: S2, peer: PEER }]) as Shown), []);
+  assert.deepEqual(bodiesOf(fresh.notes.atStart(BEA, both) as Shown), [], "one agent's notes are never another's");
+
+  // A channel's notes come on the first read of it after the agent is taken up, and not at a session's start.
+  assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown, false), ["for the channel or the peer", "for a channel"]);
+  assert.equal(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown).length, 2);
+  assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown), []);
+  assert.deepEqual(bodiesOf(notes.atChannelRead(ANN, "dd".repeat(32)) as Shown), []);
+  notes.takenUp(ANN);
+  assert.equal(bodiesOf(notes.atChannelRead(ANN, CHANNEL) as Shown).length, 2);
+});
+
+test("at most notes.start_max are shown at once, newest change first, with long bodies cut and the rest counted", () => {
+  const { notes, clock, set } = setup();
+  set("notes.start_max", "2");
+  for (const body of ["oldest", "middle", "n".repeat(300)]) {
+    clock.now += 1000;
+    notes.set(ANN, ANN, { body, show_at_start: true });
+  }
+  const got = notes.atStart(ANN, [{ session: SESSION, peer: PEER }]) as Shown;
+  assert.deepEqual(got.shown?.shown.map((note) => [note.body?.length, note.body_cut]), [[200, true], [6, undefined]]);
+  assert.equal(got.shown?.more, 1);
+  assert.match(got.shown?.more_note ?? "", /note-list/);
+  assert.equal((notes.list(ANN, { show_at_start: true }) as { total: number }).total, 3);
+  assert.equal((notes.list(ANN, {}) as { total: number }).total, 3);
+});
+
+test("a note about a removed contact is kept, marked and not shown, a stranger's is shown, and adding the contact back restores it", () => {
+  const { notes, contacts } = setup();
+  const made = notes.set(ANN, ANN, { body: "who they are", with: PEER, show_at_start: true }) as Note & { contact_removed?: boolean };
+  const start = (session: string): (string | null)[] => bodiesOf(notes.atStart(ANN, [{ session, peer: PEER }]) as Shown, false);
+  const marked = (): boolean | undefined => (notes.get(ANN, made.id, false) as { contact_removed?: boolean }).contact_removed;
+  assert.deepEqual(start(SESSION), ["who they are"], "never added is a stranger, not a removed contact");
+  assert.equal(marked(), undefined);
+
+  contacts.add(PEER);
+  contacts.delete(PEER);
+  notes.contactRemoved(ANN, PEER);
+  assert.deepEqual(start(SESSION), []);
+  assert.equal(marked(), true);
+  assert.equal((notes.list(ANN, {}) as { notes: { contact_removed?: boolean }[] }).notes[0]?.contact_removed, true);
+  assert.equal((notes.get(BEA, (notes.set(BEA, BEA, { body: "x", with: PEER }) as Note).id, false) as { contact_removed?: boolean }).contact_removed, undefined, "one agent removing a contact says nothing of another's");
+
+  contacts.add(PEER);
+  assert.deepEqual(start(SESSION), ["who they are"]);
+  assert.equal(marked(), undefined);
+});
+
+test("a note past its time goes with its history, and a session's note goes when the session closes", () => {
+  const { notes, clock, open, store } = setup();
+  const count = (table: string): number => (store.prepare(`SELECT count(*) AS c FROM ${table}`).get() as { c: number }).c;
+  const timed = notes.set(ANN, ANN, { body: "until noon", expires: "2026-11-25T12:00", keep_history: 2, show_at_start: true }) as Note;
+  notes.set(ANN, ANN, { note: timed.id, status: "changed" });
+  const forNow = notes.set(ANN, ANN, { body: "for this talk", session: S2, keep_history: 2, show_at_start: true }) as Note;
+  notes.set(ANN, ANN, { note: forNow.id, status: "changed" });
+  const stays = notes.set(ANN, ANN, { body: "stays" }) as Note;
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", session: "33".repeat(16) }), refusal("no_such_session"));
+  assert.equal(count("note_changes"), 2);
+
+  clock.now = Date.parse("2026-11-25T11:59:59Z");
+  assert.equal((notes.list(ANN, {}) as { total: number }).total, 3);
+  clock.now = Date.parse("2026-11-25T12:00:00Z");
+  assert.deepEqual(bodiesOf(notes.atStart(ANN, [{ session: S2, peer: PEER }]) as Shown, false), ["for this talk"], "a note past its time isn't shown either");
+  assert.throws(() => notes.get(ANN, timed.id, false), refusal("no_such_note"));
+  assert.equal(count("note_changes"), 1);
+
+  open.delete(S2);
+  assert.deepEqual((notes.list(ANN, {}) as { notes: Note[] }).notes.map((note) => note.id), [stays.id]);
+  assert.equal(count("note_changes"), 0);
+  assert.throws(() => notes.set(ANN, ANN, { note: forNow.id, status: "late" }), refusal("no_such_note"));
 });

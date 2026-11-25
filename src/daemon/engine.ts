@@ -256,6 +256,8 @@ export interface EngineEvents {
   channelPush(frame: PushFrame): void;
   // Whether anyone holds this agent right now. The away greeting and the doorbell go by the same answer.
   reachable(agentHex: string): boolean;
+  // The agent's own notes that are due as these sessions start for it, and what to run once the answer has reached it.
+  notesAtStart(agentHex: string, sessions: readonly { session: string; peer: string }[]): { shown?: Record<string, unknown>; commit(): void };
 }
 
 // A way to a server. The home route is the server this daemon logged in to, where its agents live and can be called.
@@ -388,12 +390,7 @@ export class Engine {
     this.#operator = new OperatorInbox(store);
     this.reminders = new Reminders(store, {
       agentName: (agentHex) => this.#requireAgent(agentHex).name,
-      sessionOpen: (agentHex, sessionHex) => {
-        const row = this.#store.session(new Uint8Array(Buffer.from(agentHex, "hex")), new Uint8Array(Buffer.from(sessionHex, "hex")));
-        if (row === undefined || row.state === "closed") return false;
-        // A call nobody answered stays "offered" for good, so past its time it counts as over.
-        return row.state !== "offered" || signedOffer.decode(JSON.parse(row.offer)).fields.expiresAt > Date.now();
-      },
+      sessionOpen: (agentHex, sessionHex) => this.sessionOpen(agentHex, sessionHex),
     });
     this.#screening = new ScreeningQueue({
       load: (job) => this.#loadForScreen(job),
@@ -415,6 +412,14 @@ export class Engine {
       push: (frame) => this.#onPush(frame, this.#home),
     });
     this.#home = { url, home: true, link: this.#link, longLink: this.#longLinkTo(url, () => this.#home), longServer: undefined, longProved: new Set(), server: undefined, wanted: new Set(), online: new Set(), visits: new Map(), opening: 0 };
+  }
+
+  // Whether this is one of the agent's sessions and still open. What was set "for this session" goes when it isn't.
+  sessionOpen(agentHex: string, sessionHex: string): boolean {
+    const row = this.#store.session(new Uint8Array(Buffer.from(agentHex, "hex")), new Uint8Array(Buffer.from(sessionHex, "hex")));
+    if (row === undefined || row.state === "closed") return false;
+    // A call nobody answered stays "offered" for good, so past its time it counts as over.
+    return row.state !== "offered" || signedOffer.decode(JSON.parse(row.offer)).fields.expiresAt > Date.now();
   }
 
   async start(): Promise<void> {
@@ -2928,7 +2933,8 @@ export class Engine {
       // The caller speaks first, so what it's to be reminded of at the start comes with the call's answer, not its first read.
       // It counts as shown only once this answer is written, as a read does, so a caller that hung up first still gets it.
       const reminded = this.reminders.due(agent.hex, sessionHex, toHex(targetId), 0, true);
-      return { session_id: sessionHex, state, ...signalsInfo, ...(reminded.due.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminded.due } } : {}), [ONCE_WRITTEN]: reminded.commit };
+      const noted = this.#events.notesAtStart(agent.hex, [{ session: sessionHex, peer: toHex(targetId) }]);
+      return { session_id: sessionHex, state, ...signalsInfo, ...(reminded.due.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminded.due } } : {}), ...(noted.shown ? { notes: noted.shown } : {}), [ONCE_WRITTEN]: () => { reminded.commit(); noted.commit(); } };
     }
     return { session_id: sessionHex, state: "waiting", ...signalsInfo, message: `Nothing has answered yet, so that agent's daemon may be offline. An offline daemon can't send an away greeting, so silence here says nothing about whether anyone will read this. The call stands until ${new Date(fields.expiresAt).toISOString()}, and it connects by itself if that daemon comes back. A send waits until then. To take the call back, close the session: the agent you called is then never shown it.` };
   }
@@ -2969,6 +2975,7 @@ export class Engine {
     const policies: unknown[] = [];
     const reminders: unknown[] = [];
     const reminderCommits: (() => void)[] = [];
+    const starting: { session: string; peer: string }[] = [];
     const guidance: { session_id: string; text: string }[] = [];
     let room = MAX_REPLY_BYTES;
     let more = false;
@@ -3015,6 +3022,8 @@ export class Engine {
         const reminded = this.reminders.due(agent.hex, toHex(local.session_id), toHex(local.counterparty_id), unread.length, local.role === "caller");
         for (const one of reminded.due) reminders.push({ session_id: toHex(local.session_id), ...one });
         reminderCommits.push(reminded.commit);
+        // The agent's own notes are due at the same moment as a Reminder for the start: once something has reached it, or on a caller's first read.
+        if (unread.length > 0 || local.role === "caller") starting.push({ session: toHex(local.session_id), peer: toHex(local.counterparty_id) });
       }
       if (unread.length > 0) {
         for (const text of sessionGuidance({ lastSignal, laterToCome: page.more || Boolean(held), finished: local.state !== "active" || local.own_closed === 1, hasPolicy, blocked, lag })) {
@@ -3022,6 +3031,7 @@ export class Engine {
         }
       }
     }
+    const noted = this.#events.notesAtStart(agent.hex, starting);
     const notices = this.#store.notices(agent.signer.id);
     const wantedSession = sessionHex ? sessions[0]?.session_id : undefined;
     // A read of one session takes the operator's replies about that session and the ones about none. One about another
@@ -3029,7 +3039,7 @@ export class Engine {
     const fromOperator = this.#operator.unread(agent.signer.id).filter((row) => !wantedSession || row.session_id === null || equalBytes(row.session_id, wantedSession));
     const greetings = this.#away.unread(agent.signer.id).filter((row) => !wantedSession || equalBytes(row.session_id, wantedSession));
     return {
-      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(fromOperator.length > 0 ? { from_your_operator: { note: OPERATOR_NOTE, replies: fromOperator.map((m) => ({ text: m.text, session_id: m.session_id ? toHex(m.session_id) : null, via: m.via, at: new Date(m.received_at).toISOString() })) } } : {}), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(reminders.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminders } } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
+      result: { messages, ...(greetings.length > 0 ? { greetings: greetings.map((row) => this.#shownGreeting(agent, row)) } : {}), notices: notices.map((n) => ({ session_id: n.session_id ? toHex(n.session_id) : null, text: n.text })), ...(fromOperator.length > 0 ? { from_your_operator: { note: OPERATOR_NOTE, replies: fromOperator.map((m) => ({ text: m.text, session_id: m.session_id ? toHex(m.session_id) : null, via: m.via, at: new Date(m.received_at).toISOString() })) } } : {}), ...(screening.length > 0 ? { still_screening: screening } : {}), ...(policies.length > 0 ? { policies } : {}), ...(reminders.length > 0 ? { reminders: { note: REMINDER_NOTE, due: reminders } } : {}), ...(noted.shown ? { notes: noted.shown } : {}), ...(guidance.length > 0 ? { guidance } : {}), ...(more ? { more: true } : {}) },
       commit: () => {
         this.#store.transaction(() => {
           for (const read of reads) {
@@ -3041,6 +3051,7 @@ export class Engine {
           if (notices.length > 0) this.#store.clearNotices(agent.signer.id, (notices.at(-1) as { id: number }).id);
           this.#operator.markRead(agent.signer.id, fromOperator.map((row) => row.id));
           for (const shown of reminderCommits) shown();
+          noted.commit();
         });
       },
     };

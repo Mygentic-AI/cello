@@ -73,15 +73,17 @@ function ring(agentHex: string, bell: Doorbell): void {
   }
 }
 
-const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent) });
+const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => channels.onPush(frame), reachable: (agent) => holders.has(agent), notesAtStart: (agent, sessions) => notes.atStart(agent, sessions) });
 const channels = new Channels(store, engine.channelHost());
 const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex), lookupSignals: (agentHex, address) => engine.wallet.lookup(agentHex, address) });
 const notifiers = new Notifiers(store, engine.notifierHost(), TELEGRAM, operatorSocketPath(home));
 const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
-const notes = new Notes(store, engine.governance.reach, {
+const notes: Notes = new Notes(store, engine.governance.reach, {
   agentName: (agentHex) => engine.agentName(agentHex),
   holdsMessage: (agentHex, sessionHex, position) => store.entryAt(fromHex(agentHex), fromHex(sessionHex), position) !== undefined,
   holdsPost: (agentHex, channelHex, position) => channels.holdsPost(agentHex, channelHex, position),
+  sessionOpen: (agentHex, sessionHex) => engine.sessionOpen(agentHex, sessionHex),
+  isContact: (agentHex, contactHex) => engine.governance.contacts.get(fromHex(agentHex), fromHex(contactHex)) !== undefined,
 });
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
@@ -287,7 +289,12 @@ function governed(method: string, params: Record<string, unknown>): unknown {
   switch (method) {
     case "contacts": return g.listContacts(id);
     case "contact_add": return g.contactAdd(id, named, params);
-    case "contact_remove": return g.contactRemove(id, named, params);
+    case "contact_remove": {
+      const answer = g.contactRemove(id, named, params) as { removed: boolean; contact_id: string };
+      // Remembered, so a note about this contact can tell it was removed from one that was never added.
+      if (answer.removed) notes.contactRemoved(named, answer.contact_id);
+      return answer;
+    }
     case "contact_set_tier": return g.contactSetTier(id, named, params);
     case "contact_set_away": return g.contactSetAway(id, params);
     case "contact_set_moniker": return g.contactSetMoniker(id, params);
@@ -401,11 +408,13 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.wallet.untrustIssuer(named(params), text(params, "hash"));
     case "use_agent": {
       const agent = acting(params);
+      notes.takenUp(agent);
       return { name: engine.agentName(agent), agent_id: agent, unread: engine.unreadCount(agent) };
     }
     // Takes hold, and keeps this socket as the way to reach the caller with doorbells. Used by a session that can be woken.
     case "subscribe": {
       const agent = acting(params);
+      notes.takenUp(agent);
       const set = listeners.get(agent) ?? new Set<Listener>();
       listeners.set(agent, set);
       const caller = text(params, "caller");
@@ -604,7 +613,10 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return channels.settings(acting(params), text(params, "channel_id"), optionalText(params, "delivery"), optionalText(params, "screen_bodies"));
     case "channel_read": {
       const agent = acting(params);
-      return delivered(params, agent, await channels.read(agent, text(params, "channel_id"), params["titles_only"] === true));
+      const read = await channels.read(agent, text(params, "channel_id"), params["titles_only"] === true);
+      // The channel's notes ride on the first read after the agent is taken up, and count as shown once the answer is written.
+      const noted = notes.atChannelRead(agent, text(params, "channel_id"));
+      return delivered(params, agent, { result: { ...(read.result as object), ...(noted.shown ? { notes: noted.shown } : {}) }, commit: () => { read.commit(); noted.commit(); } });
     }
     case "channel_history":
       return channels.history(engine.resolveAgent(text(params, "agent")), text(params, "channel_id"), typeof params["after"] === "number" ? params["after"] : 0);
