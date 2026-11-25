@@ -66,6 +66,7 @@ test("every field is optional: a note can be only a body or only a label, and an
 
 test("a change touches only the fields it names, clear empties one, and times with no zone are UTC", () => {
   const { notes, clock } = setup();
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: "2026-02-31" }), refusal("bad_argument"), "a day that doesn't exist must not roll into March");
   const made = notes.set(ANN, ANN, { body: "Quote sent.", kind: "deal", status: "waiting on Ana", with: PEER, check_by: "2026-12-01T09:00", expires: "2027-01-01", show_at_start: true }) as Note;
   assert.equal(made.check_by, "2026-12-01T09:00:00.000Z");
   assert.equal(made.expires_at, "2027-01-01T00:00:00.000Z");

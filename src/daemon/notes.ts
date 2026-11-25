@@ -96,7 +96,9 @@ function time(params: Record<string, unknown>, name: string): number | undefined
   if (value === undefined) return undefined;
   const shape = typeof value === "string" ? /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value) : null;
   const at = shape ? Date.parse(shape[1] !== undefined && shape[4] === undefined ? `${value as string}Z` : value as string) : NaN;
-  if (Number.isNaN(at)) throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`);
+  // A day that doesn't exist, such as 31 February, would otherwise roll into the next month without a word.
+  const day = (value as string).slice(0, 10);
+  if (Number.isNaN(at) || new Date(Date.parse(`${day}T00:00:00Z`)).toISOString().slice(0, 10) !== day) throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`);
   return at;
 }
 
@@ -190,7 +192,7 @@ export class Notes {
     if (!parts) throw new LocalError("bad_argument", "source must be a session id or a channel's id, a colon, and the message's position, such as 5f0c…:12");
     const [, place, position] = parts as unknown as [string, string, string];
     const held = place.length === 32 ? this.#host.holdsMessage(writerHex, place, Number(position)) : this.#host.holdsPost(writerHex, place, Number(position));
-    if (!held) throw new LocalError("no_such_source", `${this.#host.agentName(writerHex)} holds no ${place.length === 32 ? "message at that position in that session" : "post at that position in that channel"}, so it can't be given as the source. Leave source out, or give one this agent has received.`);
+    if (!held) throw new LocalError("no_such_source", `${this.#host.agentName(writerHex)} holds no ${place.length === 32 ? "message at that position in that session" : "post at that position in that channel"}, so it can't be given as the source. Leave source out, or give one this agent holds.`);
     return source as string;
   }
 
