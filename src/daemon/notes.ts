@@ -1,0 +1,301 @@
+// Notes: what an agent chooses to write down for later, kept in its own daemon. A few fields the daemon understands and a
+// free body, every one of them optional. Nothing another party sends writes a note: only a call naming the writing agent.
+import { randomBytes } from "node:crypto";
+import { LocalError } from "./errors.ts";
+import { logEvent } from "./log.ts";
+import { listOf, MAX_LABEL_CHARS, MAX_NOTE_HISTORY, type Reach } from "./reach.ts";
+import type { Store } from "./store.ts";
+
+// Nothing the agent supplies is required, so no column of its own refuses to be empty.
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS notes (
+  id            BLOB PRIMARY KEY,
+  agent_id      BLOB NOT NULL REFERENCES agents(agent_id),
+  -- The agent that made the last change, which isn't always the owner.
+  written_by    BLOB NOT NULL,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  kind          TEXT,
+  status        TEXT,
+  entity        TEXT,
+  with_id       BLOB,
+  session_id    BLOB,
+  channel_id    BLOB,
+  check_by      INTEGER,
+  expires_at    INTEGER,
+  show_at_start INTEGER NOT NULL DEFAULT 0,
+  keep_history  INTEGER NOT NULL DEFAULT 0,
+  -- The message or channel post behind the last change, as "<session or channel id>:<position>".
+  source        TEXT,
+  body          TEXT
+);
+CREATE INDEX IF NOT EXISTS notes_by_agent ON notes (agent_id, updated_at);
+CREATE TABLE IF NOT EXISTS note_changes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id    BLOB NOT NULL,
+  agent_id   BLOB NOT NULL,
+  written_by BLOB NOT NULL,
+  changed_at INTEGER NOT NULL,
+  source     TEXT,
+  -- The note as it was before this change, as JSON.
+  before     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS note_changes_by_note ON note_changes (note_id, id);
+`;
+
+const COLUMNS = "id, agent_id, written_by, created_at, updated_at, kind, status, entity, with_id, session_id, channel_id, check_by, expires_at, show_at_start, keep_history, source, body";
+const LIST_DEFAULT = 50;
+const LIST_MAX = 500;
+const LIST_BODY_CHARS = 200;
+
+interface Row {
+  id: Uint8Array; agent_id: Uint8Array; written_by: Uint8Array; created_at: number; updated_at: number;
+  kind: string | null; status: string | null; entity: string | null;
+  with_id: Uint8Array | null; session_id: Uint8Array | null; channel_id: Uint8Array | null;
+  check_by: number | null; expires_at: number | null; show_at_start: number; keep_history: number;
+  source: string | null; body: string | null;
+}
+// What the agent may supply, by the name it gives and the column it fills.
+type Supplied = Pick<Row, "kind" | "status" | "entity" | "with_id" | "session_id" | "channel_id" | "check_by" | "expires_at" | "show_at_start" | "keep_history" | "body">;
+const FIELD_COLUMNS: Record<string, keyof Supplied> = {
+  body: "body", kind: "kind", status: "status", entity: "entity", with: "with_id", session: "session_id", channel: "channel_id",
+  check_by: "check_by", expires: "expires_at", show_at_start: "show_at_start", keep_history: "keep_history",
+};
+const EMPTY: Supplied = { kind: null, status: null, entity: null, with_id: null, session_id: null, channel_id: null, check_by: null, expires_at: null, show_at_start: 0, keep_history: 0, body: null };
+
+export interface NoteHost {
+  agentName(agentHex: string): string;
+  // Whether this agent's own store holds a message at that place in one of its sessions.
+  holdsMessage(agentHex: string, sessionHex: string, position: number): boolean;
+  holdsPost(agentHex: string, channelHex: string, position: number): boolean;
+}
+
+const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
+const bytesOf = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, "hex"));
+const iso = (at: number | null): string | null => (at === null ? null : new Date(at).toISOString());
+
+function label(params: Record<string, unknown>, name: string): string | undefined {
+  const value = params[name];
+  if (value === undefined) return undefined;
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text === "") throw new LocalError("bad_argument", `${name} must be some text. To empty it on a note you have, use clear.`);
+  if (text.length > MAX_LABEL_CHARS) throw new LocalError("too_long", `${name} holds ${MAX_LABEL_CHARS} characters, and this is ${text.length}. Put the rest in the body.`);
+  return text;
+}
+
+function id(params: Record<string, unknown>, name: string, chars: number, what: string): Uint8Array | undefined {
+  const value = params[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !new RegExp(`^[0-9a-f]{${chars}}$`).test(value)) throw new LocalError("bad_argument", `${name} must be ${what}: ${chars} hex characters`);
+  return bytesOf(value);
+}
+
+// A time with no zone is read as UTC, so the same words mean the same moment on every machine.
+function time(params: Record<string, unknown>, name: string): number | undefined {
+  const value = params[name];
+  if (value === undefined) return undefined;
+  const shape = typeof value === "string" ? /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value) : null;
+  const at = shape ? Date.parse(shape[1] !== undefined && shape[4] === undefined ? `${value as string}Z` : value as string) : NaN;
+  if (Number.isNaN(at)) throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`);
+  return at;
+}
+
+export class Notes {
+  readonly #store: Store;
+  readonly #reach: Reach;
+  readonly #host: NoteHost;
+  readonly #now: () => number;
+
+  constructor(store: Store, reach: Reach, host: NoteHost, now: () => number = Date.now) {
+    this.#store = store;
+    this.#reach = reach;
+    this.#host = host;
+    this.#now = now;
+    store.exec(SCHEMA);
+  }
+
+  #describe(row: Row): Record<string, unknown> {
+    return {
+      id: hex(row.id), agent_id: hex(row.agent_id), written_by: hex(row.written_by), created_at: iso(row.created_at), updated_at: iso(row.updated_at),
+      kind: row.kind, status: row.status, entity: row.entity,
+      with_id: row.with_id && hex(row.with_id), session_id: row.session_id && hex(row.session_id), channel_id: row.channel_id && hex(row.channel_id),
+      check_by: iso(row.check_by), expires_at: iso(row.expires_at), show_at_start: row.show_at_start === 1, keep_history: row.keep_history,
+      source: row.source, body: row.body,
+    };
+  }
+
+  // Looked up under its owner, so one agent's id never reaches another's note.
+  #find(ownerHex: string, noteId: unknown): Row {
+    const row = typeof noteId === "string" && /^[0-9a-f]{16}$/.test(noteId)
+      ? this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND id = ?`).get(bytesOf(ownerHex), bytesOf(noteId)) as Row | undefined
+      : undefined;
+    if (!row) throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)} has no note ${String(noteId)}. note-list shows them.`);
+    return row;
+  }
+
+  // An agent writes its own notes. Another's take the writer's notes.write setting, which only a person widens.
+  #mayWrite(writerHex: string, ownerHex: string): void {
+    if (writerHex === ownerHex) return;
+    const allowed = this.#reach.setting(bytesOf(writerHex), "notes.write");
+    if (allowed === "all" || listOf(allowed).includes(ownerHex)) return;
+    throw new LocalError("not_allowed_to_write", `${this.#host.agentName(writerHex)} may write only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing changed for ${this.#host.agentName(ownerHex)}. The setting is notes.write, and widening it takes a person at a terminal: cello settings-set notes.write ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${writerHex}`);
+  }
+
+  // The fields this call gives, each checked. Anything not named is left out, so a change touches only what it names.
+  #given(ownerHex: string, params: Record<string, unknown>): Partial<Supplied> {
+    const given: Partial<Supplied> = {};
+    const put = <K extends keyof Supplied>(column: K, value: Supplied[K] | undefined): void => { if (value !== undefined) given[column] = value; };
+    const body = params["body"];
+    if (body !== undefined) {
+      if (typeof body !== "string" || body === "") throw new LocalError("bad_argument", "body must be some text. To empty it on a note you have, use clear.");
+      const max = this.#reach.number(bytesOf(ownerHex), "notes.body_max_bytes");
+      const size = Buffer.byteLength(body);
+      if (size > max) throw new LocalError("too_long", `A note's body holds ${max} bytes for ${this.#host.agentName(ownerHex)}, and this is ${size}. The limit is the setting notes.body_max_bytes.`);
+      given.body = body;
+    }
+    for (const name of ["kind", "status", "entity"] as const) put(name, label(params, name));
+    put("with_id", id(params, "with", 64, "an agent_id"));
+    put("session_id", id(params, "session", 32, "a session id"));
+    put("channel_id", id(params, "channel", 64, "a channel's id"));
+    put("check_by", time(params, "check_by"));
+    put("expires_at", time(params, "expires"));
+    const show = params["show_at_start"];
+    if (show !== undefined && typeof show !== "boolean") throw new LocalError("bad_argument", "show_at_start must be true or false");
+    put("show_at_start", show === undefined ? undefined : show ? 1 : 0);
+    const keep = params["keep_history"];
+    if (keep !== undefined && (typeof keep !== "number" || !Number.isInteger(keep) || keep < 0 || keep > MAX_NOTE_HISTORY)) throw new LocalError("bad_argument", `keep_history must be a whole number from 0 to ${MAX_NOTE_HISTORY}`);
+    put("keep_history", keep as number | undefined);
+    return given;
+  }
+
+  #cleared(params: Record<string, unknown>, given: Partial<Supplied>): (keyof Supplied)[] {
+    const clear = params["clear"];
+    if (clear === undefined) return [];
+    const names = typeof clear === "string" ? clear.split(",").map((name) => name.trim()).filter((name) => name !== "") : [];
+    if (names.length === 0) throw new LocalError("bad_argument", `clear takes field names with commas between: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
+    return names.map((name) => {
+      // The stamp's source is emptied by any change that doesn't give one, so naming it here is allowed and changes nothing more.
+      const column = name === "source" ? undefined : FIELD_COLUMNS[name];
+      if (name !== "source" && column === undefined) throw new LocalError("bad_argument", `clear doesn't know the field ${name}. It takes: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
+      if ((column !== undefined && given[column] !== undefined) || (name === "source" && params["source"] !== undefined)) throw new LocalError("bad_argument", `${name} is both given and cleared. Do one.`);
+      return column;
+    }).filter((column) => column !== undefined);
+  }
+
+  // Checked against the writer's own store: the writer is the one who read it.
+  #source(writerHex: string, params: Record<string, unknown>): string | null {
+    const source = params["source"];
+    if (source === undefined) return null;
+    const parts = typeof source === "string" ? /^([0-9a-f]{32}|[0-9a-f]{64}):(\d{1,15})$/.exec(source) : null;
+    if (!parts) throw new LocalError("bad_argument", "source must be a session id or a channel's id, a colon, and the message's position, such as 5f0c…:12");
+    const [, place, position] = parts as unknown as [string, string, string];
+    const held = place.length === 32 ? this.#host.holdsMessage(writerHex, place, Number(position)) : this.#host.holdsPost(writerHex, place, Number(position));
+    if (!held) throw new LocalError("no_such_source", `${this.#host.agentName(writerHex)} holds no ${place.length === 32 ? "message at that position in that session" : "post at that position in that channel"}, so it can't be given as the source. Leave source out, or give one this agent has received.`);
+    return source as string;
+  }
+
+  // How many versions a note keeps. A kind listed in notes.history_kinds keeps at least the default, and can't ask for fewer.
+  #keep(ownerHex: string, kind: string | null, asked: number | undefined, had: number): number {
+    const owner = bytesOf(ownerHex);
+    const floor = kind !== null && listOf(this.#reach.setting(owner, "notes.history_kinds")).includes(kind) ? this.#reach.number(owner, "notes.history_default") : 0;
+    if (asked !== undefined && asked < floor) throw new LocalError("history_required", `Notes of kind ${kind as string} must keep at least ${floor} past versions for ${this.#host.agentName(ownerHex)}, and this asked for ${asked}. The kind is listed in the setting notes.history_kinds, and taking it off takes a person.`);
+    return asked ?? Math.max(had, floor);
+  }
+
+  set(writerHex: string, ownerHex: string, params: Record<string, unknown>): unknown {
+    this.#mayWrite(writerHex, ownerHex);
+    const owner = bytesOf(ownerHex);
+    const name = this.#host.agentName(ownerHex);
+    const given = this.#given(ownerHex, params);
+    const cleared = this.#cleared(params, given);
+    const source = this.#source(writerHex, params);
+    const now = this.#now();
+    if (params["note"] === undefined) {
+      if (cleared.length > 0) throw new LocalError("bad_argument", "clear empties a field of a note you have, so it needs note.");
+      if (Object.keys(given).length === 0) throw new LocalError("bad_argument", "A note needs something in it: a body, a label, or anything else. Every field is optional, but not all at once.");
+      const max = this.#reach.number(owner, "notes.max");
+      const count = (this.#store.prepare("SELECT count(*) AS c FROM notes WHERE agent_id = ?").get(owner) as { c: number }).c;
+      if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} notes, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it takes a person.`);
+      const row: Supplied = { ...EMPTY, ...given };
+      row.keep_history = this.#keep(ownerHex, row.kind, given.keep_history, 0);
+      const noteId = new Uint8Array(randomBytes(8));
+      this.#store.prepare(`INSERT INTO notes (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(noteId, owner, bytesOf(writerHex), now, now, row.kind, row.status, row.entity, row.with_id, row.session_id, row.channel_id, row.check_by, row.expires_at, row.show_at_start, row.keep_history, source, row.body);
+      logEvent("note.set", { agent: ownerHex, note: hex(noteId), written_by: writerHex, created: true });
+      return { set: true, created: true, agent: name, ...this.#describe(this.#find(ownerHex, hex(noteId))) };
+    }
+    const old = this.#find(ownerHex, params["note"]);
+    if (Object.keys(given).length === 0 && cleared.length === 0 && source === null) throw new LocalError("bad_argument", "Nothing to change: give a field, or clear one.");
+    const next: Supplied = { ...old, ...given };
+    for (const column of cleared) (next as unknown as Record<string, unknown>)[column] = EMPTY[column];
+    // Clearing keep_history goes back to what the note's kind requires, which is none unless the kind is listed.
+    next.keep_history = this.#keep(ownerHex, next.kind, given.keep_history, cleared.includes("keep_history") ? 0 : old.keep_history);
+    this.#store.transaction(() => {
+      this.#store.prepare("UPDATE notes SET written_by = ?, updated_at = ?, kind = ?, status = ?, entity = ?, with_id = ?, session_id = ?, channel_id = ?, check_by = ?, expires_at = ?, show_at_start = ?, keep_history = ?, source = ?, body = ? WHERE agent_id = ? AND id = ?")
+        .run(bytesOf(writerHex), now, next.kind, next.status, next.entity, next.with_id, next.session_id, next.channel_id, next.check_by, next.expires_at, next.show_at_start, next.keep_history, source, next.body, owner, old.id);
+      if (next.keep_history > 0) {
+        this.#store.prepare("INSERT INTO note_changes (note_id, agent_id, written_by, changed_at, source, before) VALUES (?, ?, ?, ?, ?, ?)").run(old.id, owner, bytesOf(writerHex), now, source, JSON.stringify(this.#describe(old)));
+      }
+      this.#store.prepare("DELETE FROM note_changes WHERE note_id = ? AND id NOT IN (SELECT id FROM note_changes WHERE note_id = ? ORDER BY id DESC LIMIT ?)").run(old.id, old.id, next.keep_history);
+    });
+    logEvent("note.set", { agent: ownerHex, note: hex(old.id), written_by: writerHex, created: false });
+    return { set: true, created: false, agent: name, ...this.#describe(this.#find(ownerHex, hex(old.id))) };
+  }
+
+  get(agentHex: string, noteId: unknown, history: boolean): unknown {
+    const row = this.#find(agentHex, noteId);
+    const changes = history
+      ? (this.#store.prepare("SELECT written_by, changed_at, source, before FROM note_changes WHERE note_id = ? ORDER BY id DESC").all(row.id) as { written_by: Uint8Array; changed_at: number; source: string | null; before: string }[])
+        .map((change) => ({ changed_at: iso(change.changed_at), written_by: hex(change.written_by), source: change.source, before: JSON.parse(change.before) as unknown }))
+      : undefined;
+    return { agent: this.#host.agentName(agentHex), ...this.#describe(row), ...(changes ? { history: changes } : {}) };
+  }
+
+  list(agentHex: string, params: Record<string, unknown>): unknown {
+    const where = ["agent_id = ?"];
+    const values: unknown[] = [bytesOf(agentHex)];
+    const filter = (column: string, value: unknown): void => {
+      if (value === undefined) return;
+      where.push(`${column} = ?`);
+      values.push(value);
+    };
+    for (const name of ["kind", "status", "entity"] as const) filter(name, label(params, name));
+    filter("with_id", id(params, "with", 64, "an agent_id"));
+    filter("session_id", id(params, "session", 32, "a session id"));
+    filter("channel_id", id(params, "channel", 64, "a channel's id"));
+    const limit = params["limit"] ?? LIST_DEFAULT;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > LIST_MAX) throw new LocalError("bad_argument", `limit must be a whole number from 1 to ${LIST_MAX}`);
+    const total = (this.#store.prepare(`SELECT count(*) AS c FROM notes WHERE ${where.join(" AND ")}`).get(...values) as { c: number }).c;
+    const rows = this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, rowid DESC LIMIT ?`).all(...values, limit) as Row[];
+    const notes = rows.map((row) => {
+      const cut = row.body !== null && row.body.length > LIST_BODY_CHARS;
+      return { ...this.#describe(row), ...(cut ? { body: (row.body as string).slice(0, LIST_BODY_CHARS), body_cut: true } : {}) };
+    });
+    return {
+      agent: this.#host.agentName(agentHex),
+      notes,
+      total,
+      ...(notes.some((note) => "body_cut" in note) ? { body_note: `A body marked body_cut is its first ${LIST_BODY_CHARS} characters. note-get shows it whole.` } : {}),
+      ...(total > rows.length ? { more: total - rows.length, more_note: `These are the ${rows.length} changed most recently. Narrow the list with a filter, or raise limit, up to ${LIST_MAX}.` } : {}),
+    };
+  }
+
+  remove(writerHex: string, ownerHex: string, noteId: unknown): unknown {
+    this.#mayWrite(writerHex, ownerHex);
+    const row = this.#find(ownerHex, noteId);
+    this.#store.transaction(() => {
+      this.#store.prepare("DELETE FROM note_changes WHERE note_id = ?").run(row.id);
+      this.#store.prepare("DELETE FROM notes WHERE agent_id = ? AND id = ?").run(row.agent_id, row.id);
+    });
+    logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex });
+    return { removed: true, agent: this.#host.agentName(ownerHex), id: hex(row.id) };
+  }
+
+  // An agent that's removed takes its notes and their history with it.
+  forget(agentHex: string): void {
+    this.#store.transaction(() => {
+      this.#store.prepare("DELETE FROM note_changes WHERE agent_id = ?").run(bytesOf(agentHex));
+      this.#store.prepare("DELETE FROM notes WHERE agent_id = ?").run(bytesOf(agentHex));
+    });
+  }
+}

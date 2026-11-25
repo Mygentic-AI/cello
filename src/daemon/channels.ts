@@ -136,6 +136,11 @@ export class Channels {
     this.#schedule();
   }
 
+  // Whether this agent's store has a post at that position, whatever its state.
+  holdsPost(agentHex: string, channelHex: string, position: number): boolean {
+    return this.#db.hasPost(new Uint8Array(Buffer.from(agentHex, "hex")), new Uint8Array(Buffer.from(channelHex, "hex")), position);
+  }
+
   start(): void {
     this.#schedule();
   }

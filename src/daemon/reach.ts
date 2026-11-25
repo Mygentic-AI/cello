@@ -44,10 +44,27 @@ const TIER_DEFAULTS: Record<SettableTier, { max_sessions: number; max_bytes: num
   vip: { max_sessions: 50, max_bytes: 2048 * MIB, bytes_reset_minutes: 120 },
 };
 
+// The most past versions one note keeps, whatever it asks for.
+export const MAX_NOTE_HISTORY = 100;
+export const MAX_LABEL_CHARS = 200;
+
+export const listOf = (value: string): string[] => (value === "" ? [] : value.split(","));
+const tidied = (raw: string): string[] => [...new Set(raw.split(",").map((part) => part.trim()).filter((part) => part !== ""))].sort();
+
+// own is nobody else and all is everybody, so a change loosens unless everyone it names was named before.
+function agentsDirection(from: string, to: string): Direction {
+  if (from === to) return "neutral";
+  if (to === "all") return "loosen";
+  if (from === "all" || to === "own") return "tighten";
+  const had = from === "own" ? [] : listOf(from);
+  return listOf(to).every((id) => had.includes(id)) ? "tighten" : "loosen";
+}
+
 export const CALLING_RAISES_KEY = "contacts.calling_raises_to_known";
 
 // loosensWhen: which way needs a person. Text settings go neither way. A switch loosens when it's turned on.
-interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
+// agents is "own", "all" or agent ids, and loosens when it names anyone it didn't. labels is a list that loosens when one is taken off.
+interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier" | "agents" | "labels"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
 
 export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // Ruled off on 4 November: a lure could get itself raised just by persuading an agent to dial it.
@@ -59,6 +76,13 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // off is tightening, which anyone can do, and turning it back on is loosening, which takes a person.
   "reminders.anyone_can_change": { default: "true", kind: "switch", description: "Whether anyone, an agent included, can set or remove this agent's Reminders. Off, it takes a person at a terminal. Turning it off needs no person, and turning it back on does." },
   "notifiers.anyone_can_change": { default: "true", kind: "switch", description: "Whether anyone, an agent included, can add or remove this agent's notifiers. Off, it takes a person at a terminal. Turning it off needs no person, and turning it back on does. Sending through a notifier is never locked." },
+  // Notes hold what an agent chose to write down, so these start open too. The limits are per agent, and raising one takes a person.
+  "notes.anyone_can_change": { default: "true", kind: "switch", description: "Whether anyone, an agent included, can set or remove this agent's notes. Off, it takes a person at a terminal. Turning it off needs no person, and turning it back on does." },
+  "notes.write": { default: "own", kind: "agents", description: "Whose notes this agent may set and remove: own (only its own), all (every agent on this daemon), or agent ids with commas between. Naming anyone new takes a person. Narrowing it doesn't." },
+  "notes.history_kinds": { default: "", kind: "labels", description: "Kinds of note that must keep history, with commas between, such as promise,price. A note of a listed kind keeps at least notes.history_default versions. Anyone can add a kind. Taking one off takes a person." },
+  "notes.max": { default: "10000", kind: "number", min: 1, max: 1_000_000, loosensWhen: "higher", description: "The most notes this agent holds. At the limit a new one is refused, and none is dropped to make room." },
+  "notes.body_max_bytes": { default: "16384", kind: "number", min: 1, max: 1_048_576, loosensWhen: "higher", description: "The largest body one note holds, in bytes." },
+  "notes.history_default": { default: "10", kind: "number", min: 1, max: MAX_NOTE_HISTORY, loosensWhen: "higher", description: "How many past versions a note keeps when its kind is listed in notes.history_kinds and it asked for fewer." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },
@@ -157,15 +181,28 @@ export class Reach {
     if (!setting) throw new LocalError("bad_setting", `there's no setting named ${key}. They're listed by: cello settings --agent <name>`);
     const to = raw ?? setting.default;
     const from = this.setting(agentId, key);
-    const write = (): void => { this.#store.prepare("UPDATE agent_settings SET value = ?, updated_at = ? WHERE agent_id = ? AND key = ?").run(to, Date.now(), agentId, key); };
+    const write = (value = to): void => { this.#store.prepare("UPDATE agent_settings SET value = ?, updated_at = ? WHERE agent_id = ? AND key = ?").run(value, Date.now(), agentId, key); };
+    if (setting.kind === "agents") {
+      const ids = tidied(to);
+      const next = ids.length === 1 && (ids[0] === "own" || ids[0] === "all") ? ids[0] : ids.join(",");
+      if (ids.length === 0 || (next !== "own" && next !== "all" && !ids.every((id) => /^[0-9a-f]{64}$/.test(id)))) throw new LocalError("bad_setting", `${key} must be own, all, or agent ids of 64 hex characters with commas between. A name won't do, since it can change.`);
+      return { direction: agentsDirection(from, next), from, to: next, apply: () => write(next) };
+    }
+    if (setting.kind === "labels") {
+      const labels = tidied(to);
+      if (labels.some((label) => label.length > MAX_LABEL_CHARS)) throw new LocalError("bad_setting", `each kind in ${key} must be ${MAX_LABEL_CHARS} characters or fewer`);
+      const had = listOf(from);
+      const next = labels.join(",");
+      return { direction: had.some((label) => !labels.includes(label)) ? "loosen" : next === from ? "neutral" : "tighten", from, to: next, apply: () => write(next) };
+    }
     if (setting.kind === "switch") {
       if (to !== "true" && to !== "false") throw new LocalError("bad_setting", `${key} must be exactly "true" or "false"`);
-      return { direction: from === to || setting.neutral ? "neutral" : to === "true" ? "loosen" : "tighten", from, to, apply: write };
+      return { direction: from === to || setting.neutral ? "neutral" : to === "true" ? "loosen" : "tighten", from, to, apply: () => write() };
     }
     if (setting.kind === "tier") {
       if (!SETTABLE_TIERS.includes(to as SettableTier)) throw new LocalError("bad_setting", `${key} must be one of ${SETTABLE_TIERS.join(", ")}, not ${to}`);
       const by = byMagnitude(SETTABLE_TIERS.indexOf(from as SettableTier), SETTABLE_TIERS.indexOf(to as SettableTier));
-      return { direction: by === "loosen" ? "tighten" : by === "tighten" ? "loosen" : "neutral", from, to, apply: write };
+      return { direction: by === "loosen" ? "tighten" : by === "tighten" ? "loosen" : "neutral", from, to, apply: () => write() };
     }
     if (setting.kind === "number") {
       const value = Number(to);
@@ -175,7 +212,7 @@ export class Reach {
     }
     const by = byMagnitude(Number(from), Number(to));
     const direction: Direction = setting.loosensWhen === "higher" ? by : setting.loosensWhen === "lower" ? (by === "loosen" ? "tighten" : by === "tighten" ? "loosen" : "neutral") : "neutral";
-    return { direction, from, to, apply: write };
+    return { direction, from, to, apply: () => write() };
   }
 
   #planTier(agentId: Uint8Array, tier: SettableTier, field: Field | "away", key: string, raw: string | null): SettingChange {

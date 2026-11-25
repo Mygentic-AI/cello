@@ -14,6 +14,7 @@ import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { Discovery } from "./discovery.ts";
 import { requirePerson as requirePersonFor } from "./errors.ts";
+import { Notes } from "./notes.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
 import { currentSetting } from "./settings.ts";
@@ -76,6 +77,12 @@ const engine = new Engine(store, serverUrl, { ring, channelPush: (frame) => chan
 const channels = new Channels(store, engine.channelHost());
 const discovery = new Discovery({ ...engine.discoveryHost(), channelSigner: (agentHex, channelHex) => channels.adminSigner(agentHex, channelHex), lookupSignals: (agentHex, address) => engine.wallet.lookup(agentHex, address) });
 const notifiers = new Notifiers(store, engine.notifierHost(), TELEGRAM, operatorSocketPath(home));
+const fromHex = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"));
+const notes = new Notes(store, engine.governance.reach, {
+  agentName: (agentHex) => engine.agentName(agentHex),
+  holdsMessage: (agentHex, sessionHex, position) => store.entryAt(fromHex(agentHex), fromHex(sessionHex), position) !== undefined,
+  holdsPost: (agentHex, channelHex, position) => channels.holdsPost(agentHex, channelHex, position),
+});
 const STALL_RESOLUTION_MS = 5;
 const mainThreadDelay = monitorEventLoopDelay({ resolution: STALL_RESOLUTION_MS });
 mainThreadDelay.enable();
@@ -162,7 +169,21 @@ function reminderSetCommand(agent: string, params: Record<string, unknown>): str
   return ["cello reminder-set", shellQuoted(params["text"]), ...flags, `--agent ${agent}`].join(" ");
 }
 
-// Reminders and notifiers are open to anyone unless their agent's lock is on. Then a change takes a person, as governance does.
+// As reminderSetCommand: every option the agent gave, so the person runs the same change.
+function noteSetCommand(writer: string, owner: string, params: Record<string, unknown>): string {
+  const flags = [
+    ...(params["show_at_start"] === true ? ["--show-at-start"] : []),
+    ...(["note", "kind", "status", "entity", "with", "session", "channel", "check_by", "expires", "keep_history", "source", "clear"] as const).flatMap((name) => (params[name] === undefined ? [] : [`--${name.replaceAll("_", "-")} ${shellQuoted(params[name])}`])),
+  ];
+  return ["cello note-set", ...(params["body"] === undefined ? [] : [shellQuoted(params["body"])]), ...flags, `--agent ${writer}`, ...(owner === writer ? [] : [`--owner ${owner}`])].join(" ");
+}
+
+// Whose notes a call is about: the agent it names as itself, unless it names another as owner.
+function noteOwner(writer: string, params: Record<string, unknown>): string {
+  return params["owner"] === undefined ? writer : engine.resolveAgent(text(params, "owner"));
+}
+
+// Reminders, notifiers and notes are open to anyone unless their agent's lock is on. Then a change takes a person, as governance does.
 function unlessLocked(agent: string, key: string, params: Record<string, unknown>, what: string, command: string): void {
   if (engine.governance.reach.setting(new Uint8Array(Buffer.from(agent, "hex")), key) === "true") return;
   requirePersonFor(params, `${what} The lock is the setting ${key}.`, command);
@@ -474,6 +495,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       holders.delete(agent);
       notifiers.forget(agent);
       engine.reminders.forget(agent);
+      notes.forget(agent);
       return answer;
     }
     case "agent_status":
@@ -547,6 +569,23 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       const agent = named(params);
       unlessLocked(agent, "reminders.anyone_can_change", params, `This removes a Reminder from ${agent}, and that agent's Reminders are locked.`, `cello reminder-remove ${String(params["reminder"])} --agent ${agent}`);
       return engine.reminders.remove(agent, params["reminder"]);
+    }
+    // Notes name two agents: the one writing, which is stamped on the note, and the owner, which is the same unless said.
+    case "note_set": {
+      const writer = named(params);
+      const owner = noteOwner(writer, params);
+      unlessLocked(owner, "notes.anyone_can_change", params, `This ${params["note"] === undefined ? "sets a note for" : "changes a note of"} ${owner}, and that agent's notes are locked.`, noteSetCommand(writer, owner, params));
+      return notes.set(writer, owner, params);
+    }
+    case "note_get":
+      return notes.get(named(params), params["note"], params["history"] === true);
+    case "note_list":
+      return notes.list(named(params), params);
+    case "note_remove": {
+      const writer = named(params);
+      const owner = noteOwner(writer, params);
+      unlessLocked(owner, "notes.anyone_can_change", params, `This removes a note of ${owner}, and that agent's notes are locked.`, `cello note-remove ${shellQuoted(params["note"])} --agent ${writer}${owner === writer ? "" : ` --owner ${owner}`}`);
+      return notes.remove(writer, owner, params["note"]);
     }
     case "channel_create":
       return channels.create(acting(params), text(params, "name"), text(params, "type"), optionalText(params, "posting"), params["retention_days"] as number | undefined);

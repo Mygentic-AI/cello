@@ -346,7 +346,7 @@ export class Governance {
     if (clear === (value !== undefined)) throw new LocalError("bad_argument", "give a value, or --clear to go back to the default, and not both");
     const agentFlag = agentHex ? ` --agent ${agentHex}` : "";
     const command = `cello settings-set ${name} ${clear ? "--clear" : JSON.stringify(value)}${agentFlag}`;
-    const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts.", "calling.", "reminders.", "notifiers."].some((prefix) => name.startsWith(prefix));
+    const isAgentKey = ["bounds.", "away.", "limits.", "policy.", "contacts.", "calling.", "reminders.", "notifiers.", "notes."].some((prefix) => name.startsWith(prefix));
     if (!isAgentKey) {
       if (clear) throw new LocalError("bad_argument", "a daemon setting has no --clear: set the value you want");
       // Tuning, not a guard, so any shell of the owner's can do it. It just isn't an agent's tool.
@@ -365,7 +365,11 @@ export class Governance {
     if (change.direction === "loosen") requirePerson(params, `This changes ${name} from ${change.from} to ${change.to} for ${agentHex}, which loosens it.`, command);
     change.apply();
     if (change.direction !== "neutral") this.#weakened(agentId, name, change.from, change.to, change.direction, params, `cello settings-set ${name} ${JSON.stringify(change.from)} --agent ${agentHex}`);
-    return { name, value: change.to, was: change.from };
+    // Said, not stopped: what a stranger sends this agent can now end up in another agent's notes.
+    const warning = name === "notes.write" && change.direction === "loosen" && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut
+      ? `This agent accepts sessions from strangers, and it can now write other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}`
+      : undefined;
+    return { name, value: change.to, was: change.from, ...(warning ? { warning } : {}) };
   }
 
   // ---- Guards ----
