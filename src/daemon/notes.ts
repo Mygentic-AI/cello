@@ -215,7 +215,7 @@ export class Notes {
       if (Object.keys(given).length === 0) throw new LocalError("bad_argument", "A note needs something in it: a body, a label, or anything else. Every field is optional, but not all at once.");
       const max = this.#reach.number(owner, "notes.max");
       const count = (this.#store.prepare("SELECT count(*) AS c FROM notes WHERE agent_id = ?").get(owner) as { c: number }).c;
-      if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} notes, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it takes a person.`);
+      if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} ${count === 1 ? "note" : "notes"}, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it takes a person.`);
       const row: Supplied = { ...EMPTY, ...given };
       row.keep_history = this.#keep(ownerHex, row.kind, given.keep_history, 0);
       const noteId = new Uint8Array(randomBytes(8));

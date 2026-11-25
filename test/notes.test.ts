@@ -211,7 +211,6 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.max", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.body_max_bytes", [["100", "tighten"], ["101", "loosen"]]);
   way("notes.history_default", [["5", "tighten"], ["6", "loosen"]]);
-  way("notes.anyone_can_change", [["false", "tighten"], ["true", "loosen"]]);
 });
 
 test("a source must be a message or a post the writer holds, and each change's stamp replaces the last", () => {

@@ -1205,7 +1205,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Write a note, or change one: something the agent keeps for later.",
     scoped: true,
     acts: false,
-    description: `${NOTES_INTRO} With no note id this makes a new note and answers with its id. With note, it changes that one: only the fields you give change, and clear empties the ones you name. Every field is optional, so a note can be only a body, or only labels, but it needs at least one. Each change stamps the note with when it changed, which agent wrote it (the agent named on this call) and its source, and the stamp replaces the one before. A new note is refused with too_many_notes at the agent's limit (setting notes.max), and none is dropped to make room. If the agent's setting notes.anyone_can_change is off, setting or removing a note takes a person, and the refusal gives the command to relay.`,
+    description: `${NOTES_INTRO} With no note id this makes a new note and answers with its id. With note, it changes that one: only the fields you give change, and clear empties the ones you name. Every field is optional, so a note can be only a body, or only labels, but it needs at least one. Each change stamps the note with when it changed, which agent wrote it (the agent named on this call) and its source, and the stamp replaces the one before. A new note is refused with too_many_notes at the agent's limit (setting notes.max), and none is dropped to make room.`,
     params: [
       { name: "body", kind: "string", positional: true, description: "The note itself: plain text, or JSON if you'll want to look inside it later. Leave it out when the labels say everything. Example: {\"amount\": 12000, \"close\": \"2026-12-15\"}" },
       { name: "note", kind: "string", description: "The id of a note to change, 16 hex characters. Leave it out to make a new note. Example: 9f2c41d07ab35e68" },
@@ -1259,7 +1259,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Remove a note and its history.",
     scoped: true,
     acts: false,
-    description: "Remove one note for good, with every past version it kept. If the agent's setting notes.anyone_can_change is off, this takes a person, and the refusal gives the command to relay.",
+    description: "Remove one note for good, with every past version it kept.",
     params: [
       { name: "note", kind: "string", required: true, positional: true, description: "The note's id, 16 hex characters. note-list shows them. Example: 9f2c41d07ab35e68" },
       NOTE_OWNER,
