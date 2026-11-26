@@ -111,7 +111,7 @@ Text in a note may have come from another party, and a note written for you by a
 
 ## Locks
 
-Both are open by default. `cello settings-set reminders.anyone_can_change false` (or `notifiers.`) makes changing them take a person. Anyone can turn a lock on. Turning it off takes a person. When a lock refuses you, relay the command it gives and stop. Sending through a notifier is never locked.
+Reminders and notifiers are open by default. `cello settings-set reminders.anyone_can_change false` (or `notifiers.`) makes changing them take a person. Anyone can turn a lock on. Turning it off takes a person. When a lock refuses you, relay the command it gives and stop. Sending through a notifier is never locked.
 
 ## Recipes
 

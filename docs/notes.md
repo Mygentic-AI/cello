@@ -22,7 +22,7 @@ An agent sees each under its own name: `policies`, `reminders` and `notes`.
 cello note-set "Bea runs purchasing at Acme. Prefers short calls." --with <agent_id> --show-at-start --agent Ann
 ```
 
-The answer gives the note's id. Or say it to the agent: "note that Bea runs purchasing at Acme."
+The answer gives the note's id.
 
 To change a note, name it. Only the fields you give change, and `--clear` empties the ones you name, with commas between:
 
@@ -35,7 +35,7 @@ cello note-set --note 9f2c41d07ab35e68 --clear check_by,status --agent Ann
 
 ## The fields
 
-Every field is optional. A note can be only a body, or only a label, but it needs one of them.
+Every field is optional. A note can be only a body, or only a label, but it needs at least one field.
 
 | Field | What it's for | Leave it empty when |
 |---|---|---|
@@ -50,14 +50,14 @@ Every field is optional. A note can be only a body, or only a label, but it need
 | `--keep-history` | How many past versions to keep, 0 to 100 (below). | Earlier values won't matter. |
 | `--source` | The message or post that caused this change, as `<session or channel id>:<position>`. It must be one the agent holds. | It came from the agent's own reasoning. |
 
-Labels hold 200 characters. Times with no zone are read as UTC, not your local time: `2026-12-01T09:00` is 09:00 UTC.
+Labels hold 200 characters. A time with no zone is UTC, not your local time.
 
 ## Scope
 
 A note can belong to a contact, a session, a channel, any combination, or none.
 
 - **`--with <agent_id>`**, a contact: shown as each session with that contact starts.
-- **`--session <id>`**, one open conversation: removed with its history when the session closes. It's shown at the start only if written before the agent's first read of that session.
+- **`--session <id>`**, one open conversation: removed with its history when the session closes. It can only be written once the session exists, which is usually after its start was shown, so it's for keeping track during the conversation.
 - **`--channel <id>`**: shown on the agent's first read of that channel after a caller takes the agent up.
 - **None**: shown as every session starts, whoever it's with.
 
@@ -81,7 +81,7 @@ With them comes this line, fixed by the daemon:
 
 ## The check-by time
 
-When a note's check-by time passes, the note rings once and never again for that time. Sending the same time again changes nothing, a new time rings once more, and clearing it ends it. A note with no check-by time never rings, and nothing in CELLO treats a note as unfinished or chases it for being old.
+When a note's check-by time passes, the note rings once and never again for that time. A new time rings once more. A note with no check-by time never rings, and nothing in CELLO treats a note as unfinished or chases it for being old.
 
 A ring can be about 30 seconds late. Who is rung is the setting `notes.ring`, which anyone can change:
 
@@ -94,7 +94,7 @@ A ring can be about 30 seconds late. Who is rung is the setting `notes.ring`, wh
 
 A note listed on a read comes under `notes`, marked `past_check_by`, whether or not it's marked to show.
 
-Someone listening means a session set to be woken, such as Claude Code with the doorbell on or a Hermes bridge, or a `cello wait` in progress. An agent held from a shell with nobody waiting has nobody listening.
+Someone listening means an MCP session that has taken the agent, a Hermes bridge, or a `cello wait` in progress. An agent held from a shell with nobody waiting has nobody listening. An app that shows no doorbells, such as Claude Desktop, still counts: the doorbell wakes nobody there, and the agent sees the note on its next read.
 
 The doorbell carries the note's id and none of its words. So does your line:
 
@@ -144,7 +144,7 @@ A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It
 
 ## Whose notes
 
-By default an agent reads and writes only its own. Two settings widen that:
+An agent uses only its own notes unless two settings widen that:
 
 - **`notes.write`**: whose notes this agent may set and remove with `--owner`: `own`, `all`, or agent ids with commas between. The note is still stamped with the agent that wrote it.
 - **`notes.read`**: whose notes this agent's `note-query` sees, in the same form.
