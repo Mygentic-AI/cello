@@ -160,9 +160,17 @@ test("an agent keeps notes by command line: write, change, history, source, list
 
   // A kind that must keep history: anyone can list it, and only a person can take it off.
   ok(["settings-set", "notes.history_kinds", "promise", "--agent", "Rae"], "rae-shell");
-  assert.equal((ok(["note-set", "Send the draft by Friday.", "--kind", "promise", "--agent", "Rae"], "rae-shell") as unknown as Note).keep_history, 10);
+  const promise = ok(["note-set", "Send the draft by Friday.", "--kind", "promise", "--agent", "Rae"], "rae-shell") as unknown as Note;
+  assert.equal(promise.keep_history, 10);
   refused(["note-set", "x", "--kind", "promise", "--keep-history", "1", "--agent", "Rae"], "history_required", "rae-shell");
   refused(["settings-set", "notes.history_kinds", "--clear", "--agent", "Rae"], "person_required", "rae-shell");
+  // The agent can remove such a note, and its history stays, ending with an entry for the removal.
+  ok(["note-set", "--note", promise.id, "--status", "sent", "--agent", "Rae"], "rae-shell");
+  const removed = ok(["note-remove", promise.id, "--agent", "Rae"], "rae-shell");
+  assert.deepEqual([removed["removed"], removed["history_kept"]], [true, 2]);
+  assert.match(refused(["note-get", promise.id, "--agent", "Rae"], "no_such_note", "rae-shell"), /was removed at .* past versions are kept/);
+  const kept = (ok(["note-query", `SELECT removed, json_extract(before, '$.status') AS status FROM note_changes WHERE note_id = '${promise.id}' ORDER BY id`, "--agent", "Rae"], "rae-shell") as unknown as { rows: Record<string, unknown>[] }).rows;
+  assert.deepEqual(kept, [{ removed: 0, status: null }, { removed: 1, status: "sent" }]);
 
   // Removing a note takes it for good.
   assert.equal(ok(["note-remove", asked.id, "--agent", "Sol"], "sol-shell")["removed"], true);

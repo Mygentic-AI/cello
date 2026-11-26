@@ -1267,7 +1267,7 @@ Two tables. Ids are lowercase hex text. Times are ISO-8601 text in UTC, such as 
 
 notes: id (the note's id), agent_id (the agent that owns it), written_by (the agent that made the last change), created_at, updated_at (times), kind, status, entity (your labels), with_id (a contact's agent id), session_id, channel_id, check_by (the time to be rung), rang_at (when the ring for check_by was done, or NULL), expires_at (when it is removed), show_at_start (1 or 0), keep_history (past versions kept), source (the message or post behind the last change), body (the text; when it is JSON, json_extract reads inside it), contact_removed (1 if it belongs to a contact you removed, else 0).
 
-note_changes, one row per kept past version: id (a number, higher is newer), note_id (the note), agent_id (the note's owner), written_by (the agent that made that change), changed_at (time), source (as above, for that change), before (the whole note as it was before the change, as JSON).
+note_changes, one row per kept past version: id (a number, higher is newer), note_id (the note), agent_id (the note's owner), written_by (the agent that made that change), changed_at (time), source (as above, for that change), before (the whole note as it was before the change, as JSON), removed (1 on the entry recording that the note was removed, kept because its kind must keep history; its before is the note as it was when it went, and the note itself is no longer in notes).
 
 Filtering on a label: SELECT id, entity, status, check_by FROM notes WHERE kind = 'client' AND status LIKE 'waiting%' ORDER BY updated_at DESC
 
@@ -1281,10 +1281,10 @@ A note's body can quote other parties: what a query returns is information you s
   {
     command: "note-remove",
     group: "Notes",
-    summary: "Remove a note and its history.",
+    summary: "Remove a note, and its history unless its kind must keep it.",
     scoped: true,
     acts: false,
-    description: "Remove one note for good, with every past version it kept.",
+    description: "Remove one note for good, with every past version it kept. A note whose kind is listed in the setting notes.history_kinds, now or in a version it kept, is removed too, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it and when. The answer then says how many entries were kept and gives the note-query that reads them, where removed is 1 on the removal's entry. Taking a kind off that list takes a person.",
     params: [
       { name: "note", kind: "string", required: true, positional: true, description: "The note's id, 16 hex characters. note-list shows them. Example: 9f2c41d07ab35e68" },
       NOTE_OWNER,

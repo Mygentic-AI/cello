@@ -5,7 +5,8 @@ export const NOTES_COLUMNS = [
   "id", "agent_id", "written_by", "created_at", "updated_at", "kind", "status", "entity", "with_id", "session_id", "channel_id",
   "check_by", "rang_at", "expires_at", "show_at_start", "keep_history", "source", "body", "contact_removed",
 ] as const;
-export const NOTE_CHANGES_COLUMNS = ["id", "note_id", "agent_id", "written_by", "changed_at", "source", "before"] as const;
+// removed is 1 on the entry that records a note's removal: its before is the note as it was when it went.
+export const NOTE_CHANGES_COLUMNS = ["id", "note_id", "agent_id", "written_by", "changed_at", "source", "before", "removed"] as const;
 
 export const QUERY_TABLES = `
 CREATE TABLE notes (
@@ -13,7 +14,7 @@ CREATE TABLE notes (
   with_id TEXT, session_id TEXT, channel_id TEXT, check_by TEXT, rang_at TEXT, expires_at TEXT,
   show_at_start INTEGER, keep_history INTEGER, source TEXT, body TEXT, contact_removed INTEGER
 );
-CREATE TABLE note_changes (id INTEGER, note_id TEXT, agent_id TEXT, written_by TEXT, changed_at TEXT, source TEXT, before TEXT);
+CREATE TABLE note_changes (id INTEGER, note_id TEXT, agent_id TEXT, written_by TEXT, changed_at TEXT, source TEXT, before TEXT, removed INTEGER);
 `;
 
 // Where a statement's own text starts and ends, past space, comments and trailing semicolons at either end. Quoted

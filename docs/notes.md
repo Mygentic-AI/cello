@@ -31,7 +31,7 @@ cello note-set --note 9f2c41d07ab35e68 --status "quote sent" --agent Ann
 cello note-set --note 9f2c41d07ab35e68 --clear check-by,status --agent Ann
 ```
 
-`cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good. `note-list` has a filter for each label and scope, and cuts a long body to 200 characters.
+`cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good, with its history, unless its kind must keep history (below). `note-list` has a filter for each label and scope, and cuts a long body to 200 characters.
 
 ## The fields
 
@@ -114,12 +114,18 @@ cello settings-set notes.history_kinds promise,price --agent Ann
 
 A note of a listed kind keeps at least `notes.history_default` versions, and asking for fewer is refused with `history_required`. Anyone can add a kind. Taking one off takes a person.
 
+An agent can still remove a note of a listed kind. The note goes, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it, and when. `note-get` then says when and by whom it was removed, and `note-query` reads what was kept:
+
+```
+cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '9f2c41d07ab35e68' ORDER BY id"
+```
+
 ## Querying
 
 `cello note-query` runs one SQL statement over an agent's notes. It only reads: the statement must start with `SELECT` or `WITH`, and it runs on a copy with writing switched off. It sees two tables. Ids are lowercase hex, and times are ISO text in UTC.
 
 - **notes**: `id`, `agent_id`, `written_by`, `created_at`, `updated_at`, `kind`, `status`, `entity`, `with_id`, `session_id`, `channel_id`, `check_by`, `rang_at`, `expires_at`, `show_at_start`, `keep_history`, `source`, `body`, `contact_removed`.
-- **note_changes**, one row per kept past version: `id`, `note_id`, `agent_id`, `written_by`, `changed_at`, `source`, and `before`, the whole note before that change, as JSON.
+- **note_changes**, one row per kept past version: `id`, `note_id`, `agent_id`, `written_by`, `changed_at`, `source`, `before`, the whole note before that change, as JSON, and `removed`, which is 1 on the entry that records a note's removal.
 
 What's still waiting on someone:
 

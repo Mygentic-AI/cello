@@ -368,6 +368,48 @@ const bodiesOf = (got: Shown, reached = true): (string | null)[] => {
   return (got.shown?.shown ?? []).map((note) => note.body);
 };
 
+// What a note-query of note_changes would see for this agent, as the daemon hands it over.
+const changesOf = (notes: Notes, agent = ANN): unknown[][] => [...notes.queryRows(agent, true)].flat().filter((row) => row[0] === "c");
+
+test("removing a note whose kind must keep history: the note goes, its versions stay, and the last entry records who removed it and when", () => {
+  const { notes, clock, set, reach } = setup();
+  set("notes.history_kinds", "promise");
+  set("notes.write", ANN, BEA);
+  const kept = notes.set(ANN, ANN, { body: "deliver by Friday", kind: "promise", status: "open" }) as Note;
+  clock.now += 1000;
+  notes.set(ANN, ANN, { note: kept.id, status: "late" });
+  // Renamed away from the listed kind: its kept version is still of that kind, so its history still has to stay.
+  const renamed = notes.set(ANN, ANN, { body: "pay 40k", kind: "promise" }) as Note;
+  notes.set(ANN, ANN, { note: renamed.id, kind: "other", body: "pay 45k" });
+  const plain = notes.set(ANN, ANN, { body: "no kind", keep_history: 3 }) as Note;
+  notes.set(ANN, ANN, { note: plain.id, body: "changed" });
+
+  clock.now += 1000;
+  const gone = notes.remove(BEA, ANN, kept.id) as { removed: boolean; history_kept: number; history_note: string };
+  assert.equal(gone.removed, true);
+  assert.equal(gone.history_kept, 2);
+  assert.match(gone.history_note, /kind promise must keep history.*note-query "SELECT .* FROM note_changes WHERE note_id = '[0-9a-f]{16}'/);
+  assert.throws(() => notes.get(ANN, kept.id, true), refusal("no_such_note", new RegExp(`removed at ${new Date(clock.now).toISOString()} by ${BEA}.*past versions are kept`)));
+  assert.equal((notes.list(ANN, {}) as { notes: Note[] }).notes.some((note) => note.id === kept.id), false, "the note itself is gone");
+
+  const entries = changesOf(notes).filter((row) => row[2] === kept.id);
+  assert.equal(entries.length, 2);
+  const [edit, removal] = entries as [unknown[], unknown[]];
+  assert.equal(edit[8], 0);
+  assert.equal(JSON.parse(edit[7] as string).status, "open");
+  assert.deepEqual([removal[4], removal[5], removal[8]], [BEA, new Date(clock.now).toISOString(), 1], "who removed it and when, marked as the removal");
+  assert.deepEqual([JSON.parse(removal[7] as string).status, JSON.parse(removal[7] as string).body], ["late", "deliver by Friday"], "the last version, as it was when it went");
+
+  assert.equal((notes.remove(ANN, ANN, renamed.id) as { history_kept: number }).history_kept, 2);
+  const plainGone = notes.remove(ANN, ANN, plain.id) as Record<string, unknown>;
+  assert.equal(plainGone["history_kept"], undefined);
+  assert.deepEqual(changesOf(notes).filter((row) => row[2] === plain.id), [], "a note of no listed kind still takes its history with it");
+  assert.throws(() => notes.get(ANN, plain.id, false), refusal("no_such_note", /has no note/));
+
+  // Taking the kind off the list still takes a person, so removing the note was no way round it.
+  assert.equal(reach.plan(bytes(ANN), "notes.history_kinds", null).direction, "loosen");
+});
+
 test("shown at the start: only marked notes, where they belong, once per session, and only once the answer has arrived", () => {
   const { notes, clock } = setup();
   const step = (params: Record<string, unknown>): void => {
@@ -766,6 +808,7 @@ test("a store that still holds notes.ring and an operator send in progress rings
     kind TEXT, status TEXT, entity TEXT, with_id BLOB, session_id BLOB, channel_id BLOB, check_by INTEGER, rang_at INTEGER, agent_rang_at INTEGER,
     operator_rang_at INTEGER, due_told_at INTEGER, unreachable_told_at INTEGER, operator_tries INTEGER NOT NULL DEFAULT 0, operator_tried_at INTEGER,
     expires_at INTEGER, show_at_start INTEGER NOT NULL DEFAULT 0, keep_history INTEGER NOT NULL DEFAULT 0, source TEXT, body TEXT)`);
+  old.exec("CREATE TABLE note_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id BLOB NOT NULL, agent_id BLOB NOT NULL, written_by BLOB NOT NULL, changed_at INTEGER NOT NULL, source TEXT, before TEXT NOT NULL)");
   const now = Date.parse("2026-11-25T10:00:00Z");
   const waiting = "5e".repeat(8);
   old.prepare("INSERT INTO notes (id, agent_id, written_by, created_at, updated_at, check_by, operator_tries, operator_tried_at, body) VALUES (?, ?, ?, ?, ?, ?, 3, ?, 'chase it')")
@@ -793,4 +836,10 @@ test("a store that still holds notes.ring and an operator send in progress rings
   assert.equal(reach.settings(bytes(ANN)).some((setting) => setting.key === "notes.ring"), false);
   assert.equal((old.prepare("SELECT count(*) AS c FROM agent_settings WHERE key = 'notes.ring'").get() as { c: number }).c, 0, "the stored value is dropped, not left to be read by anything");
   assert.throws(() => reach.plan(bytes(ANN), "notes.ring", "operator"), refusal("bad_setting", /removed.*rings only the agent.*cello notify/));
+
+  // The old history table gains the column that marks a removal.
+  reach.plan(bytes(ANN), "notes.history_kinds", "promise").apply();
+  const promise = notes.set(ANN, ANN, { body: "deliver", kind: "promise" }) as Note;
+  assert.equal((notes.remove(ANN, ANN, promise.id) as { history_kept: number }).history_kept, 1);
+  assert.deepEqual([...notes.queryRows(ANN, true)].flat().filter((row) => row[0] === "c").map((row) => row[8]), [1]);
 });

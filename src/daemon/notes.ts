@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS note_changes (
   changed_at INTEGER NOT NULL,
   source     TEXT,
   -- The note as it was before this change, as JSON.
-  before     TEXT NOT NULL
+  before     TEXT NOT NULL,
+  -- 1 when this change was the note's removal, kept because the note's kind must keep history.
+  removed    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS note_changes_by_note ON note_changes (note_id, id);
 CREATE INDEX IF NOT EXISTS note_changes_by_agent ON note_changes (agent_id, id);
@@ -114,6 +116,7 @@ const NOTHING_SHOWN: ShownNotes = { commit: () => undefined };
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 const bytesOf = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, "hex"));
 const iso = (at: number | null): string | null => (at === null ? null : new Date(at).toISOString());
+const historyQuery = (noteHex: string): string => `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '${noteHex}' ORDER BY id"`;
 
 function label(params: Record<string, unknown>, name: string): string | undefined {
   const value = params[name];
@@ -161,6 +164,8 @@ export class Notes {
     this.#host = host;
     this.#now = now;
     store.exec(SCHEMA);
+    const changeColumns = store.prepare("PRAGMA table_info(note_changes)").all() as { name: string }[];
+    if (!changeColumns.some((column) => column.name === "removed")) store.exec("ALTER TABLE note_changes ADD COLUMN removed INTEGER NOT NULL DEFAULT 0");
   }
 
   #describe(row: Row): Record<string, unknown> {
@@ -213,7 +218,13 @@ export class Notes {
     const row = typeof noteId === "string" && /^[0-9a-f]{16}$/.test(noteId)
       ? this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND id = ?`).get(bytesOf(ownerHex), bytesOf(noteId)) as Row | undefined
       : undefined;
-    if (!row) throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)} has no note ${String(noteId)}. note-list shows them.`);
+    if (!row) {
+      const gone = typeof noteId === "string" && /^[0-9a-f]{16}$/.test(noteId)
+        ? this.#store.prepare("SELECT written_by, changed_at FROM note_changes WHERE agent_id = ? AND note_id = ? AND removed = 1").get(bytesOf(ownerHex), bytesOf(noteId)) as { written_by: Uint8Array; changed_at: number } | undefined
+        : undefined;
+      if (gone) throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)}'s note ${noteId as string} was removed at ${iso(gone.changed_at) as string} by ${hex(gone.written_by)}. Its kind must keep history, so its past versions are kept: ${historyQuery(noteId as string)}`);
+      throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)} has no note ${String(noteId)}. note-list shows them.`);
+    }
     return row;
   }
 
@@ -281,10 +292,19 @@ export class Notes {
   // How many versions a note keeps. A kind listed in notes.history_kinds keeps at least the default, and can't ask for fewer.
   // kinds is every kind the note has had a hand in: the one it has, the one it's given, and those of the versions it keeps.
   // Otherwise giving a note another kind would be a way to drop what a listed kind had to keep.
+  #listedKind(ownerHex: string, kinds: readonly (string | null)[]): string | undefined {
+    const listed = listOf(this.#reach.setting(bytesOf(ownerHex), "notes.history_kinds"));
+    return kinds.find((one) => one !== null && listed.includes(one)) ?? undefined;
+  }
+
+  // The kinds of the versions a note keeps.
+  #keptKinds(noteId: Uint8Array): (string | null)[] {
+    return (this.#store.prepare("SELECT before FROM note_changes WHERE note_id = ?").all(noteId) as { before: string }[]).map((change) => (JSON.parse(change.before) as { kind: string | null }).kind);
+  }
+
   #keep(ownerHex: string, kinds: readonly (string | null)[], asked: number | undefined, had: number): number {
     const owner = bytesOf(ownerHex);
-    const listed = listOf(this.#reach.setting(owner, "notes.history_kinds"));
-    const kind = kinds.find((one) => one !== null && listed.includes(one));
+    const kind = this.#listedKind(ownerHex, kinds);
     const floor = kind === undefined ? 0 : this.#reach.number(owner, "notes.history_default");
     if (asked !== undefined && asked < floor) throw new LocalError("history_required", `Notes of kind ${kind as string} must keep at least ${floor} past versions for ${this.#host.agentName(ownerHex)}, and this asked for ${asked}. The kind is listed in the setting notes.history_kinds, and taking it off takes a person.`);
     return asked ?? Math.max(had, floor);
@@ -319,8 +339,7 @@ export class Notes {
     const next: Supplied = { ...old, ...given };
     for (const column of cleared) (next as unknown as Record<string, unknown>)[column] = EMPTY[column];
     // Clearing keep_history goes back to what the note's kind requires, which is none unless the kind is listed.
-    const keptKinds = (this.#store.prepare("SELECT before FROM note_changes WHERE note_id = ?").all(old.id) as { before: string }[]).map((change) => (JSON.parse(change.before) as { kind: string | null }).kind);
-    next.keep_history = this.#keep(ownerHex, [old.kind, next.kind, ...keptKinds], given.keep_history, cleared.includes("keep_history") ? 0 : old.keep_history);
+    next.keep_history = this.#keep(ownerHex, [old.kind, next.kind, ...this.#keptKinds(old.id)], given.keep_history, cleared.includes("keep_history") ? 0 : old.keep_history);
     // A check_by that is set again, or emptied, starts clean: the new time rings once, and no time rings nothing.
     const retimed = cleared.includes("check_by") || (given.check_by !== undefined && given.check_by !== old.check_by);
     this.#store.transaction(() => {
@@ -507,13 +526,29 @@ export class Notes {
     this.#store.prepare("INSERT OR IGNORE INTO note_removed_contacts (agent_id, contact_id) VALUES (?, ?)").run(bytesOf(agentHex), bytesOf(contactHex));
   }
 
+  // A note whose kind must keep history goes, but its history stays, with one more entry: the note as it was when it
+  // went, who removed it and when. Taking the kind off the list still takes a person, so removing isn't a way round it.
   remove(writerHex: string, ownerHex: string, noteId: unknown): unknown {
     this.#mayWrite(writerHex, ownerHex);
     this.#sweep(ownerHex);
     const row = this.#find(ownerHex, noteId);
-    this.#delete(row.agent_id, row.id);
-    logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex });
-    return { removed: true, agent: this.#host.agentName(ownerHex), id: hex(row.id) };
+    const name = this.#host.agentName(ownerHex);
+    const kind = this.#listedKind(ownerHex, [row.kind, ...this.#keptKinds(row.id)]);
+    if (kind === undefined) {
+      this.#delete(row.agent_id, row.id);
+      logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex });
+      return { removed: true, agent: name, id: hex(row.id) };
+    }
+    this.#store.transaction(() => {
+      this.#store.prepare("INSERT INTO note_changes (note_id, agent_id, written_by, changed_at, source, before, removed) VALUES (?, ?, ?, ?, NULL, ?, 1)").run(row.id, row.agent_id, bytesOf(writerHex), this.#now(), JSON.stringify(this.#describe(row)));
+      this.#store.prepare("DELETE FROM notes WHERE agent_id = ? AND id = ?").run(row.agent_id, row.id);
+    });
+    const kept = (this.#store.prepare("SELECT count(*) AS c FROM note_changes WHERE note_id = ?").get(row.id) as { c: number }).c;
+    logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex, history_kept: kept });
+    return {
+      removed: true, agent: name, id: hex(row.id), history_kept: kept,
+      history_note: `Notes of kind ${kind} must keep history for ${name}, so the note is gone but its ${kept} kept ${kept === 1 ? "entry stays" : "entries stay"}, the last recording this removal, who made it and when. Read them with: ${historyQuery(hex(row.id))}`,
+    };
   }
 
   // Whose notes this agent may read: its own, and those its notes.read setting names, which only a person widens.
@@ -547,10 +582,10 @@ export class Notes {
           iso(row.check_by), iso(row.rang_at), iso(row.expires_at), row.show_at_start, row.keep_history, row.source, row.body, contactRemoved(row) ? 1 : 0]);
       }
       for (let after = 0; withChanges;) {
-        const rows = this.#store.prepare("SELECT id, note_id, written_by, changed_at, source, before FROM note_changes WHERE agent_id = ? AND id > ? ORDER BY id LIMIT ?").all(agent, after, QUERY_BATCH) as { id: number; note_id: Uint8Array; written_by: Uint8Array; changed_at: number; source: string | null; before: string }[];
+        const rows = this.#store.prepare("SELECT id, note_id, written_by, changed_at, source, before, removed FROM note_changes WHERE agent_id = ? AND id > ? ORDER BY id LIMIT ?").all(agent, after, QUERY_BATCH) as { id: number; note_id: Uint8Array; written_by: Uint8Array; changed_at: number; source: string | null; before: string; removed: number }[];
         if (rows.length === 0) break;
         after = (rows.at(-1) as { id: number }).id;
-        yield rows.map((row) => ["c", row.id, hex(row.note_id), agentHex, hex(row.written_by), iso(row.changed_at), row.source, row.before]);
+        yield rows.map((row) => ["c", row.id, hex(row.note_id), agentHex, hex(row.written_by), iso(row.changed_at), row.source, row.before, row.removed]);
       }
     }
   }

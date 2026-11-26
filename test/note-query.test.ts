@@ -87,7 +87,7 @@ test("a query sees two tables in the documented shape: hex ids, ISO times, a bod
   });
   const [change] = (await ask("SELECT * FROM note_changes")).rows;
   assert.deepEqual(Object.keys(change ?? {}), [...NOTE_CHANGES_COLUMNS]);
-  assert.deepEqual([change?.["note_id"], change?.["agent_id"], change?.["changed_at"], JSON.parse(change?.["before"] as string).status], [deal.id, ANN, "2026-11-25T10:00:00.000Z", null]);
+  assert.deepEqual([change?.["note_id"], change?.["agent_id"], change?.["changed_at"], JSON.parse(change?.["before"] as string).status, change?.["removed"]], [deal.id, ANN, "2026-11-25T10:00:00.000Z", null, 0]);
 
   // What the shape promises an agent can do with it.
   const worked = (await ask("SELECT json_extract(body, '$.region') AS region, sum(json_extract(body, '$.amount')) AS total, date(check_by) AS day, check_by < datetime('2026-12-01') AS soon FROM notes GROUP BY region")).rows;
