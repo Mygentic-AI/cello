@@ -216,7 +216,7 @@ test("a query whose process is killed from outside fails by name, never with an 
   set("notes.query_ms", "10000");
   notes.set(ANN, ANN, { body: "x" });
   const queries = new NoteQueries();
-  const answer = queries.run(ENDLESS, notes.queryRows(ANN, false), { ms: 10_000, rows: 10 }, (child) => { setTimeout(() => child.kill("SIGKILL"), 200); });
+  const answer = queries.run(ENDLESS, notes.queryRows(ANN, false), { ms: 10_000, rows: 10, bytes: 16_777_216 }, (child) => { setTimeout(() => child.kill("SIGKILL"), 200); });
   await assert.rejects(answer, refusal("query_child_died", /signal SIGKILL/));
   assert.equal(queries.running, 0);
 });
@@ -228,6 +228,38 @@ test("rows that can't be read for a query end it by name, and the process with i
     yield [];
     throw new Error("the store is closed");
   }
-  await assert.rejects(queries.run("SELECT 1", broken(), { ms: 10_000, rows: 10 }, (spawned) => { child = spawned; }), refusal("query_copy_failed", /the store is closed/));
+  await assert.rejects(queries.run("SELECT 1", broken(), { ms: 10_000, rows: 10, bytes: 16_777_216 }, (spawned) => { child = spawned; }), refusal("query_copy_failed", /the store is closed/));
   assert.equal(child?.signalCode, "SIGKILL");
+});
+
+test("a statement followed by a semicolon and a comment, or by a comment alone, still stops at the row limit", async () => {
+  const { ask, set } = setup();
+  set("notes.query_rows", "2");
+  set("notes.query_ms", "3000");
+  // Endless, so a statement run without the limit around it would only end at the time limit.
+  const endless = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT x FROM c";
+  for (const tail of ["; --", "; -- x", "; /* x */", " -- a trailing comment", " /* x */ ;  ", ";\n;", " /* still open"]) {
+    const began = Date.now();
+    const got = await ask(endless + tail);
+    assert.deepEqual([got.rows, got.cut], [[{ x: 1 }, { x: 2 }], true], JSON.stringify(tail));
+    assert.ok(Date.now() - began < 2000, `${JSON.stringify(tail)} took ${Date.now() - began} ms`);
+  }
+  // A quoted "--" or ";" is text, not the end of the statement.
+  assert.deepEqual((await ask("SELECT '--;' AS a, \"x\" AS b FROM (SELECT 'x' AS \"x\") -- end")).rows, [{ a: "--;", b: "x" }]);
+});
+
+test("an answer past notes.query_bytes is stopped and refused by name, the daemon side holding none of it, and one under it comes back", async () => {
+  const { ask, set } = setup();
+  const before = process.memoryUsage().rss;
+  // 480 MB of text from no notes at all.
+  await assert.rejects(ask("SELECT hex(randomblob(240000000)) AS x"), refusal("query_answer_too_large", /16777216 bytes.*fewer or smaller columns.*notes\.query_bytes/s));
+  const grew = process.memoryUsage().rss - before;
+  assert.ok(grew < 64 * 2 ** 20, `the daemon side grew by ${Math.round(grew / 2 ** 20)} MB`);
+
+  set("notes.query_bytes", "1048576");
+  assert.equal(String((await ask("SELECT hex(randomblob(400000)) AS x")).rows[0]?.["x"]).length, 800_000, "just under the limit");
+  await assert.rejects(ask("SELECT hex(randomblob(600000)) AS x"), refusal("query_answer_too_large", /1048576 bytes/));
+  // Quotes double in JSON, so this looks small until it is written out: the daemon's own count stops it.
+  await assert.rejects(ask("SELECT replace(hex(zeroblob(300000)), '0', '\"') AS x"), refusal("query_answer_too_large", /1048576 bytes/));
+  await assert.rejects(ask("SELECT randomblob(400000) AS a, randomblob(400000) AS b"), refusal("query_answer_too_large"), "a blob comes back as hex, twice its size");
 });

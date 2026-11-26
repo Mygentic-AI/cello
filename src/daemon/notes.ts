@@ -624,7 +624,7 @@ export class Notes {
   // One read-only statement over the notes this agent may read, within its limits of time and rows.
   async query(agentHex: string, sql: unknown, queries: NoteQueries): Promise<unknown> {
     const agent = bytesOf(agentHex);
-    const limits = { ms: this.#reach.number(agent, "notes.query_ms"), rows: this.#reach.number(agent, "notes.query_rows") };
+    const limits = { ms: this.#reach.number(agent, "notes.query_ms"), rows: this.#reach.number(agent, "notes.query_rows"), bytes: this.#reach.number(agent, "notes.query_bytes") };
     // SQL has no way to reach a table without writing its name, quoted or not, so a statement without it can't read it.
     const answer = await queries.run(sql, this.queryRows(agentHex, typeof sql === "string" && /note_changes/i.test(sql)), limits);
     logEvent("note.queried", { agent: agentHex, rows: answer.rows.length, cut: answer.cut });

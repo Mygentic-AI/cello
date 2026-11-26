@@ -253,6 +253,7 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.read", [["own", "neutral"], [BEA, "loosen"], ["all", "loosen"], [CAL, "tighten"], ["own", "tighten"]]);
   way("notes.query_ms", [["1000", "tighten"], ["1001", "loosen"]]);
   way("notes.query_rows", [["10", "tighten"], ["11", "loosen"]]);
+  way("notes.query_bytes", [["2048", "tighten"], ["2049", "loosen"]]);
   way("notes.history_kinds", [["promise", "tighten"], ["price,promise", "tighten"], [" promise , price ", "neutral"], ["price", "loosen"], ["promise", "loosen"], [null, "loosen"], ["", "neutral"]]);
   way("notes.max", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.body_max_bytes", [["100", "tighten"], ["101", "loosen"]]);

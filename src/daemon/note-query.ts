@@ -7,11 +7,18 @@ import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
+import { statementBounds } from "./note-query-shape.ts";
 
 // Each query is a process holding a copy of every note its agent may read, up to about 160 MB at the largest settings,
 // and a core while it runs. Two lets two agents work at once without a burst of calls filling the machine's memory.
 export const MAX_QUERIES = 2;
 const STDERR_KEPT = 2000;
+// The child's JavaScript heap, in megabytes. It holds the rows read in one at a time, then the result's rows and their
+// JSON, a few times the answer; the copy of the notes lives in SQLite, outside this heap. 256 is many times a full answer
+// at the default byte limit, and small enough that one value of hundreds of megabytes can't come into it.
+const heapMegabytes = (answerBytes: number): number => Math.max(256, Math.ceil((8 * answerBytes) / 2 ** 20));
+// How V8 says it stopped at that heap.
+const HEAP_EXHAUSTED = /heap out of memory|Reached heap limit|Allocation failed/i;
 
 const childPath = (): string => fileURLToPath(new URL(`./note-query-child${extname(new URL(import.meta.url).pathname)}`, import.meta.url));
 
@@ -19,17 +26,12 @@ const childPath = (): string => fileURLToPath(new URL(`./note-query-child${extna
 export function assertSelect(sql: unknown): string {
   const refuse = (): never => { throw new LocalError("query_not_select", "A note query is one statement that starts with SELECT or WITH. Nothing else is run: notes are changed with note-set and note-remove."); };
   if (typeof sql !== "string") return refuse();
-  let rest = sql;
-  for (;;) {
-    const skipped = rest.replace(/^(\s+|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)/, "");
-    if (skipped === rest) break;
-    rest = skipped;
-  }
-  if (!/^(select|with)\b/i.test(rest)) return refuse();
+  const { start } = statementBounds(sql);
+  if (start < 0 || !/^(select|with)\b/i.test(sql.slice(start))) return refuse();
   return sql;
 }
 
-export interface QueryLimits { ms: number; rows: number }
+export interface QueryLimits { ms: number; rows: number; bytes: number }
 export interface QueryAnswer { rows: Record<string, unknown>[]; cut: boolean }
 // A row for the child: which table, then its columns in the shape's order.
 export type QueryRow = ["n" | "c", ...unknown[]];
@@ -57,9 +59,11 @@ export class NoteQueries {
     return new Promise((resolve, reject) => {
       // Nothing of the daemon's own surroundings goes with it: no home, no caller, nothing that names the database.
       const env = Object.fromEntries(["PATH", "SystemRoot"].flatMap((name) => (process.env[name] === undefined ? [] : [[name, process.env[name]]])));
-      const child = spawn(process.execPath, [childPath()], { stdio: ["pipe", "pipe", "pipe"], env });
+      const child = spawn(process.execPath, [`--max-old-space-size=${heapMegabytes(limits.bytes)}`, childPath()], { stdio: ["pipe", "pipe", "pipe"], env });
       spawned?.(child);
+      const tooLarge = (): LocalError => new LocalError("query_answer_too_large", `The query's answer passed ${limits.bytes} bytes, the most one note-query returns, and was stopped. Select fewer or smaller columns, or fewer rows, or have your operator raise the setting notes.query_bytes.`);
       const chunks: Buffer[] = [];
+      let received = 0;
       let err = "";
       // The first reason the query ended, if the daemon ended it. The child's own end is read only without one.
       let ended: LocalError | undefined;
@@ -68,8 +72,23 @@ export class NoteQueries {
         child.kill("SIGKILL");
       };
       const timer = setTimeout(() => stop(new LocalError("query_timed_out", `The query ran past its limit of ${limits.ms} ms, copying the notes included, and was stopped. Narrow it, or have your operator raise the setting notes.query_ms.`)), limits.ms);
-      child.stdout.on("data", (chunk: Buffer) => { chunks.push(chunk); });
-      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { err = `${err}${chunk}`.slice(-STDERR_KEPT); });
+      // Counted as it comes, so an answer past the limit is never held whole on this side.
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (ended) return;
+        received += chunk.length;
+        if (received > limits.bytes) {
+          chunks.length = 0;
+          stop(tooLarge());
+          return;
+        }
+        chunks.push(chunk);
+      });
+      // V8 names the heap at the top of a long trace, so it's looked for as the text goes by.
+      let exhausted = false;
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        exhausted ||= HEAP_EXHAUSTED.test(`${err.slice(-100)}${chunk}`);
+        err = `${err}${chunk}`.slice(-STDERR_KEPT);
+      });
       // A child that died stops taking rows. Its end says why, below.
       child.stdin.on("error", () => undefined);
       // A process that never started may not close, so this answers by itself.
@@ -90,9 +109,17 @@ export class NoteQueries {
         } catch {
           answer = undefined;
         }
-        if (answer === undefined || (answer.error === undefined && !Array.isArray(answer.rows))) {
+        const outOfMemory = new LocalError("query_out_of_memory", "The query ran out of the memory a note-query may use, and was stopped. Select fewer or smaller values: one value of hundreds of megabytes, or every note joined with every other, is more than it holds.");
+        if (answer === undefined && exhausted) {
+          logEvent("note.query_out_of_memory", { code, signal });
+          reject(outOfMemory);
+        } else if (answer === undefined || (answer.error === undefined && !Array.isArray(answer.rows))) {
           logEvent("note.query_child_died", { code, signal, stderr: err });
           reject(new LocalError("query_child_died", `The query's process ended without an answer (${signal ? `signal ${signal}` : `exit code ${String(code)}`}), so there is no result. Nothing was changed. Try it again, and if it ends the same way, narrow it.`));
+        } else if (answer.error === "too_large") {
+          reject(tooLarge());
+        } else if (answer.error === "out_of_memory") {
+          reject(outOfMemory);
         } else if (answer.error !== undefined) {
           reject(new LocalError("query_failed", `SQLite refused the query: ${answer.message}`));
         } else {
@@ -116,7 +143,7 @@ export class NoteQueries {
       });
       void (async () => {
         try {
-          await write(`${JSON.stringify({ sql, limit: limits.rows })}\n`);
+          await write(`${JSON.stringify({ sql, limit: limits.rows, bytes: limits.bytes })}\n`);
           for (const batch of batches) {
             if (ended || child.exitCode !== null || child.signalCode !== null) break;
             await write(batch.map((row) => `${JSON.stringify(row)}\n`).join(""));
