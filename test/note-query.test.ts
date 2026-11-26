@@ -162,20 +162,20 @@ test("a result longer than notes.query_rows is cut there and says so, and one th
   assert.deepEqual([fits.count, fits.cut, fits.cut_note], [3, undefined, undefined]);
 });
 
-test("an agent sees only its own notes, unless notes.read names others, and every row says whose", async () => {
+test("an agent sees every agent's notes until notes.read narrows it, and every row says whose", async () => {
   const { notes, ask, set } = setup();
   for (const agent of [ANN, BEA, CAL]) {
     const made = notes.set(agent, agent, { body: NAMES[agent], keep_history: 1 }) as { id: string };
     notes.set(agent, agent, { note: made.id, status: "changed" });
   }
   const whose = async (table: string): Promise<string[]> => (await ask(`SELECT agent_id FROM ${table} ORDER BY agent_id`)).rows.map((row) => NAMES[row["agent_id"] as string] as string);
+  assert.deepEqual([await whose("notes"), await whose("note_changes")], [["Ann", "Bea", "Cal"], ["Ann", "Bea", "Cal"]], "reading starts open");
+  set("notes.read", "own");
   assert.deepEqual([await whose("notes"), await whose("note_changes")], [["Ann"], ["Ann"]]);
-  set("notes.read", "all");
-  assert.deepEqual([await whose("notes"), await whose("note_changes")], [["Ann", "Bea", "Cal"], ["Ann", "Bea", "Cal"]]);
   set("notes.read", BEA);
   assert.deepEqual([await whose("notes"), await whose("note_changes")], [["Ann", "Bea"], ["Ann", "Bea"]]);
-  // Bea's own setting is still own: Ann's reach is Ann's alone.
-  assert.deepEqual((await ask("SELECT body FROM notes", BEA)).rows, [{ body: "Bea" }]);
+  // Ann's setting is Ann's alone: Bea, never changed, still sees everyone.
+  assert.deepEqual((await ask("SELECT body FROM notes ORDER BY body", BEA)).rows, [{ body: "Ann" }, { body: "Bea" }, { body: "Cal" }]);
   // An agent named that isn't on this daemon adds nothing.
   set("notes.read", "ff".repeat(32));
   assert.deepEqual(await whose("notes"), ["Ann"]);

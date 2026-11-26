@@ -150,7 +150,9 @@ test("an agent keeps notes by command line: write, change, history, source, list
   assert.match(quiet, /"was":\s*"own"/, quiet);
   assert.doesNotMatch(quiet, /"warning"/, quiet);
   ok(["settings-set", "notes.write", "own", "--agent", "Sol"], "sol-shell");
-  person(["settings-set", "bounds.unknown.not_accepting", "false", "--agent", "Sol"]);
+  // Sol reads every agent's notes from the start, so re-opening him to strangers is what warns.
+  const reopened = person(["settings-set", "bounds.unknown.not_accepting", "false", "--agent", "Sol"]);
+  assert.match(reopened, new RegExp(`"warning":\\s*"Unknown agents can now reach Sol, and it can read your other agents' notes\\. To stop that: cello settings-set notes\\.read own --agent ${sol}"`), reopened);
 
   // The cap refuses and drops nothing. Raising it takes a person.
   ok(["settings-set", "notes.max", "1", "--agent", "Sol"], "sol-shell");
@@ -177,7 +179,7 @@ test("an agent keeps notes by command line: write, change, history, source, list
   refused(["note-get", asked.id, "--agent", "Sol"], "no_such_note", "sol-shell");
 });
 
-test("note-query runs one read-only statement over an agent's notes, and reading another agent's takes a person", () => {
+test("note-query runs one read-only statement over an agent's notes; a locked-down agent can't read another's, and widening it back takes a person", () => {
   const agents = (ok(["agents"]) as { agents: { name: string; agent_id: string }[] }).agents;
   const rae = agents.find((agent) => agent.name === "Rae")?.agent_id as string;
   interface Answer { agent: string; rows: Record<string, unknown>[]; count: number; cut?: boolean }
@@ -202,15 +204,19 @@ test("note-query runs one read-only statement over an agent's notes, and reading
   refused(["settings-set", "notes.query_rows", "1000", "--agent", "Rae"], "person_required", "rae-shell");
   person(["settings-set", "notes.query_rows", "1000", "--agent", "Rae"]);
 
-  // Sol sees only his own notes. Widening that takes a person, who is told Sol is open to strangers.
+  // Sol reads Rae's notes from the start. Locked down to his own, which needs nobody and warns of nothing, he can't.
   const raes = `SELECT count(*) AS n FROM notes WHERE agent_id = '${rae}'`;
+  assert.ok((query(raes, "Sol", "sol-shell").rows[0]?.["n"] as number) >= 3, "reading is open by default");
+  assert.equal(ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell")["warning"], undefined, "narrowing takes nobody");
   assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0);
+  // Widening it back, by name or by going back to the default, takes a person, who is told Sol is open to strangers.
   assert.match(refused(["settings-set", "notes.read", rae, "--agent", "Sol"], "person_required", "sol-shell"), /notes\.read/);
+  refused(["settings-set", "notes.read", "--clear", "--agent", "Sol"], "person_required", "sol-shell");
+  assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0, "a refusal changes nothing");
   const widened = person(["settings-set", "notes.read", rae, "--agent", "Sol"]);
   assert.match(widened, /"warning":\s*"This agent accepts sessions from strangers, and it can now read other agents' notes/, widened);
   assert.ok((query(raes, "Sol", "sol-shell").rows[0]?.["n"] as number) >= 3);
-  assert.equal(ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell")["warning"], undefined, "narrowing takes nobody");
-  assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0);
+  ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell");
 });
 
 test("an agent that is removed takes its notes and their history with it", () => {

@@ -122,7 +122,7 @@ cello note-query "SELECT changed_at, written_by, removed, before FROM note_chang
 
 ## Querying
 
-`cello note-query` runs one SQL statement over an agent's notes. It only reads: the statement must start with `SELECT` or `WITH`, and it runs on a copy with writing switched off. It sees two tables. Ids are lowercase hex, and times are ISO text in UTC.
+`cello note-query` runs one SQL statement over the notes an agent can read: its own, and every other agent's on the daemon unless `notes.read` is narrowed (below). Every row has `agent_id`, so add `WHERE agent_id = '<agent_id>'` for one agent's only. It only reads: the statement must start with `SELECT` or `WITH`, and it runs on a copy with writing switched off. It sees two tables. Ids are lowercase hex, and times are ISO text in UTC.
 
 - **notes**: `id`, `agent_id`, `written_by`, `created_at`, `updated_at`, `kind`, `status`, `entity`, `with_id`, `session_id`, `channel_id`, `check_by`, `rang_at`, `expires_at`, `show_at_start`, `keep_history`, `source`, `body`, `contact_removed`.
 - **note_changes**, one row per kept past version: `id`, `note_id`, `agent_id`, `written_by`, `changed_at`, `source`, `before`, the whole note before that change, as JSON, and `removed`, which is 1 on the entry that records a note's removal.
@@ -143,12 +143,20 @@ A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It
 
 ## Whose notes
 
-An agent uses only its own notes unless two settings widen that:
+Two settings say whose notes an agent reaches beyond its own:
 
-- **`notes.write`**: whose notes this agent may set and remove with `--owner`: `own`, `all`, or agent ids with commas between. The note is still stamped with the agent that wrote it.
-- **`notes.read`**: whose notes this agent's `note-query` sees, in the same form.
+- **`notes.read`**: whose notes this agent's `note-query` sees: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`.
+- **`notes.write`**: whose notes this agent may set and remove with `--owner`, in the same form. It starts at `own`. The note is still stamped with the agent that wrote it.
 
-Naming anyone new takes a person. Narrowing doesn't. If the agent accepts sessions from strangers, widening either one warns you: a stranger's words could then end up in another agent's notes, or talk the agent into repeating them.
+Narrowing either one needs no person. Naming anyone new, or going back to `all`, takes a person. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
+
+A stranger's words could end up in another agent's notes, or talk the agent into repeating them, so you're warned when an agent is both open to unknown agents and reaching other agents' notes. Widening `notes.write` or `notes.read` on an agent that accepts sessions from strangers warns you, and so does opening an agent to unknown agents (`bounds.unknown.not_accepting false`) while its `notes.read` lets it read other agents' notes:
+
+```
+Unknown agents can now reach Ann, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent <agent_id>
+```
+
+A new agent starts open to unknown agents and reading `all`, and nothing warns of that, since nothing changed.
 
 These settings govern what an agent does as itself. The daemon takes each call's word for which agent it acts as, and doesn't check that the caller holds that agent. So anything that can run `cello` as you can name any of your agents, and `note-get` and `note-list` show whichever agent they name.
 

@@ -250,7 +250,8 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", "Bea"), refusal("bad_setting"));
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", `all,${BEA}`), refusal("bad_setting"));
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", ""), refusal("bad_setting"));
-  way("notes.read", [["own", "neutral"], [BEA, "loosen"], ["all", "loosen"], [CAL, "tighten"], ["own", "tighten"]]);
+  // Reading starts at all, so the first step down to own tightens and clearing back to the default loosens.
+  way("notes.read", [["own", "tighten"], [BEA, "loosen"], ["all", "loosen"], [CAL, "tighten"], ["own", "tighten"], [null, "loosen"]]);
   way("notes.query_ms", [["1000", "tighten"], ["1001", "loosen"]]);
   way("notes.query_rows", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.query_bytes", [["2048", "tighten"], ["2049", "loosen"]]);
@@ -264,21 +265,56 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.history_default", [["4", "loosen"], ["4", "neutral"], ["7", "loosen"]]);
 });
 
-test("widening notes.write or notes.read warns only when the agent is open to strangers, and narrowing never does", () => {
+test("reading starts open for an agent that never stored a value, and a value it stored is kept", () => {
+  const { store, reach } = setup();
+  assert.equal(reach.setting(bytes(ANN), "notes.read"), "all");
+  assert.equal(reach.setting(bytes(ANN), "notes.write"), "own", "writing stays shut");
+  // Bea locked down, and Cal's store is from before notes.read existed, so it holds no value until the daemon starts.
+  reach.plan(bytes(BEA), "notes.read", "own").apply();
+  store.prepare("DELETE FROM agent_settings WHERE agent_id = ? AND key = 'notes.read'").run(bytes(CAL));
+  const started = new Reach(store);
+  for (const agent of [ANN, BEA, CAL]) started.writeDefaults(bytes(agent));
+  assert.deepEqual([ANN, BEA, CAL].map((agent) => started.setting(bytes(agent), "notes.read")), ["all", "own", "all"]);
+});
+
+test("an agent narrows its own reading, and only a person widens it again, by name or by going back to the default", () => {
+  const { store } = setup();
+  const governance = new Governance(store, { notify: () => undefined, isLocalAgent: () => true });
+  governance.writeDefaults(bytes(ANN));
+  const set = (name: string, change: { value?: string; clear?: boolean }, person = false): { value: string; was: string } => governance.settingsSet(bytes(ANN), ANN, { name, ...change, caller: "cli", ...(person ? { person_confirmed: true } : {}) }) as { value: string; was: string };
+  assert.deepEqual(set("notes.read", { value: "own" }), { name: "notes.read", value: "own", was: "all" });
+  assert.throws(() => set("notes.read", { value: BEA }), refusal("person_required"));
+  assert.throws(() => set("notes.read", { clear: true }), refusal("person_required"), "the default is all, so clearing widens");
+  assert.equal(set("notes.read", { clear: true }, true).value, "all");
+});
+
+test("being open to strangers while reaching other agents' notes warns once, from whichever change comes second", () => {
   const { store } = setup();
   const governance = new Governance(store, { notify: () => undefined, isLocalAgent: () => true });
   governance.writeDefaults(bytes(ANN));
   const set = (name: string, value: string): { warning?: string } => governance.settingsSet(bytes(ANN), ANN, { name, value, caller: "cli", person_confirmed: true }) as { warning?: string };
-  assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from strangers/);
+  const opened = `Unknown agents can now reach Ann, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent ${ANN}`;
+  // Reading is open from the start, so opening to strangers is what warns.
+  assert.equal(set("bounds.unknown.not_accepting", "true").warning, undefined, "shutting says nothing");
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, opened);
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined, "once: already open is no change");
+  set("bounds.unknown.not_accepting", "true");
+  assert.equal((governance.settingsSet(bytes(ANN), ANN, { name: "bounds.unknown.not_accepting", clear: true, caller: "cli", person_confirmed: true }) as { warning?: string }).warning, opened, "clearing re-opens too");
+  // Locked down to its own notes, opening is nothing to warn of.
+  set("notes.read", "own");
+  set("bounds.unknown.not_accepting", "true");
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined);
+  // Writing alone doesn't count for this warning: it is told when notes.write is widened.
+  assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from strangers, and it can now write other agents' notes/);
   assert.equal(set("notes.write", "own").warning, undefined, "narrowing says nothing");
   assert.equal(set("notes.max", "20000").warning, undefined, "another setting says nothing");
+  // Open to strangers, widening reading explicitly warns as before; shut, it doesn't.
+  assert.match(set("notes.read", BEA).warning ?? "", /accepts sessions from strangers, and it can now read other agents' notes/);
+  assert.equal(set("notes.read", "own").warning, undefined);
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("notes.write", "all").warning, undefined, "shut to strangers, there is nothing to warn of");
   assert.equal(set("notes.read", "all").warning, undefined, "nor for reading");
-  set("notes.read", "own");
-  set("bounds.unknown.not_accepting", "false");
-  assert.match(set("notes.read", BEA).warning ?? "", /can now read other agents' notes/);
-  assert.equal(set("notes.read", "own").warning, undefined);
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, opened, "and opening now warns again");
 });
 
 test("a source must be a message or a post the writer holds, and each change's stamp replaces the last", () => {

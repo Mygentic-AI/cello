@@ -365,11 +365,23 @@ export class Governance {
     if (change.direction === "loosen") requirePerson(params, `This changes ${name} from ${change.from} to ${change.to} for ${agentHex}, which loosens it.`, command);
     change.apply();
     if (change.direction !== "neutral") this.#weakened(agentId, name, change.from, change.to, change.direction, params, `cello settings-set ${name} ${JSON.stringify(change.from)} --agent ${agentHex}`);
-    // Said, not stopped: what a stranger sends this agent can now end up in another agent's notes, or talk it into repeating them.
-    const warning = (name === "notes.write" || name === "notes.read") && change.direction === "loosen" && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut
-      ? `This agent accepts sessions from strangers, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}`
-      : undefined;
-    return { name, value: change.to, was: change.from, ...(warning ? { warning } : {}) };
+    return { name, value: change.to, was: change.from, ...this.#notesWarning(agentId, agentHex, name, change.direction) };
+  }
+
+  // Said, not stopped: what a stranger sends this agent can now end up in another agent's notes, or talk it into repeating
+  // them. It's said by whichever change comes second, opening to strangers or widening what the agent reaches.
+  #notesWarning(agentId: Uint8Array, agentHex: string, name: string, direction: Direction): { warning?: string } {
+    if (direction !== "loosen") return {};
+    if (name === "bounds.unknown.not_accepting") {
+      if (this.reach.setting(agentId, "notes.read") === "own") return {};
+      const row = this.#store.agents().find((agent) => toHex(agent.agent_id) === agentHex);
+      if (!row) throw new LocalError("unknown_agent", `there's no agent ${agentHex} on this daemon`);
+      return { warning: `Unknown agents can now reach ${row.name}, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent ${agentHex}` };
+    }
+    if ((name === "notes.write" || name === "notes.read") && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut) {
+      return { warning: `This agent accepts sessions from strangers, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}` };
+    }
+    return {};
   }
 
   // ---- Guards ----
