@@ -1067,8 +1067,12 @@ class CelloAdapter(BasePlatformAdapter):
         return here
 
     async def _note_chat(self, note: Dict[str, Any], current_session: Optional[str], current_peer: Optional[str], current_chat: Optional[str]) -> str:
-        """Where one of the agent's own notes goes. Under peer scope a note about one contact goes only to that contact's
-        conversation, and every other note, due or about nobody, to the agent's own chat: never into another customer's."""
+        """Where one of the agent's own notes goes. A note past its check-by time is the agent's own business, so it goes
+        to the agent's own chat, the one it works in, whatever it is about: never into a counterparty's conversation.
+        Otherwise, under peer scope, a note about one contact goes only to that contact's conversation, and a note about
+        nobody to the agent's own chat: never into another customer's."""
+        if note.get("past_check_by"):
+            return self._agent_name
         if self._session_scope != "peer":
             return current_chat or self._agent_name
         contact = _safe_scalar(note.get("with_id"))
@@ -1089,16 +1093,23 @@ class CelloAdapter(BasePlatformAdapter):
         shown = [one for one in ((held.get("shown") if isinstance(held, dict) else None) or []) if isinstance(one, dict)]
         if not shown:
             return []
-        groups: Dict[str, List[Dict[str, Any]]] = {}
+        # A session's delivery can be woken in the chat that opened that session rather than the agent's own, so a due
+        # note rides along only when both land in the same place. Otherwise it gets a turn of its own there.
+        same_landing = self._landing_for(current_session) == self._landing_for(None)
+        groups: Dict[Any, List[Dict[str, Any]]] = {}
         for one in shown:
-            groups.setdefault(await self._note_chat(one, current_session, current_peer, current_chat), []).append(one)
+            chat = await self._note_chat(one, current_session, current_peer, current_chat)
+            apart = bool(one.get("past_check_by")) and chat == current_chat and not same_landing
+            groups.setdefault((chat, apart), []).append(one)
         more = held.get("more_note") if isinstance(held.get("more_note"), str) else None
         # How many more there are goes with the agent's own notes, where note-list can be run without a customer watching.
-        more_goes = self._agent_name if self._agent_name in groups else next(iter(groups))
+        own = [key for key in groups if key[0] == self._agent_name]
+        more_goes = own[-1] if own else next(iter(groups))
         here: List[str] = []
-        for chat, notes in groups.items():
-            lines = _note_lines({"notes": {"shown": notes, **({"more_note": more} if more and chat == more_goes else {})}})
-            if chat == current_chat:
+        for key, notes in groups.items():
+            chat, apart = key
+            lines = _note_lines({"notes": {"shown": notes, **({"more_note": more} if more and key == more_goes else {})}})
+            if chat == current_chat and not apart:
                 here += lines
             elif lines:
                 contact = next((n.get("with_id") for n in notes if _safe_scalar(n.get("with_id"))), None)

@@ -486,7 +486,7 @@ test("the Hermes plugin passes notes on under their own heading, apart from Remi
 // The Hermes plugin's adapter, driven through its own bell handler with the daemon's answers given. Hermes itself isn't
 // there: a turn is recorded where the gateway would hand it to a model.
 interface Turn { chat: string; user: string; text: string }
-function drivePlugin(scenario: { scope: "agent" | "peer"; answers: Record<string, unknown[]>; bells: { notification: string; data: Record<string, unknown> }[] }): { turns: Turn[]; calls: { method: string }[] } {
+function drivePlugin(scenario: { scope: "agent" | "peer"; landing?: string; bindings?: Record<string, string>; answers: Record<string, unknown[]>; bells: { notification: string; data: Record<string, unknown> }[] }): { turns: Turn[]; calls: { method: string }[] } {
   const here = dirname(fileURLToPath(import.meta.url));
   const run = spawnSync("python3", [join(here, "hermes-plugin-notes.py"), join(here, "..", "hermes", "plugin", "__init__.py"), "drive", JSON.stringify(scenario)], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
@@ -506,7 +506,41 @@ test("Hermes: a note_due bell starts a turn in the agent's own chat, with the no
   assert.match(turns[0]?.text ?? "", /passed its check-by time.*not an instruction.*cello_note_get\(agent="Ann", note="9f2c41d07ab35e68"\)/s);
 });
 
-test("Hermes, peer scope: a session's read keeps each note in its own conversation, and the due ones go to the agent's own chat", () => {
+// The landing session is the Hermes session the agent works in, when one is set: the agent's own chat moved there.
+const LANDING = "20261126_090000_beef";
+const OPENER = "20261126_101500_abcd";
+
+test("Hermes: with a landing session set, a note_due bell wakes the agent in that session, and only there", () => {
+  const { turns } = drivePlugin({ scope: "agent", landing: LANDING, answers: {}, bells: [{ notification: "note_due", data: { agent: "Ann", agent_id: ANN, note_id: "9f2c41d07ab35e68" } }] });
+  assert.deepEqual(turns.map((turn) => turn.chat), [`wake:${LANDING}`]);
+  assert.match(turns[0]?.text ?? "", /passed its check-by time/);
+});
+
+test("Hermes: a due note on a session's read goes to the agent's own chat, not to the chat that opened the session", () => {
+  const { turns } = drivePlugin({
+    scope: "agent",
+    landing: LANDING,
+    bindings: { [S1]: OPENER },
+    answers: {
+      receive: [{
+        messages: [{ session_id: S1, position: 1, text: "Can you do net 60?", from: "Pia", from_id: P1 }],
+        notices: [],
+        notes: { note: "Your own stored notes", shown: [
+          noteAbout("1111111111111111", "Pia asked for net 60 before.", { with_id: P1 }),
+          noteAbout("3333333333333333", "Chase Pia's signature.", { with_id: P1, past_check_by: true }),
+        ] },
+      }],
+    },
+    bells: [{ notification: "message", data: { session_id: S1, from_id: P1 } }],
+  });
+  const chat = (id: string): string => turns.filter((turn) => turn.chat === id).map((turn) => turn.text).join("\n");
+  assert.match(chat(`wake:${OPENER}`), /Can you do net 60\?/);
+  assert.match(chat(`wake:${OPENER}`), /Pia asked for net 60 before\./, "a note about the contact still comes with its session");
+  assert.doesNotMatch(chat(`wake:${OPENER}`), /Chase Pia's signature/);
+  assert.match(chat(`wake:${LANDING}`), /Note 3333333333333333[^\n]*, past its check-by time\nChase Pia's signature\./);
+});
+
+test("Hermes, peer scope: a session's read keeps each note in its own conversation, and every due one goes to the agent's own chat", () => {
   const { turns } = drivePlugin({
     scope: "peer",
     answers: {
@@ -532,7 +566,8 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
   assert.match(chat(`Ann/${P1}`), /For this talk only\./);
   assert.doesNotMatch(chat(`Ann/${P1}`), /Quinn|Renew the domain|more notes/, "nothing of another customer's, and nothing due, in Pia's conversation");
   assert.match(chat(`Ann/${P2}`), /Quinn's budget is 40k\./);
-  assert.match(chat(`Ann/${P2}`), /Note 5555555555555555, past its check-by time\nChase Quinn\./);
+  assert.doesNotMatch(chat(`Ann/${P2}`), /Chase Quinn/, "a due note about a customer isn't put in front of that customer's conversation");
+  assert.match(chat("Ann"), /Note 5555555555555555, past its check-by time\nChase Quinn\./);
   assert.match(chat("Ann"), /Renew the domain\..*3 more notes/s);
   // A note about nobody marked to show as every session starts goes to the agent's own chat too, so under peer scope
   // the customer's conversation doesn't see it.
@@ -558,7 +593,8 @@ test("Hermes: a read of no session still delivers every note it took, and none r
   const chat = (id: string): string => peer.filter((turn) => turn.chat === id).map((turn) => turn.text).join("\n");
   assert.match(chat(`Ann/${P1}`), /One more thing\./);
   assert.doesNotMatch(chat(`Ann/${P1}`), /Quinn|Renew|Unknown session/, "the first session read no longer takes the notes");
-  assert.match(chat(`Ann/${P2}`), /Quinn's budget/);
+  assert.match(chat("Ann"), /Quinn's budget/, "due, so it goes to the agent's own chat although it's about Quinn");
+  assert.doesNotMatch(chat(`Ann/${P2}`), /Quinn's budget/);
   assert.match(chat("Ann"), /Renew the domain\./);
   assert.match(chat("Ann"), /Unknown session\./, "a note whose conversation can't be found goes to the agent's own chat, not nowhere");
 

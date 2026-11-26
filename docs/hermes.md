@@ -28,6 +28,8 @@ By default a session the agent opens answers in the Hermes chat that opened it, 
 - `--session-scope peer` gives each caller a session of their own, kept for their next call. It's for an agent strangers reach.
 - `--landing-session <id>` sends everything else to a session you name. `current` means the Hermes session the command runs in, and `default` goes back.
 
+A note past its check-by time is the agent's own business, so it always goes to the agent's own session, or the landing session when one is set: never into a caller's conversation, and never into the chat that opened a session.
+
 An agent can move its own landing session, with no person and no restart, by running the command with only `--agent`, `--hermes-home` and `--landing-session`. Everything else about the bridge takes a person at a terminal. `--channel-notifications off` stops a new post on a followed channel from waking the agent.
 
 ## A public agent
