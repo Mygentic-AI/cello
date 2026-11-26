@@ -88,15 +88,17 @@ const notes: Notes = new Notes(store, engine.governance.reach, {
   // A hold alone hears nothing: only a session set to be woken, or a wait in progress, gets a doorbell.
   heard: (agentHex) => (listeners.get(agentHex)?.size ?? 0) > 0,
   bell: (agentHex, noteHex) => ring(agentHex, { type: "note_due", agent: engine.agentName(agentHex), agent_id: agentHex, note_id: noteHex }),
-  hasNotifier: (agentHex) => notifiers.has(agentHex),
-  tellOperator: (agentHex, noteHex) => notifiers.noteDue(agentHex, noteHex),
   agents: () => engine.agentHexes(),
 });
 const noteQueries = new NoteQueries();
 // Rings the notes whose check-by time has passed, each once. A failure is one agent's, and is logged by name.
 function ringNotes(only?: string): void {
   for (const agentHex of only === undefined ? engine.agentHexes() : [only]) {
-    notes.ringDue(agentHex).catch((err: unknown) => logEvent("note.ring_check_failed", { agent: agentHex, message: err instanceof Error ? err.message : String(err) }));
+    try {
+      notes.ringDue(agentHex);
+    } catch (err: unknown) {
+      logEvent("note.ring_check_failed", { agent: agentHex, message: err instanceof Error ? err.message : String(err) });
+    }
   }
 }
 const STALL_RESOLUTION_MS = 5;

@@ -42,8 +42,6 @@ function setup(): { notes: Notes; queries: NoteQueries; store: Store; dir: strin
     isContact: () => false,
     heard: () => true,
     bell: () => undefined,
-    hasNotifier: () => false,
-    tellOperator: () => Promise.resolve(),
     agents: () => [ANN, BEA, CAL],
   };
   const notes = new Notes(store, reach, host, () => clock.now);
@@ -76,7 +74,7 @@ test("a query sees two tables in the documented shape: hex ids, ISO times, a bod
   const deal = notes.set(ANN, ANN, { body: "{\"amount\": 1200, \"region\": \"north\"}", kind: "deal", entity: "acme", with: PEER, check_by: "2026-11-25T11:00", keep_history: 2 }) as { id: string };
   notes.set(ANN, ANN, { note: deal.id, status: "signed" });
   clock.now += 2 * 3600_000;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   notes.contactRemoved(ANN, PEER);
 
   const [row] = (await ask("SELECT * FROM notes")).rows;
@@ -94,7 +92,7 @@ test("a query sees two tables in the documented shape: hex ids, ISO times, a bod
   // What the shape promises an agent can do with it.
   const worked = (await ask("SELECT json_extract(body, '$.region') AS region, sum(json_extract(body, '$.amount')) AS total, date(check_by) AS day, check_by < datetime('2026-12-01') AS soon FROM notes GROUP BY region")).rows;
   assert.deepEqual(worked, [{ region: "north", total: 1200, day: "2026-11-25", soon: 1 }]);
-  const internal = await ask("SELECT name FROM pragma_table_info('notes') WHERE name IN ('operator_rang_at', 'due_told_at')");
+  const internal = await ask("SELECT name FROM pragma_table_info('notes') WHERE name IN ('agent_rang_at', 'due_told_at')");
   assert.deepEqual(internal.rows, [], "the daemon's own marks stay out");
 });
 

@@ -1,6 +1,7 @@
 // How reachable an agent is to each tier, and its other per-agent settings. Every default is written to the database when
 // the agent is created, so moving the database moves all of it. Blocked is fixed at nothing, and takes no settings.
 import { LocalError } from "./errors.ts";
+import { logEvent } from "./log.ts";
 import type { Store } from "./store.ts";
 import { SETTABLE_TIERS, type SettableTier, TIER, tierName } from "./tiers.ts";
 
@@ -60,11 +61,17 @@ function agentsDirection(from: string, to: string): Direction {
   return listOf(to).every((id) => had.includes(id)) ? "tighten" : "loosen";
 }
 
+// Settings that no longer exist, and what took their place. A store from before keeps no value for one: it is dropped
+// when the daemon starts, and a change to it is refused saying why.
+export const RETIRED_SETTINGS: Record<string, string> = {
+  "notes.ring": "A note past its check_by time now rings only the agent that holds it, once. The agent decides whether to tell its operator, with cello notify.",
+};
+
 export const CALLING_RAISES_KEY = "contacts.calling_raises_to_known";
 
 // loosensWhen: which way needs a person. Text settings go neither way. A switch loosens when it's turned on.
 // agents is "own", "all" or agent ids, and loosens when it names anyone it didn't. labels is a list that loosens when one is taken off.
-interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier" | "agents" | "labels"; allowed?: readonly string[]; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
+interface AgentSetting { default: string; kind: "number" | "text" | "switch" | "tier" | "agents" | "labels"; neutral?: boolean; min?: number; max?: number; loosensWhen?: "higher" | "lower"; description: string }
 
 export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   // Ruled off on 4 November: a lure could get itself raised just by persuading an agent to dial it.
@@ -87,7 +94,6 @@ export const AGENT_SETTINGS: Record<string, AgentSetting> = {
   "notes.query_ms": { default: "5000", kind: "number", min: 100, max: 60_000, loosensWhen: "higher", description: "The longest one note-query may run, in milliseconds, copying the notes included. Past it the query is stopped and refused." },
   "notes.query_bytes": { default: "16777216", kind: "number", min: 1024, max: 268_435_456, loosensWhen: "higher", description: "The largest answer one note-query returns, in bytes of JSON. A larger one is stopped as soon as it passes this and refused with query_answer_too_large: select fewer or smaller columns, or fewer rows." },
   "notes.query_rows": { default: "1000", kind: "number", min: 1, max: 100_000, loosensWhen: "higher", description: "The most rows one note-query returns. A longer result is cut there, and says so." },
-  "notes.ring": { default: "agent_then_operator", kind: "text", allowed: ["agent_then_operator", "agent", "operator", "both"], description: "Who is told, once, when a note's check_by time passes. The daemon checks about every 30 seconds, so a ring can be that late. Someone listening means a session set to be woken, or a wait in progress: an agent held from a shell with nobody waiting has nobody listening. agent: one doorbell with the note's id to whoever is listening, and the note is listed on the agent's next read; with nobody listening, the doorbell waits until someone is, and a read before then tells the agent instead. operator: the agent's notifiers get one fixed line with the note's id and none of its words, and there is no doorbell. both: each of those, once. agent_then_operator: the agent if someone is listening when the time is checked, or a read gets there first; otherwise the operator, if the agent has a notifier; otherwise the agent once someone listens. A send to the operator that fails is tried again no sooner than 10 minutes later, at most 6 times in all, and from the first failure the note is listed once on the agent's next read, saying the operator couldn't be told. With no notifier at all the same happens, without the retries. Anyone can change this." },
   "away.answering": { default: "true", kind: "switch", neutral: true, description: "Whether a call nobody is reachable for gets a greeting, and its first message ends the visit. Off, such a call just waits." },
   "away.default": { default: "", kind: "text", description: "This agent's own away text, for any tier without its own." },
   "away.system.stranger": { default: "Dispatched.", kind: "text", description: "The away text of last resort, for a stranger." },
@@ -131,6 +137,12 @@ export class Reach {
   constructor(store: Store) {
     this.#store = store;
     store.exec(SCHEMA);
+    for (const key of Object.keys(RETIRED_SETTINGS)) {
+      const held = store.prepare("SELECT agent_id, value FROM agent_settings WHERE key = ?").all(key) as { agent_id: Uint8Array; value: string }[];
+      if (held.length === 0) continue;
+      store.prepare("DELETE FROM agent_settings WHERE key = ?").run(key);
+      for (const row of held) logEvent("setting.retired", { agent: Buffer.from(row.agent_id).toString("hex"), key, value: row.value });
+    }
   }
 
   writeDefaults(agentId: Uint8Array): void {
@@ -183,6 +195,8 @@ export class Reach {
     const parsed = parseKey(key);
     if (parsed) return this.#planTier(agentId, parsed.tier, parsed.field, key, raw);
     const setting = AGENT_SETTINGS[key];
+    const retired = RETIRED_SETTINGS[key];
+    if (retired !== undefined) throw new LocalError("bad_setting", `${key} has been removed, so nothing changed. ${retired}`);
     if (!setting) throw new LocalError("bad_setting", `there's no setting named ${key}. They're listed by: cello settings --agent <name>`);
     const to = raw ?? setting.default;
     const from = this.setting(agentId, key);
@@ -212,8 +226,6 @@ export class Reach {
     if (setting.kind === "number") {
       const value = Number(to);
       if (!Number.isInteger(value) || value < (setting.min as number) || value > (setting.max as number)) throw new LocalError("bad_setting", `${key} must be a whole number from ${setting.min as number} to ${setting.max as number}, not ${to}`);
-    } else if (setting.allowed && !setting.allowed.includes(to)) {
-      throw new LocalError("bad_setting", `${key} must be one of ${setting.allowed.join(", ")}, not ${to}`);
     } else if (key.startsWith("away.") && to.length > this.number(agentId, "away.max_chars")) {
       throw new LocalError("bad_setting", `an away message must be ${this.setting(agentId, "away.max_chars")} characters or fewer`);
     }

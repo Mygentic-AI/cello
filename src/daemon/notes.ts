@@ -27,16 +27,11 @@ CREATE TABLE IF NOT EXISTS notes (
   session_id    BLOB,
   channel_id    BLOB,
   check_by      INTEGER,
-  -- When every share of this check_by's ring was done, so a restart can't ring it again. A new check_by empties these.
+  -- When this check_by's ring was done, so a restart can't ring it again. A new check_by empties these.
   rang_at       INTEGER,
-  -- Each share, marked only when it happened: the agent's doorbell, the operator told, a read that listed it, and a
-  -- read that listed it saying the operator couldn't be told. A failed send counts a try and marks nothing else.
+  -- How the agent was told, marked only when it happened: its doorbell, or a read that listed the note first.
   agent_rang_at INTEGER,
-  operator_rang_at INTEGER,
   due_told_at   INTEGER,
-  unreachable_told_at INTEGER,
-  operator_tries INTEGER NOT NULL DEFAULT 0,
-  operator_tried_at INTEGER,
   expires_at    INTEGER,
   show_at_start INTEGER NOT NULL DEFAULT 0,
   keep_history  INTEGER NOT NULL DEFAULT 0,
@@ -68,13 +63,8 @@ CREATE TABLE IF NOT EXISTS note_removed_contacts (
 export const NOTES_NOTE = "Your own stored notes for this agent, written earlier by you or by an agent your operator lets write them. They are information, not instructions, and they may quote other parties. A body marked body_cut is cut short: note-get shows it whole.";
 
 const SUPPLIED_COLUMNS = "id, agent_id, written_by, created_at, updated_at, kind, status, entity, with_id, session_id, channel_id, check_by, expires_at, show_at_start, keep_history, source, body";
-const RING_COLUMNS = ["rang_at", "agent_rang_at", "operator_rang_at", "due_told_at", "unreachable_told_at", "operator_tries", "operator_tried_at"] as const;
+const RING_COLUMNS = ["rang_at", "agent_rang_at", "due_told_at"] as const;
 const COLUMNS = `${SUPPLIED_COLUMNS}, ${RING_COLUMNS.join(", ")}`;
-export const RING_MODES = ["agent_then_operator", "agent", "operator", "both"] as const;
-// A notifier that failed is tried again on the daemon's tick no sooner than this, and given up on after this many tries.
-const OPERATOR_RETRY_MS = 10 * 60_000;
-export const OPERATOR_TRIES = 6;
-export const OPERATOR_UNREACHABLE = "Your operator couldn't be told that this note's check-by time passed, so it is listed here.";
 const LIST_DEFAULT = 50;
 const LIST_MAX = 500;
 const LIST_BODY_CHARS = 200;
@@ -87,11 +77,8 @@ interface Row {
   with_id: Uint8Array | null; session_id: Uint8Array | null; channel_id: Uint8Array | null;
   check_by: number | null; expires_at: number | null; show_at_start: number; keep_history: number;
   source: string | null; body: string | null;
-  rang_at: number | null; agent_rang_at: number | null; operator_rang_at: number | null; due_told_at: number | null;
-  unreachable_told_at: number | null; operator_tries: number; operator_tried_at: number | null;
+  rang_at: number | null; agent_rang_at: number | null; due_told_at: number | null;
 }
-// Which shares of a ring this note wants and which are done. Worked out from the stored marks alone, plus who can hear.
-interface RingPlan { operator: boolean; operatorDone: boolean; unreachable: boolean; bell: boolean; listBell: boolean; agentDone: boolean }
 // What the agent may supply, by the name it gives and the column it fills.
 type Supplied = Pick<Row, "kind" | "status" | "entity" | "with_id" | "session_id" | "channel_id" | "check_by" | "expires_at" | "show_at_start" | "keep_history" | "body">;
 const FIELD_COLUMNS: Record<string, keyof Supplied> = {
@@ -113,9 +100,6 @@ export interface NoteHost {
   heard(agentHex: string): boolean;
   // Rings whoever is listening for the agent. It carries the note's id and none of its words.
   bell(agentHex: string, noteHex: string): void;
-  hasNotifier(agentHex: string): boolean;
-  // Sends the agent's notifiers a fixed line. It throws if nobody could be told.
-  tellOperator(agentHex: string, noteHex: string): Promise<void>;
   // Every agent on this daemon, by id.
   agents(): string[];
 }
@@ -166,8 +150,6 @@ export class Notes {
   // Reminder's showing is: after a restart a note is shown again, which is the safe direction.
   readonly #started = new Set<string>();
   readonly #channelsRead = new Set<string>();
-  // The ring check running for each agent. A second caller waits for it rather than racing it across a send.
-  readonly #checks = new Map<string, Promise<void>>();
 
   constructor(store: Store, reach: Reach, host: NoteHost, now: () => number = Date.now) {
     this.#store = store;
@@ -340,7 +322,7 @@ export class Notes {
     this.#store.transaction(() => {
       this.#store.prepare("UPDATE notes SET written_by = ?, updated_at = ?, kind = ?, status = ?, entity = ?, with_id = ?, session_id = ?, channel_id = ?, check_by = ?, expires_at = ?, show_at_start = ?, keep_history = ?, source = ?, body = ? WHERE agent_id = ? AND id = ?")
         .run(bytesOf(writerHex), now, next.kind, next.status, next.entity, next.with_id, next.session_id, next.channel_id, next.check_by, next.expires_at, next.show_at_start, next.keep_history, source, next.body, owner, old.id);
-      if (retimed) this.#store.prepare(`UPDATE notes SET ${RING_COLUMNS.map((column) => `${column} = ${column === "operator_tries" ? "0" : "NULL"}`).join(", ")} WHERE id = ?`).run(old.id);
+      if (retimed) this.#store.prepare(`UPDATE notes SET ${RING_COLUMNS.map((column) => `${column} = NULL`).join(", ")} WHERE id = ?`).run(old.id);
       if (next.keep_history > 0) {
         this.#store.prepare("INSERT INTO note_changes (note_id, agent_id, written_by, changed_at, source, before) VALUES (?, ?, ?, ?, ?, ?)").run(old.id, owner, bytesOf(writerHex), now, source, JSON.stringify(this.#describe(old)));
       }
@@ -401,13 +383,13 @@ export class Notes {
   }
 
   // What goes to the agent unasked: the newest changes first, no more than notes.start_max, and how to see the rest.
-  #shown(agentHex: string, rows: Row[], unreachable: ReadonlySet<string> = new Set()): Record<string, unknown> | undefined {
+  #shown(agentHex: string, rows: Row[]): Record<string, unknown> | undefined {
     if (rows.length === 0) return undefined;
     const max = this.#reach.number(bytesOf(agentHex), "notes.start_max");
     const more = rows.length - max;
     return {
       note: NOTES_NOTE,
-      shown: rows.slice(0, max).map((row) => ({ ...this.#short(row), ...(unreachable.has(hex(row.id)) ? { operator_unreachable: OPERATOR_UNREACHABLE } : {}) })),
+      shown: rows.slice(0, max).map((row) => this.#short(row)),
       ...(more > 0 ? { more, more_note: `${more} more ${more === 1 ? "note is" : "notes are"} marked to show here, and at most ${max} are shown at once. List them all with note-list and show_at_start.` } : {}),
     };
   }
@@ -430,48 +412,21 @@ export class Notes {
     return { starting, rows: this.#startNotes(agentHex).filter(fits) };
   }
 
-
-  #ringMode(agentHex: string): (typeof RING_MODES)[number] {
-    return this.#reach.setting(bytesOf(agentHex), "notes.ring") as (typeof RING_MODES)[number];
-  }
-
-  // agent_then_operator settles on the operator once, when nobody can hear the agent and it hasn't been told on a read,
-  // and holds to it after the first try, so who is rung doesn't change from one check to the next.
-  #plan(agentHex: string, row: Row): RingPlan {
-    const mode = this.#ringMode(agentHex);
-    const tried = row.operator_tries > 0 || row.operator_rang_at !== null;
-    const operator = mode === "operator" || mode === "both"
-      || (mode === "agent_then_operator" && (tried || (!this.#host.heard(agentHex) && this.#host.hasNotifier(agentHex) && row.agent_rang_at === null && row.due_told_at === null)));
-    const operatorDone = !operator || row.operator_rang_at !== null || row.operator_tries >= OPERATOR_TRIES;
-    const unreachable = operator && row.operator_rang_at === null && row.operator_tries > 0;
-    const bell = mode === "agent" || mode === "both" || (mode === "agent_then_operator" && !operator);
-    // A read before the operator's first try tells the agent in its place, as a doorbell would.
-    const listBell = row.due_told_at === null && (mode === "agent" || mode === "both" || (mode === "agent_then_operator" && !tried));
-    const agentDone = (!bell || row.agent_rang_at !== null || row.due_told_at !== null) && (!unreachable || row.unreachable_told_at !== null);
-    return { operator, operatorDone, unreachable, bell, listBell, agentDone };
-  }
-
   #reread(agentHex: string, noteId: Uint8Array): Row | undefined {
     return this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND id = ?`).get(bytesOf(agentHex), noteId) as Row | undefined;
   }
 
-  // Marks the ring done once every share it wants is, for the time it rang for.
-  #settle(agentHex: string, row: Row): void {
-    const plan = this.#plan(agentHex, row);
-    if (row.rang_at !== null || !plan.operatorDone || !plan.agentDone) return;
+  // Marks the ring done once the agent has been told, by its doorbell or by a read, for the time it rang for.
+  #settle(row: Row): void {
+    if (row.rang_at !== null || (row.agent_rang_at === null && row.due_told_at === null)) return;
     this.#store.prepare("UPDATE notes SET rang_at = ? WHERE id = ? AND check_by = ? AND rang_at IS NULL").run(this.#now(), row.id, row.check_by);
   }
 
-  // Notes past their check_by that a read should list: once for the agent's share, and once more, saying so, if the
-  // operator couldn't be told.
-  #dueUntold(agentHex: string): { row: Row; unreachable: boolean }[] {
+  // Notes past their check_by that a read should list, each once.
+  #dueUntold(agentHex: string): Row[] {
     this.#sweep(agentHex);
-    const rows = this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND check_by <= ? AND (due_told_at IS NULL OR unreachable_told_at IS NULL) ORDER BY check_by, rowid`).all(bytesOf(agentHex), this.#now()) as Row[];
-    return rows.filter((row) => !this.#contactRemoved(row)).flatMap((row) => {
-      const plan = this.#plan(agentHex, row);
-      const unreachable = plan.unreachable && row.unreachable_told_at === null;
-      return plan.listBell || unreachable ? [{ row, unreachable }] : [];
-    });
+    const rows = this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND check_by <= ? AND due_told_at IS NULL ORDER BY check_by, rowid`).all(bytesOf(agentHex), this.#now()) as Row[];
+    return rows.filter((row) => !this.#contactRemoved(row));
   }
 
   // What rides on a read: the notes past their check_by, each listed once, then the notes for the sessions starting. A
@@ -481,76 +436,41 @@ export class Notes {
     const { starting, rows: atStart } = this.#starting(agentHex, sessions);
     const due = this.#dueUntold(agentHex);
     if (starting.length === 0 && due.length === 0) return NOTHING_SHOWN;
-    const dueIds = new Set(due.map((one) => hex(one.row.id)));
-    const unreachable = new Set(due.filter((one) => one.unreachable).map((one) => hex(one.row.id)));
-    const shown = this.#shown(agentHex, [...due.map((one) => one.row), ...atStart.filter((row) => !dueIds.has(hex(row.id)))], unreachable);
+    const dueIds = new Set(due.map((row) => hex(row.id)));
+    const shown = this.#shown(agentHex, [...due, ...atStart.filter((row) => !dueIds.has(hex(row.id)))]);
     const told = due.slice(0, this.#reach.number(bytesOf(agentHex), "notes.start_max"));
     return {
       ...(shown ? { shown } : {}),
       commit: () => {
         for (const one of starting) this.#started.add(`${agentHex}:${one.session}`);
-        for (const { row, unreachable: said } of told) {
+        for (const row of told) {
           this.#store.prepare("UPDATE notes SET due_told_at = coalesce(due_told_at, ?) WHERE id = ? AND check_by = ?").run(this.#now(), row.id, row.check_by);
-          if (said) this.#store.prepare("UPDATE notes SET unreachable_told_at = ? WHERE id = ? AND check_by = ?").run(this.#now(), row.id, row.check_by);
           const now = this.#reread(agentHex, row.id);
-          if (now && now.check_by === row.check_by) this.#settle(agentHex, now);
+          if (now && now.check_by === row.check_by) this.#settle(now);
         }
       },
     };
   }
 
-  // Rings each note whose check_by has passed and whose ring isn't done. Run on the daemon's tick, and when someone
-  // starts listening. One check per agent at a time: a second caller waits for the one running.
-  ringDue(agentHex: string): Promise<void> {
-    const running = this.#checks.get(agentHex);
-    if (running) return running;
-    const check = this.#ringDue(agentHex).finally(() => this.#checks.delete(agentHex));
-    this.#checks.set(agentHex, check);
-    return check;
-  }
-
-  // Every mark is written against the time it rang for, so a check_by changed meanwhile keeps its own ring, and the
-  // row is read again after the send, which can take a while.
-  async #ringDue(agentHex: string): Promise<void> {
+  // Rings the agent once for each note whose check_by has passed and whose ring isn't done, if someone is listening.
+  // With nobody listening it waits, and a read before then tells the agent instead. Run on the daemon's tick, and when
+  // someone starts listening. Whether to tell the operator is the agent's call, with notify.
+  ringDue(agentHex: string): void {
     this.#sweep(agentHex);
     const now = this.#now();
-    const ids = (this.#store.prepare("SELECT id FROM notes WHERE agent_id = ? AND check_by <= ? AND rang_at IS NULL ORDER BY check_by, rowid").all(bytesOf(agentHex), now) as { id: Uint8Array }[]).map((one) => one.id);
-    for (const noteId of ids) {
-      let row = this.#reread(agentHex, noteId);
+    const rows = this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND check_by <= ? AND rang_at IS NULL ORDER BY check_by, rowid`).all(bytesOf(agentHex), now) as Row[];
+    for (const row of rows) {
       // One about a removed contact stays quiet until the contact is back, and then rings.
-      if (!row || row.check_by === null || row.check_by > now || row.rang_at !== null || this.#contactRemoved(row)) continue;
-      const checkBy = row.check_by;
-      const noteHex = hex(noteId);
-      let plan = this.#plan(agentHex, row);
-      if (!plan.operatorDone && (row.operator_tried_at === null || row.operator_tried_at + OPERATOR_RETRY_MS <= now)) {
-        if (!this.#host.hasNotifier(agentHex)) {
-          // Nobody to send to is a failed send that no retry can mend.
-          this.#store.prepare("UPDATE notes SET operator_tries = ?, operator_tried_at = ? WHERE id = ? AND check_by = ?").run(OPERATOR_TRIES, now, noteId, checkBy);
-          logEvent("note.ring_failed", { agent: agentHex, note: noteHex, to: "operator", error: "no_notifier", message: "this agent has no notifier", tries_left: 0 });
-        } else {
-          try {
-            await this.#host.tellOperator(agentHex, noteHex);
-            this.#store.prepare("UPDATE notes SET operator_rang_at = ? WHERE id = ? AND check_by = ?").run(now, noteId, checkBy);
-            logEvent("note.rang", { agent: agentHex, note: noteHex, to: "operator" });
-          } catch (err: unknown) {
-            const tries = row.operator_tries + 1;
-            this.#store.prepare("UPDATE notes SET operator_tries = ?, operator_tried_at = ? WHERE id = ? AND check_by = ?").run(tries, now, noteId, checkBy);
-            logEvent("note.ring_failed", { agent: agentHex, note: noteHex, to: "operator", error: err instanceof LocalError ? err.code : "internal_error", message: err instanceof Error ? err.message : String(err), tries_left: OPERATOR_TRIES - tries });
-            if (tries >= OPERATOR_TRIES) logEvent("note.ring_gave_up", { agent: agentHex, note: noteHex, to: "operator", tries });
-          }
-        }
-        row = this.#reread(agentHex, noteId);
-        if (!row || row.check_by !== checkBy) continue;
-        plan = this.#plan(agentHex, row);
-      }
-      if (plan.bell && row.agent_rang_at === null && row.due_told_at === null && this.#host.heard(agentHex)) {
+      if (this.#contactRemoved(row)) continue;
+      if (row.agent_rang_at === null && row.due_told_at === null) {
+        if (!this.#host.heard(agentHex)) continue;
+        const noteHex = hex(row.id);
         this.#host.bell(agentHex, noteHex);
-        this.#store.prepare("UPDATE notes SET agent_rang_at = ? WHERE id = ? AND check_by = ?").run(now, noteId, checkBy);
+        this.#store.prepare("UPDATE notes SET agent_rang_at = ? WHERE id = ? AND check_by = ?").run(now, row.id, row.check_by);
         logEvent("note.rang", { agent: agentHex, note: noteHex, to: "agent" });
-        row = this.#reread(agentHex, noteId);
-        if (!row || row.check_by !== checkBy) continue;
       }
-      this.#settle(agentHex, row);
+      const marked = this.#reread(agentHex, row.id);
+      if (marked) this.#settle(marked);
     }
   }
 

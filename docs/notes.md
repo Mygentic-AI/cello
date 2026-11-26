@@ -83,24 +83,15 @@ With them comes this line, fixed by the daemon:
 
 When a note's check-by time passes, the note rings once and never again for that time. A new time rings once more. A note with no check-by time never rings, and nothing in CELLO treats a note as unfinished or chases it for being old.
 
-A ring can be about 30 seconds late. Who is rung is the setting `notes.ring`, which anyone can change:
+The agent that holds the note is rung, and nobody else. A ring can be about 30 seconds late.
 
-| `notes.ring` | Who is rung |
-|---|---|
-| `agent_then_operator` (default) | The agent, if someone is listening when the time is checked, or if a read gets there first. Otherwise you, through a notifier. With no notifier, the agent once someone listens. |
-| `agent` | The agent: a doorbell to whoever is listening, and the note listed on its next read. With nobody listening, the doorbell waits, and a read before then tells the agent instead. |
-| `operator` | You: each notifier gets one fixed line. The agent gets no doorbell, and no listing unless you couldn't be told. |
-| `both` | Each of those, once. |
-
-A note listed on a read comes under `notes`, marked `past_check_by`, whether or not it's marked to show.
+- If someone is listening for the agent, it gets one doorbell of type `note_due`, carrying the note's id and none of its words.
+- With nobody listening, the doorbell waits until someone is.
+- Either way, the note is also listed once on the agent's next read, under `notes` and marked `past_check_by`, whether or not it's marked to show. A read that lists it before the doorbell has rung stands in for the doorbell.
 
 Someone listening means an MCP session that has taken the agent, a Hermes bridge, or a `cello wait` in progress. An agent held from a shell with nobody waiting has nobody listening. An app that shows no doorbells, such as Claude Desktop, still counts: the doorbell wakes nobody there, and the agent sees the note on its next read.
 
-The doorbell carries the note's id and none of its words. So does your line:
-
-> Your agent Ann has a note that has passed its check-by time. It is note 9f2c41d07ab35e68, and this command shows it: cello note-get 9f2c41d07ab35e68 --agent <agent_id>
-
-If you can't be told, the send is tried again no sooner than 10 minutes later, at most 6 times in all. From the first failure, the note is listed once on the agent's next read, saying you couldn't be told. With no notifier at all the same happens, without the retries.
+You aren't told when a note's time passes. The agent decides whether you need to know, and if so tells you with `cello notify`, as for anything else it needs you for. See [Asking your operator](asking-your-operator.md).
 
 `cello note-list --due` lists every note whose time has passed. There is no done flag: a note stays there until its check-by time is changed or cleared, or the note is removed.
 

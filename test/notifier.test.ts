@@ -1013,7 +1013,7 @@ test("only notifier code can write an operator reply, and nothing on daemon.sock
   assert.deepEqual(calling(/\boperatorInbox\b|new OperatorInbox\(/), ["daemon/engine.ts"]);
   // The daemon's request handler holds the Notifiers, and none of its calls on them is a way to answer as the operator.
   const main = readFileSync(join(srcDir, "daemon", "main.ts"), "utf8");
-  assert.deepEqual([...new Set([...main.matchAll(/notifiers\.(\w+)\(/g)].map((m) => m[1]))].sort(), ["add", "forget", "has", "list", "noteDue", "notify", "remove", "start", "stop", "test"]);
+  assert.deepEqual([...new Set([...main.matchAll(/notifiers\.(\w+)\(/g)].map((m) => m[1]))].sort(), ["add", "forget", "list", "notify", "remove", "start", "stop", "test"]);
 });
 
 test("while paused the app gets each one silently and the agent hears the operator is away, and resume replays nothing", async () => {
@@ -1158,16 +1158,4 @@ test("the Mac keeps a message until a day after it was shown, a question until i
   const question = app.frames.find((f) => f["text"] === "Still waiting?") as Record<string, unknown>;
   assert.ok(Number(question["age_seconds"]) >= 25 * 60 * 60);
   await app.close();
-});
-
-test("a note past its time tells the operator a fixed line with the note's id, none of its words, and refuses by name with no notifier", async () => {
-  const { notifiers } = setup();
-  assert.equal(notifiers.has(AGENT), false);
-  await assert.rejects(notifiers.noteDue(AGENT, "9f2c41d07ab35e68"), refusal("no_notifier"));
-  await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
-  assert.equal(notifiers.has(AGENT), true);
-  const before = sent.length;
-  await notifiers.noteDue(AGENT, "9f2c41d07ab35e68");
-  assert.deepEqual(sent.slice(before).map((one) => one.text), [`Your agent Ann has a note that has passed its check-by time. It is note 9f2c41d07ab35e68, and this command shows it: cello note-get 9f2c41d07ab35e68 --agent ${AGENT}`]);
-  assert.deepEqual(screened, [], "nothing the agent wrote is in it, so there was nothing to screen");
 });

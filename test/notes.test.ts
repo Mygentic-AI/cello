@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { LocalError } from "../src/daemon/errors.ts";
 import { Governance } from "../src/daemon/governance.ts";
-import { type NoteHost, Notes, OPERATOR_TRIES, OPERATOR_UNREACHABLE } from "../src/daemon/notes.ts";
+import { type NoteHost, Notes } from "../src/daemon/notes.ts";
 import { Reach } from "../src/daemon/reach.ts";
 import { Store } from "../src/daemon/store.ts";
 
@@ -28,9 +28,8 @@ const bytes = (hex: string): Uint8Array => new Uint8Array(Buffer.from(hex, "hex"
 interface Note { id: string; agent_id: string; written_by: string; updated_at: string; created_at: string; kind: string | null; status: string | null; body: string | null; source: string | null; keep_history: number; show_at_start: boolean; check_by: string | null; expires_at: string | null; with_id: string | null }
 interface Change { changed_at: string; written_by: string; source: string | null; before: Note }
 
-// Who can be rung: whether a doorbell would be heard, whether there's a notifier, whether it works, every try at it, and
-// a send that waits until the test lets it finish.
-interface Ears { heard: boolean; notifier: boolean; fails: boolean; bells: string[]; told: string[]; tries: string[]; hold?: Promise<void> }
+// Who can be rung: whether a doorbell would be heard, and every doorbell rung.
+interface Ears { heard: boolean; bells: string[] }
 
 function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: number }; open: Set<string>; contacts: Set<string>; ears: Ears; restarted(): Notes; set(key: string, value: string, agent?: string): void } {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notes-")), "cello.db"));
@@ -42,7 +41,7 @@ function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: numb
   const clock = { now: Date.parse("2026-11-25T10:00:00Z") };
   const open = new Set([SESSION, S2]);
   const contacts = new Set<string>();
-  const ears: Ears = { heard: true, notifier: false, fails: false, bells: [], told: [], tries: [] };
+  const ears: Ears = { heard: true, bells: [] };
   const host: NoteHost = {
     agentName: (agent) => NAMES[agent] as string,
     // Ann holds one message and one post. Nobody else holds anything.
@@ -52,13 +51,6 @@ function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: numb
     isContact: (_agent, contact) => contacts.has(contact),
     heard: () => ears.heard,
     bell: (_agent, note) => { ears.bells.push(note); },
-    hasNotifier: () => ears.notifier,
-    tellOperator: async (_agent, note) => {
-      ears.tries.push(note);
-      await ears.hold;
-      if (ears.fails) throw new LocalError("notify_failed", "Nobody was told.");
-      ears.told.push(note);
-    },
     agents: () => [ANN, BEA, CAL],
   };
   const notes = new Notes(store, reach, host, () => clock.now);
@@ -527,7 +519,7 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
           noteAbout("3333333333333333", "Renew the domain.", { past_check_by: true }),
           noteAbout("4444444444444444", "For this talk only.", { session_id: S1 }),
           noteAbout("7777777777777777", "Say who you act for."),
-          noteAbout("5555555555555555", "Chase Quinn.", { with_id: P2, past_check_by: true, operator_unreachable: "Your operator couldn't be told that this note's check-by time passed, so it is listed here." }),
+          noteAbout("5555555555555555", "Chase Quinn.", { with_id: P2, past_check_by: true }),
         ], more_note: "3 more notes are marked to show here." },
       }],
     },
@@ -540,7 +532,7 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
   assert.match(chat(`Ann/${P1}`), /For this talk only\./);
   assert.doesNotMatch(chat(`Ann/${P1}`), /Quinn|Renew the domain|more notes/, "nothing of another customer's, and nothing due, in Pia's conversation");
   assert.match(chat(`Ann/${P2}`), /Quinn's budget is 40k\./);
-  assert.match(chat(`Ann/${P2}`), /Note 5555555555555555, past its check-by time\. Your operator couldn't be told[^\n]*\nChase Quinn\./);
+  assert.match(chat(`Ann/${P2}`), /Note 5555555555555555, past its check-by time\nChase Quinn\./);
   assert.match(chat("Ann"), /Renew the domain\..*3 more notes/s);
   // A note about nobody marked to show as every session starts goes to the agent's own chat too, so under peer scope
   // the customer's conversation doesn't see it.
@@ -578,43 +570,43 @@ test("Hermes: a read of no session still delivers every note it took, and none r
 const HOUR = 3_600_000;
 const at = (clock: { now: number }, ahead: number): string => new Date(clock.now + ahead).toISOString();
 
-test("a note rings once when its check_by passes: not before, not twice, not after a restart, and never with no check_by", async () => {
+test("a note rings once when its check_by passes: not before, not twice, not after a restart, and never with no check_by", () => {
   const { notes, clock, ears, restarted } = setup();
   const timed = notes.set(ANN, ANN, { body: "chase the invoice", check_by: at(clock, HOUR) }) as Note & { rang_at: string | null };
   notes.set(ANN, ANN, { body: "no time on this one" });
   assert.equal(timed.rang_at, null);
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.deepEqual(ears.bells, [], "not before its time");
 
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.deepEqual(ears.bells, [timed.id], "the bell carries the note's id");
   assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string }).rang_at, new Date(clock.now).toISOString());
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   clock.now += 100 * HOUR;
-  await notes.ringDue(ANN);
-  await restarted().ringDue(ANN);
+  notes.ringDue(ANN);
+  restarted().ringDue(ANN);
   assert.deepEqual(ears.bells, [timed.id], "once, however long it stays past its time, and across a restart");
-  await notes.ringDue(BEA);
+  notes.ringDue(BEA);
   assert.deepEqual(ears.bells, [timed.id], "one agent's notes never ring for another");
 });
 
-test("a new check_by rings once more, a cleared one never rings, and a change to anything else rings nothing", async () => {
+test("a new check_by rings once more, a cleared one never rings, and a change to anything else rings nothing", () => {
   const { notes, clock, ears } = setup();
   const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   notes.set(ANN, ANN, { note: timed.id, status: "still waiting" });
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal(ears.bells.length, 1, "changing another field doesn't ring it again");
 
   notes.set(ANN, ANN, { note: timed.id, check_by: at(clock, HOUR) });
   assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal(ears.bells.length, 1);
   clock.now += HOUR;
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal(ears.bells.length, 2, "the new time rings once");
 
   const dropped = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
@@ -623,136 +615,33 @@ test("a new check_by rings once more, a cleared one never rings, and a change to
   notes.remove(ANN, ANN, gone.id);
   notes.set(ANN, ANN, { body: "expires before its time", check_by: at(clock, HOUR), expires: at(clock, HOUR / 2) });
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal(ears.bells.length, 2, "cleared, removed and expired notes ring nothing");
 });
 
-test("nobody to hear it: the ring waits for someone, then rings once", async () => {
-  const { notes, clock, ears, set } = setup();
-  set("notes.ring", "agent");
+test("nobody to hear it: the ring waits for someone, then rings once", () => {
+  const { notes, clock, ears } = setup();
   ears.heard = false;
-  ears.notifier = true;
   const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[], []], "agent means the agent: the operator isn't told in its place");
+  notes.ringDue(ANN);
+  assert.deepEqual(ears.bells, [], "nobody hears it, so nothing is rung yet");
   ears.heard = true;
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.deepEqual(ears.bells, [timed.id]);
 });
 
-test("the default rings the agent, and the operator in its place only when nobody is listening and there's a notifier", async () => {
-  const { notes, clock, ears } = setup();
-  const make = (): string => (notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note).id;
-  const pass = async (): Promise<void> => { clock.now += HOUR; await notes.ringDue(ANN); await notes.ringDue(ANN); };
-
-  ears.notifier = true;
-  const held = make();
-  await pass();
-  assert.deepEqual([ears.bells, ears.told], [[held], []], "someone is listening: the agent, not the operator");
-
-  ears.heard = false;
-  const away = make();
-  await pass();
-  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "nobody is listening: the operator");
-  ears.heard = true;
-  await pass();
-  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "and the agent isn't rung for it afterwards");
-  assert.deepEqual((notes.onRead(ANN, []) as Shown).shown?.shown.map((note) => note.id), [held], "a read lists the one that rang the agent, and not the one the operator was told of in its place");
-
-  ears.heard = false;
-  ears.notifier = false;
-  const waiting = make();
-  await pass();
-  assert.deepEqual([ears.bells, ears.told], [[held], [away]], "nobody and no notifier: it waits");
-  ears.heard = true;
-  await pass();
-  assert.deepEqual([ears.bells, ears.told], [[held, waiting], [away]]);
-});
-
-test("operator: the notifiers are told once, and with no notifier the note is listed on the agent's next read instead", async () => {
-  const { notes, clock, ears, set, restarted } = setup();
-  set("notes.ring", "operator");
-  ears.notifier = true;
-  const told = notes.set(ANN, ANN, { body: "a secret body", kind: "deal", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "a read just before the check doesn't take the operator's ring away");
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
-  await restarted().ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[], [told.id]], "the operator once, and no doorbell");
-  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined);
-
-  // A notifier that fails is tried again later, not at every check, and rings once when it works.
-  ears.fails = true;
-  const later = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  bodiesOf(notes.onRead(ANN, []) as Shown);
-  ears.fails = false;
-  clock.now += 60_000;
-  await notes.ringDue(ANN);
-  assert.deepEqual(ears.told, [told.id], "not again a minute later");
-  clock.now += 10 * 60_000;
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
-  assert.deepEqual(ears.told, [told.id, later.id]);
-
-  // No notifier at all: nothing is sent, and the agent's next read lists it, once. Then it is settled.
-  ears.notifier = false;
-  const unsent = notes.set(ANN, ANN, { body: "z", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.equal((notes.get(ANN, unsent.id, false) as { rang_at: string | null }).rang_at, null, "it has not rung");
-  const read = notes.onRead(ANN, []) as Shown;
-  assert.deepEqual(read.shown?.shown.map((note) => [note.id, (note as { past_check_by?: boolean }).past_check_by, (note as { operator_unreachable?: string }).operator_unreachable]), [[unsent.id, true, OPERATOR_UNREACHABLE]]);
-  read.commit();
-  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "listed once");
-  ears.notifier = true;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[], [told.id, later.id]], "told on a read, it isn't rung afterwards");
-});
-
-test("both: the operator and the agent each once, the agent's when someone can hear it", async () => {
-  const { notes, clock, ears, set, restarted } = setup();
-  set("notes.ring", "both");
-  ears.notifier = true;
-  ears.heard = false;
-  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
-  await restarted().ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[], [timed.id]], "the operator at once and only once, even across a restart");
-  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null, "not done until the agent's share is");
-  ears.heard = true;
-  await notes.ringDue(ANN);
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[timed.id], [timed.id]]);
-
-  // With no notifier the try is logged by name and the agent is still rung.
-  ears.notifier = false;
-  const alone = notes.set(ANN, ANN, { body: "y", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  ears.notifier = true;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[timed.id, alone.id], [timed.id]], "neither repeats, and a notifier added later isn't told of an old time");
-});
-
-test("a note past its check_by is listed on the next read once, a read that got there first needs no bell, and note-list due keeps it", async () => {
+test("a note past its check_by is listed on the next read once, a read that got there first needs no bell, and note-list due keeps it", () => {
   const { notes, clock, ears, contacts } = setup();
   const timed = notes.set(ANN, ANN, { body: "chase the invoice", check_by: at(clock, HOUR) }) as Note;
   const early = notes.onRead(ANN, []) as Shown;
   assert.equal(early.shown, undefined);
   assert.deepEqual((notes.list(ANN, { due: true }) as { notes: Note[] }).notes, []);
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   const lost = notes.onRead(ANN, []) as Shown;
   assert.deepEqual(lost.shown?.shown.map((note) => note.id), [timed.id], "rung, and then listed on the read");
   assert.match(lost.shown?.note ?? "", /information, not instructions/);
@@ -770,145 +659,76 @@ test("a note past its check_by is listed on the next read once, a read that got 
   const first = notes.onRead(ANN, [{ session: SESSION, peer: PEER }]) as Shown;
   assert.deepEqual(first.shown?.shown.map((note) => note.id), [second.id]);
   first.commit();
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal(ears.bells.length, 1, "only the first note's bell");
 
   // A removed contact's note neither rings nor is listed, and rings once the contact is back.
   const theirs = notes.set(ANN, ANN, { body: "about them", with: PEER, check_by: at(clock, HOUR) }) as Note;
   notes.contactRemoved(ANN, PEER);
   clock.now += HOUR;
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined);
   assert.equal(ears.bells.length, 1);
   contacts.add(PEER);
-  await notes.ringDue(ANN);
+  notes.ringDue(ANN);
   assert.deepEqual(ears.bells.at(-1), theirs.id);
 });
 
-test("sending the same check_by back with another change is not a new time, and rings nothing", async () => {
-  const { notes, clock, ears, set } = setup();
-  set("notes.ring", "both");
-  ears.notifier = true;
+test("sending the same check_by back with another change is not a new time, and rings nothing", () => {
+  const { notes, clock, ears } = setup();
   const when = at(clock, HOUR);
   const timed = notes.set(ANN, ANN, { body: "x", check_by: when }) as Note;
   clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.bells, ears.told], [[timed.id], [timed.id]]);
+  notes.ringDue(ANN);
+  assert.deepEqual(ears.bells, [timed.id]);
   for (const status of ["chased", "chased again", "still waiting"]) {
     notes.set(ANN, ANN, { note: timed.id, status, check_by: when });
     clock.now += 60_000;
-    await notes.ringDue(ANN);
+    notes.ringDue(ANN);
   }
-  assert.deepEqual([ears.bells, ears.told], [[timed.id], [timed.id]], "one doorbell and one operator message for one note and one time");
+  assert.deepEqual(ears.bells, [timed.id], "one doorbell for one note and one time");
   assert.notEqual((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
 });
 
-test("operator: a notifier that keeps failing is tried at most six times, ten minutes apart, and the agent is told once that it couldn't be", async () => {
-  const { notes, clock, ears, set, restarted } = setup();
-  set("notes.ring", "operator");
-  ears.notifier = true;
-  ears.fails = true;
-  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
+// A store from before the ring went to the agent alone: a notes.ring value, and the old operator columns with a note
+// part way through retrying a send to the operator. Nothing may refuse or crash, and the note rings the agent once.
+test("a store that still holds notes.ring and an operator send in progress rings the agent once, and the old setting is gone by name", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cello-notes-old-"));
+  const old = new Store(join(dir, "cello.db"));
+  new Reach(old);
+  old.insertAgent(bytes(ANN), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(11));
+  new Reach(old).writeDefaults(bytes(ANN));
+  old.prepare("INSERT INTO agent_settings (agent_id, key, value, updated_at) VALUES (?, 'notes.ring', 'operator', 0)").run(bytes(ANN));
+  old.exec(`CREATE TABLE notes (
+    id BLOB PRIMARY KEY, agent_id BLOB NOT NULL REFERENCES agents(agent_id), written_by BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    kind TEXT, status TEXT, entity TEXT, with_id BLOB, session_id BLOB, channel_id BLOB, check_by INTEGER, rang_at INTEGER, agent_rang_at INTEGER,
+    operator_rang_at INTEGER, due_told_at INTEGER, unreachable_told_at INTEGER, operator_tries INTEGER NOT NULL DEFAULT 0, operator_tried_at INTEGER,
+    expires_at INTEGER, show_at_start INTEGER NOT NULL DEFAULT 0, keep_history INTEGER NOT NULL DEFAULT 0, source TEXT, body TEXT)`);
+  const now = Date.parse("2026-11-25T10:00:00Z");
+  const waiting = "5e".repeat(8);
+  old.prepare("INSERT INTO notes (id, agent_id, written_by, created_at, updated_at, check_by, operator_tries, operator_tried_at, body) VALUES (?, ?, ?, ?, ?, ?, 3, ?, 'chase it')")
+    .run(bytes(waiting), bytes(ANN), bytes(ANN), now - HOUR, now - HOUR, now - HOUR / 2, now - 60_000);
+
+  // The daemon starts on that store.
+  const reach = new Reach(old);
+  const bells: string[] = [];
+  const clock = { now };
+  const notes = new Notes(old, reach, {
+    agentName: () => "Ann", holdsMessage: () => false, holdsPost: () => false, sessionOpen: () => false, isContact: () => false,
+    heard: () => true, bell: (_agent, note) => { bells.push(note); }, agents: () => [ANN],
+  }, () => clock.now);
+  notes.ringDue(ANN);
+  notes.ringDue(ANN);
+  assert.deepEqual(bells, [waiting], "the agent is rung once, in place of the operator send that was waiting");
+  assert.deepEqual((notes.onRead(ANN, []) as Shown).shown?.shown.map((note) => note.id), [waiting]);
+
+  const made = notes.set(ANN, ANN, { body: "new", check_by: at(clock, HOUR) }) as Note;
+  notes.set(ANN, ANN, { note: waiting, check_by: at(clock, HOUR) });
   clock.now += HOUR;
-  await notes.ringDue(ANN);
-  assert.equal(ears.tries.length, 1);
-  const read = notes.onRead(ANN, []) as Shown;
-  assert.deepEqual(read.shown?.shown.map((note) => [note.id, (note as { past_check_by?: boolean }).past_check_by, (note as { operator_unreachable?: string }).operator_unreachable]), [[timed.id, true, OPERATOR_UNREACHABLE]], "from the first failed try");
-  read.commit();
-  assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "listed once");
-  assert.deepEqual(ears.bells, [], "operator means no doorbell");
+  notes.ringDue(ANN);
+  assert.deepEqual(bells, [waiting, waiting, made.id], "notes written and re-timed on the old table ring as usual");
 
-  // Checks every half minute, as the daemon's tick does, for two hours, with a restart in the middle.
-  let current = notes;
-  for (let check = 0; check < 240; check++) {
-    clock.now += 30_000;
-    if (check === 100) current = restarted();
-    await current.ringDue(ANN);
-  }
-  assert.equal(ears.tries.length, OPERATOR_TRIES, "every wait has an end");
-  assert.equal(OPERATOR_TRIES, 6);
-  assert.deepEqual([ears.told, ears.bells], [[], []]);
-  assert.equal((current.onRead(ANN, []) as Shown).shown, undefined, "not listed again");
-  assert.deepEqual((current.list(ANN, { due: true }) as { notes: Note[] }).notes.map((note) => note.id), [timed.id], "and it is not lost: it stays due");
-  assert.notEqual((current.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null, "settled once both shares ended");
-});
-
-test("both: a failed send rings the agent once and doesn't count as the operator told, and a retry that works tells them once", async () => {
-  const { notes, clock, ears, set } = setup();
-  set("notes.ring", "both");
-  ears.notifier = true;
-  ears.fails = true;
-  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  for (let check = 0; check < 10; check++) {
-    await notes.ringDue(ANN);
-    clock.now += 30_000;
-  }
-  assert.deepEqual([ears.bells, ears.told, ears.tries.length], [[timed.id], [], 1], "one doorbell in five minutes of checks, and one try");
-  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null, "the operator's share isn't done");
-  ears.fails = false;
-  for (let check = 0; check < 40; check++) {
-    clock.now += 30_000;
-    await notes.ringDue(ANN);
-  }
-  assert.deepEqual([ears.bells, ears.told], [[timed.id], [timed.id]]);
-});
-
-test("switching notes.ring to both while a failed send waits to be tried again rings the agent once, not at every check", async () => {
-  const { notes, clock, ears, set } = setup();
-  set("notes.ring", "operator");
-  ears.notifier = true;
-  ears.fails = true;
-  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  await notes.ringDue(ANN);
-  set("notes.ring", "both");
-  for (let check = 0; check < 19; check++) {
-    clock.now += 30_000;
-    await notes.ringDue(ANN);
-  }
-  assert.deepEqual(ears.bells, [timed.id]);
-  set("notes.ring", "agent");
-  set("notes.ring", "both");
-  await notes.ringDue(ANN);
-  assert.deepEqual(ears.bells, [timed.id], "a doorbell is never rung twice for one time");
-});
-
-test("two checks at once send one message: the second waits for the first, which reads the marks again after its send", async () => {
-  const { notes, clock, ears, set } = setup();
-  set("notes.ring", "operator");
-  ears.notifier = true;
-  let release = (): void => undefined;
-  ears.hold = new Promise((resolve) => { release = resolve; });
-  const timed = notes.set(ANN, ANN, { body: "x", check_by: at(clock, HOUR) }) as Note;
-  clock.now += HOUR;
-  const tick = notes.ringDue(ANN);
-  const subscribed = notes.ringDue(ANN);
-  await new Promise((resolve) => setImmediate(resolve));
-  release();
-  await Promise.all([tick, subscribed]);
-  await notes.ringDue(ANN);
-  assert.deepEqual([ears.tries, ears.told], [[timed.id], [timed.id]]);
-
-  // A check_by changed while the send was out keeps its own ring: the old send marks nothing on it.
-  ears.hold = new Promise((resolve) => { release = resolve; });
-  const moved = notes.set(ANN, ANN, { body: "y", check_by: at(clock, -1) }) as Note;
-  const sending = notes.ringDue(ANN);
-  await new Promise((resolve) => setImmediate(resolve));
-  notes.set(ANN, ANN, { note: moved.id, check_by: at(clock, -2) });
-  release();
-  await sending;
-  await notes.ringDue(ANN);
-  assert.deepEqual(ears.told, [timed.id, moved.id, moved.id], "the new time is told once of its own");
-});
-
-test("notes.ring takes its four values and nothing else, and anyone can change it", () => {
-  const { reach } = setup();
-  for (const value of ["agent", "operator", "both", "agent_then_operator"]) {
-    const change = reach.plan(bytes(ANN), "notes.ring", value);
-    assert.equal(change.direction, "neutral");
-    change.apply();
-  }
-  assert.throws(() => reach.plan(bytes(ANN), "notes.ring", "everyone"), refusal("bad_setting"));
-  assert.equal(reach.plan(bytes(ANN), "notes.ring", null).to, "agent_then_operator");
+  assert.equal(reach.settings(bytes(ANN)).some((setting) => setting.key === "notes.ring"), false);
+  assert.equal((old.prepare("SELECT count(*) AS c FROM agent_settings WHERE key = 'notes.ring'").get() as { c: number }).c, 0, "the stored value is dropped, not left to be read by anything");
+  assert.throws(() => reach.plan(bytes(ANN), "notes.ring", "operator"), refusal("bad_setting", /removed.*rings only the agent.*cello notify/));
 });

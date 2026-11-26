@@ -323,8 +323,6 @@ def _note_lines(page: Any) -> List[str]:
             first += ", past its check-by time"
         if one.get("contact_removed"):
             first += ", about a contact you removed"
-        if isinstance(one.get("operator_unreachable"), str) and one["operator_unreachable"]:
-            first += ". " + one["operator_unreachable"]
         body = one.get("body")
         text = "\n" + _their_words(body) if isinstance(body, str) and body else ""
         if one.get("body_cut"):

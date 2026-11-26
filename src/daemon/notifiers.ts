@@ -65,11 +65,6 @@ export function withText(agentName: string, kind: Kind, text: string): string {
   return `Your agent ${agentName} has a ${kind} for you:\n\n${text}`;
 }
 
-// For a note past its check_by time. The id says which note, and nothing of what it holds.
-export function noteDueLine(agentName: string, agentHex: string, noteHex: string): string {
-  return `Your agent ${agentName} has a note that has passed its check-by time. It is note ${noteHex}, and this command shows it: cello note-get ${noteHex} --agent ${agentHex}`;
-}
-
 interface NotifierRow { name: string; type: string; config: string; added_at: number }
 
 const idOf = (agentHex: string): Uint8Array => new Uint8Array(Buffer.from(agentHex, "hex"));
@@ -365,17 +360,6 @@ export class Notifiers {
     };
     const waiting = queued.length === 0 ? {} : { queued: queued.map((q) => q.notifier), queued_note: queued.map((q) => q.note).join(" ") };
     return { sent: reached.length > 0 ? true : queued.length > 0 ? "queued" : "unconfirmed", agent: this.#host.agentName(agentHex), notifiers: reached, ...waiting, ...maybe, ...(failed.length > 0 ? { failed } : {}) };
-  }
-
-  has(agentHex: string): boolean {
-    return this.#rows(agentHex).length > 0;
-  }
-
-  // The daemon's own word to the operator that a note's time has passed: a fixed line on every notifier, with none of the
-  // agent's words, so there is nothing to screen. It throws if nobody could be told.
-  async noteDue(agentHex: string, noteHex: string): Promise<void> {
-    const line = noteDueLine(this.#host.agentName(agentHex), agentHex, noteHex);
-    await this.#sendAll(agentHex, this.#chosen(agentHex, undefined, "notify"), () => ({ agentHex, kind: "message", line, words: null, choices: [], sessionHex: null }), "note_due", false);
   }
 
   async test(agentHex: string, name: string | undefined): Promise<unknown> {
