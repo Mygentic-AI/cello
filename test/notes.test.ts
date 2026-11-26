@@ -642,6 +642,7 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
   assert.match(chat("Ann"), /Say who you act for\./);
   assert.doesNotMatch(chat(`Ann/${P1}`), /Say who you act for/);
   assert.equal(turns.filter((turn) => turn.chat === `Ann/${P2}`)[0]?.user, P2);
+  assert.deepEqual([...new Set(turns.filter((turn) => turn.chat === "Ann").map((turn) => turn.user))], ["cello-daemon"], "the agent's own chat is the daemon speaking, though a due note there is about Quinn");
 });
 
 test("Hermes: a read of no session still delivers every note it took, and none rides along with another session's messages", () => {

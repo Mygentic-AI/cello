@@ -1112,7 +1112,8 @@ class CelloAdapter(BasePlatformAdapter):
             if chat == current_chat and not apart:
                 here += lines
             elif lines:
-                contact = next((n.get("with_id") for n in notes if _safe_scalar(n.get("with_id"))), None)
+                # The agent's own chat is the daemon speaking, even for a due note about one contact.
+                contact = None if chat == self._agent_name else next((n.get("with_id") for n in notes if _safe_scalar(n.get("with_id"))), None)
                 await self._start_turn(chat, contact or "cello-daemon", "\n\n".join(lines), {"cello_notes": True}, "notice")
         return here
 
