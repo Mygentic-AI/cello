@@ -66,7 +66,7 @@ const refusal = (code: string, says?: RegExp) => (err: unknown): boolean => {
   return true;
 };
 
-const historyOf = (notes: Notes, id: string, agent = ANN): Change[] => (notes.get(agent, id, true) as { history: Change[] }).history;
+const historyOf = (notes: Notes, id: string, agent = ANN): Change[] => (notes.get(agent, agent, id, true) as { history: Change[] }).history;
 
 test("every field is optional: a note can be only a body or only a label, and an empty one is refused", () => {
   const { notes } = setup();
@@ -145,7 +145,7 @@ test("history: off by default, then each change keeps the version before it, tri
   assert.deepEqual(history.map((change) => change.before.body), ["v3", "v2"], "the two newest past versions, newest first");
   assert.equal(history[0]?.changed_at, new Date(clock.now).toISOString());
   assert.equal(history[0]?.before.updated_at, new Date(clock.now - 1000).toISOString(), "a past version carries its own stamp");
-  assert.equal((notes.get(ANN, kept.id, false) as { history?: unknown }).history, undefined, "history comes only when asked for");
+  assert.equal((notes.get(ANN, ANN, kept.id, false) as { history?: unknown }).history, undefined, "history comes only when asked for");
 
   // Lowering the number trims at once, and 0 drops what was kept.
   notes.set(ANN, ANN, { note: kept.id, keep_history: 1 });
@@ -199,7 +199,7 @@ test("the cap refuses by name and drops nothing, and a body is measured in bytes
   set("notes.max", "3");
   const ids = ["a", "b", "c"].map((body) => (notes.set(ANN, ANN, { body }) as Note).id);
   assert.throws(() => notes.set(ANN, ANN, { body: "d" }), refusal("too_many_notes", /notes\.max/));
-  assert.deepEqual((notes.list(ANN, {}) as { notes: Note[] }).notes.map((note) => note.id).sort(), [...ids].sort(), "nothing was dropped to make room");
+  assert.deepEqual((notes.list(ANN, ANN, {}) as { notes: Note[] }).notes.map((note) => note.id).sort(), [...ids].sort(), "nothing was dropped to make room");
   notes.set(ANN, ANN, { note: ids[0], body: "changed" });
   notes.set(BEA, BEA, { body: "another agent has its own count" });
   notes.remove(ANN, ANN, ids[1]);
@@ -218,7 +218,7 @@ test("writing another agent's notes takes the writer's setting, and the stamp is
   assert.throws(() => notes.set(ANN, BEA, { body: "from Ann" }), refusal("not_allowed_to_write", /notes\.write/));
   assert.throws(() => notes.set(ANN, BEA, { note: own.id, body: "overwritten" }), refusal("not_allowed_to_write"));
   assert.throws(() => notes.remove(ANN, BEA, own.id), refusal("not_allowed_to_write"));
-  assert.equal((notes.get(BEA, own.id, false) as Note).body, "Bea's own");
+  assert.equal((notes.get(BEA, BEA, own.id, false) as Note).body, "Bea's own");
 
   // Bea's setting says nothing about what Ann may do: it is the writer's that counts.
   set("notes.write", "all", BEA);
@@ -229,7 +229,7 @@ test("writing another agent's notes takes the writer's setting, and the stamp is
   assert.equal(forBea.agent_id, BEA, "it is Bea's note");
   assert.equal(forBea.written_by, ANN, "written by Ann");
   assert.throws(() => notes.set(ANN, CAL, { body: "x" }), refusal("not_allowed_to_write"), "a list names who, and nobody else");
-  assert.throws(() => notes.get(ANN, forBea.id, false), refusal("no_such_note"), "it isn't among Ann's notes");
+  assert.throws(() => notes.get(ANN, ANN, forBea.id, false), refusal("no_such_note"), "it isn't among Ann's notes");
 
   const byBea = notes.set(BEA, BEA, { note: forBea.id, status: "seen" }) as Note;
   assert.equal(byBea.written_by, BEA, "the stamp follows the last writer");
@@ -241,6 +241,36 @@ test("writing another agent's notes takes the writer's setting, and the stamp is
   notes.remove(ANN, BEA, forBea.id);
   set("notes.write", "own");
   assert.throws(() => notes.set(ANN, CAL, { body: "x" }), refusal("not_allowed_to_write"));
+});
+
+test("reading another agent's notes by owner goes by the reader's notes.read, and an owner not on this daemon is refused by name", () => {
+  const { notes, set } = setup();
+  const beas = notes.set(BEA, BEA, { body: "Bea's own", kind: "client", keep_history: 1 }) as Note;
+  notes.set(BEA, BEA, { note: beas.id, status: "seen" });
+  notes.set(ANN, ANN, { body: "Ann's own" });
+
+  // Reading starts open: Ann reads Bea's note and list, and they come back as Bea's.
+  const got = notes.get(ANN, BEA, beas.id, true) as Note & { agent: string; history: Change[] };
+  assert.deepEqual([got.agent, got.agent_id, got.body, got.history.length], ["Bea", BEA, "Bea's own", 1]);
+  const listed = notes.list(ANN, BEA, { kind: "client" }) as { agent: string; notes: Note[] };
+  assert.deepEqual([listed.agent, listed.notes.map((note) => note.body)], ["Bea", ["Bea's own"]]);
+  assert.deepEqual((notes.list(ANN, ANN, {}) as { notes: Note[] }).notes.map((note) => note.body), ["Ann's own"], "with no owner, still only Ann's own");
+
+  // Locked down, Ann reads nothing of Bea's, and the refusal names the setting and the command that widens it.
+  set("notes.read", "own");
+  const widen = new RegExp(`notes\\.read.*cello settings-set notes\\.read ${BEA} --agent ${ANN}$`);
+  assert.throws(() => notes.get(ANN, BEA, beas.id, false), refusal("not_allowed_to_read", widen));
+  assert.throws(() => notes.list(ANN, BEA, {}), refusal("not_allowed_to_read", widen));
+  assert.equal((notes.get(ANN, ANN, (notes.list(ANN, ANN, {}) as { notes: Note[] }).notes[0]?.id, false) as Note).body, "Ann's own", "its own are still read");
+  // A list names who, and nobody else.
+  set("notes.read", CAL);
+  assert.throws(() => notes.list(ANN, BEA, {}), refusal("not_allowed_to_read", new RegExp(`settings-set notes\\.read ${CAL},${BEA} --agent`)));
+
+  // An owner not on this daemon is refused as unknown, even while reading is open to all, and before anything is read.
+  set("notes.read", "all");
+  const stranger = "ff".repeat(32);
+  assert.throws(() => notes.list(ANN, stranger, {}), refusal("unknown_agent", new RegExp(stranger)));
+  assert.throws(() => notes.get(ANN, stranger, beas.id, false), refusal("unknown_agent"));
 });
 
 test("widening who an agent may write for, raising a limit and unlisting a kind loosen; the other way tightens", () => {
@@ -356,7 +386,7 @@ test("listing filters by each label and scope, newest change first, and cuts lon
   const b = step({ body: "b".repeat(300), kind: "client", status: "waiting on Ana", session: SESSION });
   const c = step({ body: "c", kind: "promise", channel: CHANNEL });
   notes.set(BEA, BEA, { body: "Bea's", kind: "client" });
-  const ids = (params: Record<string, unknown>): string[] => (notes.list(ANN, params) as { notes: Note[] }).notes.map((note) => note.id);
+  const ids = (params: Record<string, unknown>): string[] => (notes.list(ANN, ANN, params) as { notes: Note[] }).notes.map((note) => note.id);
   assert.deepEqual(ids({}), [c, b, a]);
   assert.deepEqual(ids({ kind: "client" }), [b, a]);
   assert.deepEqual(ids({ kind: "client", entity: "acme" }), [a]);
@@ -368,15 +398,15 @@ test("listing filters by each label and scope, newest change first, and cuts lon
   notes.set(ANN, ANN, { note: a, status: "touched" });
   assert.deepEqual(ids({}), [a, c, b], "a change moves a note to the front");
 
-  const short = notes.list(ANN, { limit: 2 }) as { notes: (Note & { body_cut?: boolean })[]; total: number; more: number };
+  const short = notes.list(ANN, ANN, { limit: 2 }) as { notes: (Note & { body_cut?: boolean })[]; total: number; more: number };
   assert.equal(short.total, 3);
   assert.equal(short.more, 1);
-  const whole = (notes.list(ANN, { kind: "client" }) as { notes: (Note & { body_cut?: boolean })[] }).notes[0];
+  const whole = (notes.list(ANN, ANN, { kind: "client" }) as { notes: (Note & { body_cut?: boolean })[] }).notes[0];
   assert.equal(whole?.body_cut, undefined);
-  const long = (notes.list(ANN, { session: SESSION }) as { notes: (Note & { body_cut?: boolean })[] }).notes[0];
+  const long = (notes.list(ANN, ANN, { session: SESSION }) as { notes: (Note & { body_cut?: boolean })[] }).notes[0];
   assert.equal(long?.body?.length, 200);
   assert.equal(long?.body_cut, true);
-  assert.equal((notes.get(ANN, b, false) as Note).body?.length, 300);
+  assert.equal((notes.get(ANN, ANN, b, false) as Note).body?.length, 300);
 });
 
 test("removing a note takes its history, and a removed agent takes all of its notes and theirs", () => {
@@ -390,17 +420,17 @@ test("removing a note takes its history, and a removed agent takes all of its no
 
   assert.throws(() => notes.remove(BEA, BEA, one.id), refusal("no_such_note"), "an id is looked up under its owner");
   notes.remove(ANN, ANN, one.id);
-  assert.throws(() => notes.get(ANN, one.id, false), refusal("no_such_note"));
+  assert.throws(() => notes.get(ANN, ANN, one.id, false), refusal("no_such_note"));
   assert.equal(count("note_changes"), 2);
 
   notes.contactRemoved(ANN, PEER);
   notes.contactRemoved(BEA, PEER);
   notes.forget(ANN);
   assert.deepEqual(store.prepare("SELECT agent_id FROM note_removed_contacts").all().map((row) => Buffer.from((row as { agent_id: Uint8Array }).agent_id).toString("hex")), [BEA], "what it remembered of removed contacts goes too");
-  assert.deepEqual((notes.list(ANN, {}) as { notes: unknown[] }).notes, []);
+  assert.deepEqual((notes.list(ANN, ANN, {}) as { notes: unknown[] }).notes, []);
   assert.equal(count("notes"), 1);
   assert.equal(count("note_changes"), 1, "another agent's notes and history stay");
-  assert.equal((notes.get(BEA, beas.id, true) as { history: unknown[] }).history.length, 1);
+  assert.equal((notes.get(BEA, BEA, beas.id, true) as { history: unknown[] }).history.length, 1);
 });
 
 interface Shown { shown?: { note: string; shown: (Note & { body_cut?: boolean })[]; more?: number; more_note?: string }; commit(): void }
@@ -434,9 +464,9 @@ test("removing a note whose kind must keep history: the note goes, its versions 
   const command = `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '${kept.id}' ORDER BY id" --agent ${ANN}`;
   assert.match(gone.history_note, /kind promise must keep history/);
   assert.ok(gone.history_note.endsWith(`Read them with: ${command}`), gone.history_note);
-  assert.throws(() => notes.get(ANN, kept.id, true), refusal("no_such_note", new RegExp(`removed at ${new Date(clock.now).toISOString()} by ${BEA}.*past versions are kept`)));
-  assert.throws(() => notes.get(ANN, kept.id, true), (err: unknown) => err instanceof LocalError && err.message.endsWith(`past versions are kept: ${command}`));
-  assert.equal((notes.list(ANN, {}) as { notes: Note[] }).notes.some((note) => note.id === kept.id), false, "the note itself is gone");
+  assert.throws(() => notes.get(ANN, ANN, kept.id, true), refusal("no_such_note", new RegExp(`removed at ${new Date(clock.now).toISOString()} by ${BEA}.*past versions are kept`)));
+  assert.throws(() => notes.get(ANN, ANN, kept.id, true), (err: unknown) => err instanceof LocalError && err.message.endsWith(`past versions are kept: ${command}`));
+  assert.equal((notes.list(ANN, ANN, {}) as { notes: Note[] }).notes.some((note) => note.id === kept.id), false, "the note itself is gone");
 
   const entries = changesOf(notes).filter((row) => row[2] === kept.id);
   assert.equal(entries.length, 2);
@@ -450,7 +480,7 @@ test("removing a note whose kind must keep history: the note goes, its versions 
   const plainGone = notes.remove(ANN, ANN, plain.id) as Record<string, unknown>;
   assert.equal(plainGone["history_kept"], undefined);
   assert.deepEqual(changesOf(notes).filter((row) => row[2] === plain.id), [], "a note of no listed kind still takes its history with it");
-  assert.throws(() => notes.get(ANN, plain.id, false), refusal("no_such_note", /has no note/));
+  assert.throws(() => notes.get(ANN, ANN, plain.id, false), refusal("no_such_note", /has no note/));
 
   // Taking the kind off the list still takes a person, so removing the note was no way round it.
   assert.equal(reach.plan(bytes(ANN), "notes.history_kinds", null).direction, "loosen");
@@ -507,8 +537,8 @@ test("at most notes.start_max are shown at once, newest change first, with long 
   assert.deepEqual(got.shown?.shown.map((note) => [note.body?.length, note.body_cut]), [[200, true], [6, undefined]]);
   assert.equal(got.shown?.more, 1);
   assert.equal(got.shown?.more_note, `At most 2 notes are shown at once (the setting notes.start_max). 1 more note marked to show here wasn't shown, and isn't held over for later: note-list with show_at_start lists every note marked to show; add with ${PEER} for this contact's.`);
-  assert.equal((notes.list(ANN, { show_at_start: true }) as { total: number }).total, 3);
-  assert.equal((notes.list(ANN, {}) as { total: number }).total, 3);
+  assert.equal((notes.list(ANN, ANN, { show_at_start: true }) as { total: number }).total, 3);
+  assert.equal((notes.list(ANN, ANN, {}) as { total: number }).total, 3);
 });
 
 test("what was left out says which notes they were, and the due ones left out come with the next read", () => {
@@ -533,7 +563,7 @@ test("a note about a removed contact is kept, marked and not shown, a stranger's
   const { notes, contacts } = setup();
   const made = notes.set(ANN, ANN, { body: "who they are", with: PEER, show_at_start: true }) as Note & { contact_removed?: boolean };
   const start = (session: string): (string | null)[] => bodiesOf(notes.onRead(ANN, [{ session, peer: PEER }]) as Shown, false);
-  const marked = (): boolean | undefined => (notes.get(ANN, made.id, false) as { contact_removed?: boolean }).contact_removed;
+  const marked = (): boolean | undefined => (notes.get(ANN, ANN, made.id, false) as { contact_removed?: boolean }).contact_removed;
   assert.deepEqual(start(SESSION), ["who they are"], "never added is a stranger, not a removed contact");
   assert.equal(marked(), undefined);
 
@@ -542,8 +572,8 @@ test("a note about a removed contact is kept, marked and not shown, a stranger's
   notes.contactRemoved(ANN, PEER);
   assert.deepEqual(start(SESSION), []);
   assert.equal(marked(), true);
-  assert.equal((notes.list(ANN, {}) as { notes: { contact_removed?: boolean }[] }).notes[0]?.contact_removed, true);
-  assert.equal((notes.get(BEA, (notes.set(BEA, BEA, { body: "x", with: PEER }) as Note).id, false) as { contact_removed?: boolean }).contact_removed, undefined, "one agent removing a contact says nothing of another's");
+  assert.equal((notes.list(ANN, ANN, {}) as { notes: { contact_removed?: boolean }[] }).notes[0]?.contact_removed, true);
+  assert.equal((notes.get(BEA, BEA, (notes.set(BEA, BEA, { body: "x", with: PEER }) as Note).id, false) as { contact_removed?: boolean }).contact_removed, undefined, "one agent removing a contact says nothing of another's");
 
   contacts.add(PEER);
   assert.deepEqual(start(SESSION), ["who they are"]);
@@ -562,14 +592,14 @@ test("a note past its time goes with its history, and a session's note goes when
   assert.equal(count("note_changes"), 2);
 
   clock.now = Date.parse("2026-11-25T11:59:59Z");
-  assert.equal((notes.list(ANN, {}) as { total: number }).total, 3);
+  assert.equal((notes.list(ANN, ANN, {}) as { total: number }).total, 3);
   clock.now = Date.parse("2026-11-25T12:00:00Z");
   assert.deepEqual(bodiesOf(notes.onRead(ANN, [{ session: S2, peer: PEER }]) as Shown, false), ["for this talk"], "a note past its time isn't shown either");
-  assert.throws(() => notes.get(ANN, timed.id, false), refusal("no_such_note"));
+  assert.throws(() => notes.get(ANN, ANN, timed.id, false), refusal("no_such_note"));
   assert.equal(count("note_changes"), 1);
 
   open.delete(S2);
-  assert.deepEqual((notes.list(ANN, {}) as { notes: Note[] }).notes.map((note) => note.id), [stays.id]);
+  assert.deepEqual((notes.list(ANN, ANN, {}) as { notes: Note[] }).notes.map((note) => note.id), [stays.id]);
   assert.equal(count("note_changes"), 0);
   assert.throws(() => notes.set(ANN, ANN, { note: forNow.id, status: "late" }), refusal("no_such_note"));
 });
@@ -732,7 +762,7 @@ test("a note rings once when its check_by passes: not before, not twice, not aft
   clock.now += HOUR;
   notes.ringDue(ANN);
   assert.deepEqual(ears.bells, [timed.id], "the bell carries the note's id");
-  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string }).rang_at, new Date(clock.now).toISOString());
+  assert.equal((notes.get(ANN, ANN, timed.id, false) as { rang_at: string }).rang_at, new Date(clock.now).toISOString());
   notes.ringDue(ANN);
   clock.now += 100 * HOUR;
   notes.ringDue(ANN);
@@ -752,7 +782,7 @@ test("a new check_by rings once more, a cleared one never rings, and a change to
   assert.equal(ears.bells.length, 1, "changing another field doesn't ring it again");
 
   notes.set(ANN, ANN, { note: timed.id, check_by: at(clock, HOUR) });
-  assert.equal((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
+  assert.equal((notes.get(ANN, ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
   notes.ringDue(ANN);
   assert.equal(ears.bells.length, 1);
   clock.now += HOUR;
@@ -790,7 +820,7 @@ test("a note past its check_by is listed on the next read once, a read that got 
   const timed = notes.set(ANN, ANN, { body: "chase the invoice", check_by: at(clock, HOUR) }) as Note;
   const early = notes.onRead(ANN, []) as Shown;
   assert.equal(early.shown, undefined);
-  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: Note[] }).notes, []);
+  assert.deepEqual((notes.list(ANN, ANN, { due: true }) as { notes: Note[] }).notes, []);
   clock.now += HOUR;
   notes.ringDue(ANN);
   const lost = notes.onRead(ANN, []) as Shown;
@@ -800,9 +830,9 @@ test("a note past its check_by is listed on the next read once, a read that got 
   assert.equal(read.shown?.shown.length, 1, "an answer that never arrived doesn't use the listing up");
   read.commit();
   assert.equal((notes.onRead(ANN, []) as Shown).shown, undefined, "listed once");
-  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: (Note & { past_check_by?: boolean })[] }).notes.map((note) => [note.id, note.past_check_by]), [[timed.id, true]], "it stays due until its time is changed or cleared");
+  assert.deepEqual((notes.list(ANN, ANN, { due: true }) as { notes: (Note & { past_check_by?: boolean })[] }).notes.map((note) => [note.id, note.past_check_by]), [[timed.id, true]], "it stays due until its time is changed or cleared");
   notes.set(ANN, ANN, { note: timed.id, clear: "check_by" });
-  assert.deepEqual((notes.list(ANN, { due: true }) as { notes: Note[] }).notes, []);
+  assert.deepEqual((notes.list(ANN, ANN, { due: true }) as { notes: Note[] }).notes, []);
 
   // Read before the check ran: told, so no doorbell follows.
   const second = notes.set(ANN, ANN, { body: "second", check_by: at(clock, HOUR) }) as Note;
@@ -838,7 +868,7 @@ test("sending the same check_by back with another change is not a new time, and 
     notes.ringDue(ANN);
   }
   assert.deepEqual(ears.bells, [timed.id], "one doorbell for one note and one time");
-  assert.notEqual((notes.get(ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
+  assert.notEqual((notes.get(ANN, ANN, timed.id, false) as { rang_at: string | null }).rang_at, null);
 });
 
 // A store from before the ring went to the agent alone: a notes.ring value, and the old operator columns with a note

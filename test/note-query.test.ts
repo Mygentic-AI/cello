@@ -120,7 +120,7 @@ test("a WITH that ends in a write is refused by the engine, and nothing is chang
     await assert.rejects(ask(sql), refusal("query_failed", /readonly/), sql);
   }
   assert.deepEqual((await ask("SELECT body FROM notes")).rows, [{ body: "keep me" }]);
-  assert.deepEqual((notes.list(ANN, {}) as { notes: { body: string }[] }).notes.map((note) => note.body), ["keep me"]);
+  assert.deepEqual((notes.list(ANN, ANN, {}) as { notes: { body: string }[] }).notes.map((note) => note.body), ["keep me"]);
 });
 
 test("writes, ATTACH, VACUUM and PRAGMA are refused before anything runs, and leave no file behind", async () => {

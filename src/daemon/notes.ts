@@ -358,7 +358,19 @@ export class Notes {
     return { set: true, created: false, agent: name, ...this.#view(this.#find(ownerHex, hex(old.id))) };
   }
 
-  get(agentHex: string, noteId: unknown, history: boolean): unknown {
+  // Another agent's notes take the reader's notes.read setting, the same one note-query goes by. Checked before
+  // anything is read or swept, so a refused read touches nothing.
+  #mayRead(readerHex: string, ownerHex: string): void {
+    if (readerHex === ownerHex) return;
+    if (!this.#host.agents().includes(ownerHex)) throw new LocalError("unknown_agent", `There's no agent ${ownerHex} on this daemon, so it has no notes to read. agents lists the ones here.`);
+    if (this.readableBy(readerHex).includes(ownerHex)) return;
+    const allowed = this.#reach.setting(bytesOf(readerHex), "notes.read");
+    throw new LocalError("not_allowed_to_read", `${this.#host.agentName(readerHex)} may read only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing of ${this.#host.agentName(ownerHex)}'s was read. The setting is notes.read, and widening it takes a person at a terminal: cello settings-set notes.read ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${readerHex}`);
+  }
+
+  get(readerHex: string, ownerHex: string, noteId: unknown, history: boolean): unknown {
+    this.#mayRead(readerHex, ownerHex);
+    const agentHex = ownerHex;
     this.#sweep(agentHex);
     const row = this.#find(agentHex, noteId);
     const changes = history
@@ -368,7 +380,9 @@ export class Notes {
     return { agent: this.#host.agentName(agentHex), ...this.#view(row), ...(changes ? { history: changes } : {}) };
   }
 
-  list(agentHex: string, params: Record<string, unknown>): unknown {
+  list(readerHex: string, ownerHex: string, params: Record<string, unknown>): unknown {
+    this.#mayRead(readerHex, ownerHex);
+    const agentHex = ownerHex;
     this.#sweep(agentHex);
     const where = ["agent_id = ?"];
     const values: unknown[] = [bytesOf(agentHex)];

@@ -97,6 +97,7 @@ cello note-set "<body>" --with <agent_id> --kind client --agent <a>
 cello note-set --note <id> --status "quote sent" --agent <a>
 cello note-list --kind client --agent <a>
 cello note-get <id> --agent <a>
+cello note-list --owner <other agent> --agent <a>
 cello note-remove <id> --agent <a>
 ```
 
@@ -104,6 +105,7 @@ cello note-remove <id> --agent <a>
 - **`--with <agent_id>`** ties it to a contact, **`--session <id>`** to one open conversation (it goes when the session closes), **`--channel <id>`** to a channel. **`--show-at-start`** brings it to you unasked, under `notes`, as a session with that contact starts or on your first read of that channel, or with no scope as every session starts. Use it only for the few things you must have in front of you. Not on a `--session` note: that shows only as its one session starts, which has nearly always passed by the time you can write it, so use `--with` instead.
 - **`--entity`** names a person or company with no agent. Check the spellings you've used first: `cello note-query "SELECT DISTINCT entity FROM notes WHERE entity IS NOT NULL"`. Don't invent a second spelling for the same one.
 - **`--check-by <time>`** only when something must happen by then. It rings you once when the time passes: a `note_due` doorbell with the note's id, or, if nobody is listening, a listing on your next read. Your operator isn't told: if they need to know, decide that yourself and tell them with `cello notify`. Most notes have none, and nothing chases a note without one. `cello note-list --due` lists the ones past their time until you change or clear it (`--clear check-by`). **A time with no zone is UTC, not your local time**, for `--check-by` and `--expires` alike: give an offset, such as `2026-12-01T09:00+02:00`, to mean your own.
+- **`--owner <agent>`** on `note-get` and `note-list` reads another of your operator's agents' notes on this daemon, by name or agent_id. It's refused with `not_allowed_to_read` when your `notes.read` doesn't cover that agent; relay the command it gives, which takes a person.
 - **`--keep-history N`** keeps past versions, when earlier values will matter. `--source <session_id>:<position>` records the message that caused a change.
 - `cello note-query "<SELECT ...>"` runs one read-only statement over the tables `notes` and `note_changes`. `--help` lists the columns. It sees your other agents' notes too, unless your setting `notes.read` is `own`, so add `WHERE agent_id = '<your agent_id>'` for only yours. You can narrow `notes.read` yourself; widening it again takes a person.
 

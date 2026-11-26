@@ -31,7 +31,7 @@ cello note-set --note 9f2c41d07ab35e68 --status "quote sent" --agent Ann
 cello note-set --note 9f2c41d07ab35e68 --clear check-by,status --agent Ann
 ```
 
-`cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good, with its history, unless its kind must keep history (below). `note-list` has a filter for each label and scope, and cuts a long body to 200 characters, marked `body_cut`. It answers with `total`, how many match, and `more` when that is more than it returned. On each note, `rang_at` is when the ring for its check-by time was done, or null until then.
+`cello note-get <note>` shows one in full, `cello note-list` lists them (both take `--owner` for another agent's, under [Whose notes](#whose-notes)) with the most recently changed first, and `cello note-remove <note>` removes one for good, with its history, unless its kind must keep history (below). `note-list` has a filter for each label and scope, and cuts a long body to 200 characters, marked `body_cut`. It answers with `total`, how many match, and `more` when that is more than it returned. On each note, `rang_at` is when the ring for its check-by time was done, or null until then.
 
 ## The fields
 
@@ -145,7 +145,7 @@ A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It
 
 Two settings say whose notes an agent reaches beyond its own:
 
-- **`notes.read`**: whose notes this agent's `note-query` sees: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`.
+- **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`.
 - **`notes.write`**: whose notes this agent may set and remove with `--owner`, in the same form. It starts at `own`. The note is still stamped with the agent that wrote it.
 
 Narrowing either one needs no person. Naming anyone new, or going back to `all`, takes a person. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
@@ -158,7 +158,16 @@ Unknown agents can now reach Ann, and it can read your other agents' notes. To s
 
 A new agent starts open to unknown agents and reading `all`, and nothing warns of that, since nothing changed.
 
-These settings govern what an agent does as itself. The daemon takes each call's word for which agent it acts as, and doesn't check that the caller holds that agent. So anything that can run `cello` as you can name any of your agents, and `note-get` and `note-list` show whichever agent they name.
+To read one of your other agents' notes, name it with `--owner`, by name or agent_id:
+
+```
+cello note-list --owner Bea --kind client --agent Ann
+cello note-get 9f2c41d07ab35e68 --owner Bea --agent Ann
+```
+
+It's refused with `not_allowed_to_read` when Ann's `notes.read` doesn't cover Bea, and the refusal gives the command that would widen it, which takes a person. An owner that isn't an agent on this daemon is refused with `unknown_agent`.
+
+These settings govern what an agent does as itself. The daemon takes each call's word for which agent it acts as, and doesn't check that the caller holds that agent. So anything that can run `cello` as you can name any of your agents as `--agent`, and read what that agent can.
 
 ## Limits
 

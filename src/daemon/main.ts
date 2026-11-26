@@ -597,10 +597,14 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       const owner = noteOwner(writer, params);
       return notes.set(writer, owner, params);
     }
-    case "note_get":
-      return notes.get(named(params), params["note"], params["history"] === true);
-    case "note_list":
-      return notes.list(named(params), params);
+    case "note_get": {
+      const reader = named(params);
+      return notes.get(reader, noteOwner(reader, params), params["note"], params["history"] === true);
+    }
+    case "note_list": {
+      const reader = named(params);
+      return notes.list(reader, noteOwner(reader, params), params);
+    }
     case "note_query":
       return notes.query(named(params), params["sql"], noteQueries);
     case "note_remove": {
