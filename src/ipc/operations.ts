@@ -1206,7 +1206,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Write a note, or change one: something the agent keeps for later.",
     scoped: true,
     acts: false,
-    description: `${NOTES_INTRO} With no note id this makes a new note and answers with its id. With note, it changes that one: only the fields you give change, and clear empties the ones you name. Every field is optional, so a note can be only a body, or only labels, but it needs at least one. A note marked show_at_start comes to you unasked, under notes in a receive, initiate-session or channel-read result, at most notes.start_max at once. Each change stamps the note with when it changed, which agent wrote it (the agent named on this call) and its source, and the stamp replaces the one before. A new note is refused with too_many_notes at the agent's limit (setting notes.max), and none is dropped to make room.`,
+    description: `${NOTES_INTRO} With no note id this makes a new note and answers with its id. With note, only the fields you give change, and clear empties the ones you name. Every field is optional, but a note needs at least one. Each change stamps the note with when, which agent wrote it and its source. At the agent's limit (setting notes.max) a new note is refused with too_many_notes.`,
     params: [
       { name: "body", kind: "string", positional: true, description: "The note itself: plain text, or JSON if you'll want to look inside it later. Leave it out when the labels say everything. Example: {\"amount\": 12000, \"close\": \"2026-12-15\"}" },
       { name: "note", kind: "string", description: "The id of a note to change, 16 hex characters. Leave it out to make a new note. Example: 9f2c41d07ab35e68" },

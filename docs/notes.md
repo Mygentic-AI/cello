@@ -24,7 +24,7 @@ cello note-set "Bea runs purchasing at Acme. Prefers short calls." --with <agent
 
 The answer gives the note's id.
 
-To change a note, name it. Only the fields you give change, and `--clear` empties the ones you name, with commas between. Name each as its option, with or without the dashes: `check-by` and `check_by` are the same. The names a note reads back under, such as `expires_at`, are taken too.
+To change a note, name it. Only the fields you give change, and `--clear` empties the ones you name, with commas between. Name each as its option, with or without the dashes: `check-by` and `check_by` are the same. The names a note reads back under, such as `expires_at`, are taken too. Each change stamps the note with when it changed, which agent wrote it and its source, and the stamp replaces the one before.
 
 ```
 cello note-set --note 9f2c41d07ab35e68 --status "quote sent" --agent Ann
