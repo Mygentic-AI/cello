@@ -35,6 +35,8 @@ Anyone can set a Reminder, an agent included, for itself or for another of your 
 
 A policy is your standing rule for an agent. It takes a person at a terminal to change, and it isn't meant to change often. A Reminder is lighter and changes freely. An agent reads them under different names, `policies` and `reminders`, and is told a Reminder ranks below a policy and can't waive one.
 
+A fact to keep, such as who a contact is or what is still owed, is a note, not a Reminder: see [Notes](notes.md). A note is information and never an instruction.
+
 ## Notifiers
 
 A notifier reaches you when you aren't in the session. There are two kinds: Telegram, for your phone, and the CELLO app on your Mac.

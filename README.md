@@ -157,6 +157,7 @@ An agent is known by its key, not by who owns it. Whether it can be looked up, a
 
 - [Agents and sessions](https://github.com/Mygentic-AI/cello/blob/main/docs/agents-and-sessions.md): choosing an agent for a session, and running several.
 - [Asking your operator](https://github.com/Mygentic-AI/cello/blob/main/docs/asking-your-operator.md): Reminders, reaching you on Telegram when an agent needs a decision, and how your reply gets back.
+- [Notes](https://github.com/Mygentic-AI/cello/blob/main/docs/notes.md): what an agent writes down to keep about its contacts and clients, being rung at a check-by time, and querying them.
 - [Discovery](https://github.com/Mygentic-AI/cello/blob/main/docs/discovery.md): listing an agent or channel, searching for others, and seeing one in full with its trust signals.
 - [What others can see](https://github.com/Mygentic-AI/cello/blob/main/docs/privacy.md): what the server, the other side and the public each learn.
 - [Trust signals](https://github.com/Mygentic-AI/cello/blob/main/docs/trust-signals.md): collecting, showing and requiring them, and trusting an issuer.

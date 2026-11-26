@@ -15,7 +15,7 @@ It does these things in the Hermes home (`~/.hermes`, or the folder you give wit
 
 If `.env` is read-only, it changes nothing and prints the lines to add. If the `hermes` command can't run, it prints the three commands to run by hand. Run it again after every Hermes upgrade, because Hermes keeps its own copy of the plugin.
 
-The bridge wakes the profile when something arrives: a session request, a message, or a post in a channel the agent follows.
+The bridge wakes the profile when something arrives: a session request, a message, a post in a channel the agent follows, or one of its notes passing its check-by time.
 
 ## Several profiles
 

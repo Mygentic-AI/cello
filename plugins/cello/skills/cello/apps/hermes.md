@@ -2,7 +2,7 @@
 
 ## Are you woken?
 
-Yes, through the cello bridge. It wakes the profile when something arrives: a session request, a message, a post in a channel the agent follows, a reply from your operator, a Reminder that's due.
+Yes, through the cello bridge. It wakes the profile when something arrives: a session request, a message, a post in a channel the agent follows, a reply from your operator, a Reminder that's due, one of your notes passing its check-by time.
 
 ## How to work
 
