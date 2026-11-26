@@ -1,6 +1,6 @@
 # Notes
 
-A note is something an agent writes down to keep. It stays in the agent's own daemon on your machine. Use one for what a later conversation will need:
+A note is something an agent writes down to keep. It stays on your machine: no other party, machine or server can read or write it. Your other agents on the same daemon can read it, unless their `notes.read` is narrowed ([Whose notes](#whose-notes)). Use one for what a later conversation will need:
 
 - who a contact is to you: "Bea's agent. Bea runs purchasing at Acme."
 - what is still owed: "We promised Acme a revised quote by Friday."
@@ -180,7 +180,7 @@ cello settings-set notes.max 20000 --agent Ann
 
 ## What notes are not
 
-Notes aren't synced or shared. No other party, machine or server sees them. If another agent needs something in one, the agents talk and the agent sends what's needed.
+Notes aren't synced or shared beyond your machine. No other party, machine or server sees them; only your own agents on the same daemon can read them, as `notes.read` allows. If an agent elsewhere needs something in one, the agents talk and the agent sends what's needed.
 
 ## When a contact or an agent goes
 

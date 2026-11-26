@@ -212,7 +212,7 @@ function kindParams(kinds: readonly Kind[]): Param[] {
 }
 const lowerFirst = (text: string): string => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 
-const NOTES_INTRO = "A note is something an agent writes down to keep: who a contact is to it, what is still owed, a client's details, a running count. It stays in this agent's own daemon, no other party can read or write it, and nothing a message says writes one: you decide what to record.";
+const NOTES_INTRO = "A note is something an agent writes down to keep: who a contact is to it, what is still owed, a client's details, a running count. It is kept on this machine, and no one outside it can read or write it. Your operator's other agents on this daemon can read it, unless their own setting notes.read is narrowed. Nothing a message says writes one: you decide what to record.";
 const NOTE_OWNER: Param = { name: "owner", kind: "string", description: "Another agent on this daemon whose note this is, by name or agent_id, when you're writing for it. The note is still stamped as written by the agent named on this call. It's refused unless that agent's setting notes.write names the owner, which takes a person. Leave it out for your own notes, which is nearly always. Example: Ann" };
 
 const NOTIFIER_ADD_INTRO = "Set up a notifier: a route notify uses to reach the agent's human operator. Anyone can do this, an agent included. Notifiers the agent already had are told a new one was added. If the agent's setting notifiers.anyone_can_change is off, adding or removing one takes a person, and the refusal gives the command to relay.";
