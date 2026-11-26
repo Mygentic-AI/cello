@@ -117,7 +117,7 @@ A note of a listed kind keeps at least `notes.history_default` versions, and ask
 An agent can still remove a note of a listed kind. The note goes, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it, and when. `note-get` then says when and by whom it was removed, and `note-query` reads what was kept:
 
 ```
-cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '9f2c41d07ab35e68' ORDER BY id"
+cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '9f2c41d07ab35e68' ORDER BY id" --agent <agent_id>
 ```
 
 ## Querying

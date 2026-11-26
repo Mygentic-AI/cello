@@ -424,8 +424,12 @@ test("removing a note whose kind must keep history: the note goes, its versions 
   const gone = notes.remove(BEA, ANN, kept.id) as { removed: boolean; history_kept: number; history_note: string };
   assert.equal(gone.removed, true);
   assert.equal(gone.history_kept, 2);
-  assert.match(gone.history_note, /kind promise must keep history.*note-query "SELECT .* FROM note_changes WHERE note_id = '[0-9a-f]{16}'/);
+  // Bea removed it, but the history is Ann's, so the command names Ann, or pasted it would fail or read the wrong agent's.
+  const command = `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '${kept.id}' ORDER BY id" --agent ${ANN}`;
+  assert.match(gone.history_note, /kind promise must keep history/);
+  assert.ok(gone.history_note.endsWith(`Read them with: ${command}`), gone.history_note);
   assert.throws(() => notes.get(ANN, kept.id, true), refusal("no_such_note", new RegExp(`removed at ${new Date(clock.now).toISOString()} by ${BEA}.*past versions are kept`)));
+  assert.throws(() => notes.get(ANN, kept.id, true), (err: unknown) => err instanceof LocalError && err.message.endsWith(`past versions are kept: ${command}`));
   assert.equal((notes.list(ANN, {}) as { notes: Note[] }).notes.some((note) => note.id === kept.id), false, "the note itself is gone");
 
   const entries = changesOf(notes).filter((row) => row[2] === kept.id);

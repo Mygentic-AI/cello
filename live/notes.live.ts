@@ -170,9 +170,14 @@ test("an agent keeps notes by command line: write, change, history, source, list
   ok(["note-set", "--note", promise.id, "--status", "sent", "--agent", "Rae"], "rae-shell");
   const removed = ok(["note-remove", promise.id, "--agent", "Rae"], "rae-shell");
   assert.deepEqual([removed["removed"], removed["history_kept"]], [true, 2]);
-  assert.match(refused(["note-get", promise.id, "--agent", "Rae"], "no_such_note", "rae-shell"), /was removed at .* past versions are kept/);
-  const kept = (ok(["note-query", `SELECT removed, json_extract(before, '$.status') AS status FROM note_changes WHERE note_id = '${promise.id}' ORDER BY id`, "--agent", "Rae"], "rae-shell") as unknown as { rows: Record<string, unknown>[] }).rows;
-  assert.deepEqual(kept, [{ removed: 0, status: null }, { removed: 1, status: "sent" }]);
+  const gone = refused(["note-get", promise.id, "--agent", "Rae"], "no_such_note", "rae-shell");
+  assert.match(gone, /was removed at .* past versions are kept/);
+  // The command the answer prints is run as given, with nothing added.
+  const printed = /Read them with: cello note-query "([^"]+)" --agent ([0-9a-f]{64})$/.exec(removed["history_note"] as string);
+  assert.ok(printed, `no command to run in: ${String(removed["history_note"])}`);
+  assert.ok(gone.endsWith(printed[0].slice("Read them with: ".length)), `note-get prints the same command: ${gone}`);
+  const kept = (ok(["note-query", printed[1] as string, "--agent", printed[2] as string], "rae-shell") as unknown as { rows: { removed: number; before: string }[] }).rows;
+  assert.deepEqual(kept.map((row) => [row.removed, (JSON.parse(row.before) as { status: string | null }).status]), [[0, null], [1, "sent"]]);
 
   // Removing a note takes it for good.
   assert.equal(ok(["note-remove", asked.id, "--agent", "Sol"], "sol-shell")["removed"], true);
