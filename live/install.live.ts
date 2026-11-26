@@ -241,6 +241,11 @@ test("the installed binary holds a whole conversation, through a daemon kill, an
   assert.equal(reportG["root"], reportH["root"]);
   const transcript = ok(["transcript", session, "--agent", "Gail"]) as { entries: { text?: string }[] };
   assert.deepEqual(transcript.entries.slice(0, 4).map((e) => e.text), ["first", "second", "still with you", "that's all"]);
+
+  // A note query runs in a process of its own, started from the installed package's compiled file.
+  ok(["note-set", "{\"amount\": 40}", "--kind", "sale", "--agent", "Gail"]);
+  ok(["note-set", "{\"amount\": 2}", "--kind", "sale", "--agent", "Gail"]);
+  assert.deepEqual((ok(["note-query", "SELECT sum(json_extract(body, '$.amount')) AS total FROM notes WHERE kind = 'sale'", "--agent", "Gail"]) as { rows: unknown[] }).rows, [{ total: 42 }]);
   passed++;
 });
 

@@ -169,6 +169,42 @@ test("an agent keeps notes by command line: write, change, history, source, list
   refused(["note-get", asked.id, "--agent", "Sol"], "no_such_note", "sol-shell");
 });
 
+test("note-query runs one read-only statement over an agent's notes, and reading another agent's takes a person", () => {
+  const agents = (ok(["agents"]) as { agents: { name: string; agent_id: string }[] }).agents;
+  const rae = agents.find((agent) => agent.name === "Rae")?.agent_id as string;
+  interface Answer { agent: string; rows: Record<string, unknown>[]; count: number; cut?: boolean }
+  const query = (sql: string, agent: string, caller: string): Answer => ok(["note-query", sql, "--agent", agent], caller) as unknown as Answer;
+  for (const [amount, region] of [[500, "north"], [250, "north"], [100, "south"]] as const) {
+    ok(["note-set", JSON.stringify({ amount, region }), "--kind", "sale", "--agent", "Rae"], "rae-shell");
+  }
+
+  const sums = query("SELECT json_extract(body, '$.region') AS region, sum(json_extract(body, '$.amount')) AS total FROM notes WHERE kind = 'sale' GROUP BY region ORDER BY region", "Rae", "rae-shell");
+  assert.deepEqual(sums.rows, [{ region: "north", total: 750 }, { region: "south", total: 100 }]);
+  assert.equal(sums.agent, "Rae");
+  const [row] = query("SELECT id, agent_id, created_at FROM notes WHERE kind = 'sale' LIMIT 1", "Rae", "rae-shell").rows;
+  assert.match(String(row?.["id"]), /^[0-9a-f]{16}$/);
+  assert.equal(row?.["agent_id"], rae);
+  assert.match(String(row?.["created_at"]), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.match(refused(["note-query", "DELETE FROM notes", "--agent", "Rae"], "query_not_select", "rae-shell"), /SELECT or WITH/);
+  assert.match(refused(["note-query", "WITH x AS (SELECT 1) DELETE FROM notes", "--agent", "Rae"], "query_failed", "rae-shell"), /readonly/);
+  assert.equal(query("SELECT count(*) AS n FROM notes WHERE kind = 'sale'", "Rae", "rae-shell").rows[0]?.["n"], 3, "nothing was deleted");
+  ok(["settings-set", "notes.query_rows", "2", "--agent", "Rae"], "rae-shell");
+  const cut = query("SELECT id FROM notes", "Rae", "rae-shell");
+  assert.deepEqual([cut.count, cut.cut], [2, true]);
+  refused(["settings-set", "notes.query_rows", "1000", "--agent", "Rae"], "person_required", "rae-shell");
+  person(["settings-set", "notes.query_rows", "1000", "--agent", "Rae"]);
+
+  // Sol sees only his own notes. Widening that takes a person, who is told Sol is open to strangers.
+  const raes = `SELECT count(*) AS n FROM notes WHERE agent_id = '${rae}'`;
+  assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0);
+  assert.match(refused(["settings-set", "notes.read", rae, "--agent", "Sol"], "person_required", "sol-shell"), /notes\.read/);
+  const widened = person(["settings-set", "notes.read", rae, "--agent", "Sol"]);
+  assert.match(widened, /"warning":\s*"This agent accepts sessions from strangers, and it can now read other agents' notes/, widened);
+  assert.ok((query(raes, "Sol", "sol-shell").rows[0]?.["n"] as number) >= 3);
+  assert.equal(ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell")["warning"], undefined, "narrowing takes nobody");
+  assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0);
+});
+
 test("an agent that is removed takes its notes and their history with it", () => {
   const tom = ok(["create-agent", "Tom"])["agent_id"] as string;
   const kept = ok(["note-set", "v0", "--keep-history", "3", "--agent", "Tom"], "tom-shell") as unknown as Note;

@@ -365,9 +365,9 @@ export class Governance {
     if (change.direction === "loosen") requirePerson(params, `This changes ${name} from ${change.from} to ${change.to} for ${agentHex}, which loosens it.`, command);
     change.apply();
     if (change.direction !== "neutral") this.#weakened(agentId, name, change.from, change.to, change.direction, params, `cello settings-set ${name} ${JSON.stringify(change.from)} --agent ${agentHex}`);
-    // Said, not stopped: what a stranger sends this agent can now end up in another agent's notes.
-    const warning = name === "notes.write" && change.direction === "loosen" && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut
-      ? `This agent accepts sessions from strangers, and it can now write other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}`
+    // Said, not stopped: what a stranger sends this agent can now end up in another agent's notes, or talk it into repeating them.
+    const warning = (name === "notes.write" || name === "notes.read") && change.direction === "loosen" && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut
+      ? `This agent accepts sessions from strangers, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}`
       : undefined;
     return { name, value: change.to, was: change.from, ...(warning ? { warning } : {}) };
   }

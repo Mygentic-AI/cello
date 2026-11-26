@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { LocalError } from "./errors.ts";
 import { logEvent } from "./log.ts";
+import type { NoteQueries, QueryRow } from "./note-query.ts";
 import { listOf, MAX_LABEL_CHARS, MAX_NOTE_HISTORY, type Reach } from "./reach.ts";
 import type { Store } from "./store.ts";
 
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS note_changes (
   before     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS note_changes_by_note ON note_changes (note_id, id);
+CREATE INDEX IF NOT EXISTS note_changes_by_agent ON note_changes (agent_id, id);
 -- Contacts an agent took off its list. Without this a removed contact looks the same as a stranger it never added.
 CREATE TABLE IF NOT EXISTS note_removed_contacts (
   agent_id   BLOB NOT NULL,
@@ -69,6 +71,8 @@ const OPERATOR_RETRY_MS = 10 * 60_000;
 const LIST_DEFAULT = 50;
 const LIST_MAX = 500;
 const LIST_BODY_CHARS = 200;
+// How many rows are read for a query between turns of the event loop.
+const QUERY_BATCH = 500;
 
 interface Row {
   id: Uint8Array; agent_id: Uint8Array; written_by: Uint8Array; created_at: number; updated_at: number;
@@ -102,6 +106,8 @@ export interface NoteHost {
   hasNotifier(agentHex: string): boolean;
   // Sends the agent's notifiers a fixed line. It throws if nobody could be told.
   tellOperator(agentHex: string, noteHex: string): Promise<void>;
+  // Every agent on this daemon, by id.
+  agents(): string[];
 }
 
 export interface ShownNotes { shown?: Record<string, unknown>; commit(): void }
@@ -531,6 +537,60 @@ export class Notes {
     this.#delete(row.agent_id, row.id);
     logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex });
     return { removed: true, agent: this.#host.agentName(ownerHex), id: hex(row.id) };
+  }
+
+  // Whose notes this agent may read: its own, and those its notes.read setting names, which only a person widens.
+  readableBy(agentHex: string): string[] {
+    const allowed = this.#reach.setting(bytesOf(agentHex), "notes.read");
+    const here = this.#host.agents();
+    const others = allowed === "all" ? here : allowed === "own" ? [] : listOf(allowed).filter((id) => here.includes(id));
+    return [agentHex, ...others.filter((id) => id !== agentHex)];
+  }
+
+  // The rows a query by this agent sees, in the shape agents write SQL against: ids as hex and times as ISO text. Read
+  // a batch at a time, so a large store is never held whole on the daemon's side. Past versions can be a hundred times
+  // the notes themselves, so they're copied only for a statement that names their table.
+  *queryRows(readerHex: string, withChanges: boolean): Generator<QueryRow[]> {
+    const text = (bytes: Uint8Array | null): string | null => bytes && hex(bytes);
+    for (const agentHex of this.readableBy(readerHex)) {
+      this.#sweep(agentHex);
+      const agent = bytesOf(agentHex);
+      const removed = new Map<string, boolean>();
+      const contactRemoved = (row: Row): boolean => {
+        if (row.with_id === null) return false;
+        const key = hex(row.with_id);
+        if (!removed.has(key)) removed.set(key, this.#contactRemoved(row));
+        return removed.get(key) as boolean;
+      };
+      for (let after = 0; ;) {
+        const rows = this.#store.prepare(`SELECT rowid AS place, ${COLUMNS} FROM notes WHERE agent_id = ? AND rowid > ? ORDER BY rowid LIMIT ?`).all(agent, after, QUERY_BATCH) as (Row & { place: number })[];
+        if (rows.length === 0) break;
+        after = (rows.at(-1) as { place: number }).place;
+        yield rows.map((row) => ["n", hex(row.id), agentHex, hex(row.written_by), iso(row.created_at), iso(row.updated_at), row.kind, row.status, row.entity, text(row.with_id), text(row.session_id), text(row.channel_id),
+          iso(row.check_by), iso(row.rang_at), iso(row.expires_at), row.show_at_start, row.keep_history, row.source, row.body, contactRemoved(row) ? 1 : 0]);
+      }
+      for (let after = 0; withChanges;) {
+        const rows = this.#store.prepare("SELECT id, note_id, written_by, changed_at, source, before FROM note_changes WHERE agent_id = ? AND id > ? ORDER BY id LIMIT ?").all(agent, after, QUERY_BATCH) as { id: number; note_id: Uint8Array; written_by: Uint8Array; changed_at: number; source: string | null; before: string }[];
+        if (rows.length === 0) break;
+        after = (rows.at(-1) as { id: number }).id;
+        yield rows.map((row) => ["c", row.id, hex(row.note_id), agentHex, hex(row.written_by), iso(row.changed_at), row.source, row.before]);
+      }
+    }
+  }
+
+  // One read-only statement over the notes this agent may read, within its limits of time and rows.
+  async query(agentHex: string, sql: unknown, queries: NoteQueries): Promise<unknown> {
+    const agent = bytesOf(agentHex);
+    const limits = { ms: this.#reach.number(agent, "notes.query_ms"), rows: this.#reach.number(agent, "notes.query_rows") };
+    // SQL has no way to reach a table without writing its name, quoted or not, so a statement without it can't read it.
+    const answer = await queries.run(sql, this.queryRows(agentHex, typeof sql === "string" && /note_changes/i.test(sql)), limits);
+    logEvent("note.queried", { agent: agentHex, rows: answer.rows.length, cut: answer.cut });
+    return {
+      agent: this.#host.agentName(agentHex),
+      rows: answer.rows,
+      count: answer.rows.length,
+      ...(answer.cut ? { cut: true, cut_note: `There were more rows than the ${limits.rows} a query returns, so these are the first ${answer.rows.length}. Narrow the query, add LIMIT and OFFSET, or have your operator raise the setting notes.query_rows.` } : {}),
+    };
   }
 
   // An agent that's removed takes its notes and their history with it.

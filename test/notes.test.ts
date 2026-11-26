@@ -57,6 +57,7 @@ function setup(): { notes: Notes; reach: Reach; store: Store; clock: { now: numb
       ears.told.push(note);
       return Promise.resolve();
     },
+    agents: () => [ANN, BEA, CAL],
   };
   const notes = new Notes(store, reach, host, () => clock.now);
   // The daemon stopped and started: everything kept in memory is gone, and the database is the same.
@@ -247,6 +248,9 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", "Bea"), refusal("bad_setting"));
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", `all,${BEA}`), refusal("bad_setting"));
   assert.throws(() => reach.plan(bytes(ANN), "notes.write", ""), refusal("bad_setting"));
+  way("notes.read", [["own", "neutral"], [BEA, "loosen"], ["all", "loosen"], [CAL, "tighten"], ["own", "tighten"]]);
+  way("notes.query_ms", [["1000", "tighten"], ["1001", "loosen"]]);
+  way("notes.query_rows", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.history_kinds", [["promise", "tighten"], ["price,promise", "tighten"], [" promise , price ", "neutral"], ["price", "loosen"], ["promise", "loosen"], [null, "loosen"], ["", "neutral"]]);
   way("notes.max", [["10", "tighten"], ["11", "loosen"]]);
   way("notes.body_max_bytes", [["100", "tighten"], ["101", "loosen"]]);
@@ -257,7 +261,7 @@ test("widening who an agent may write for, raising a limit and unlisting a kind 
   way("notes.history_default", [["4", "loosen"], ["4", "neutral"], ["7", "loosen"]]);
 });
 
-test("widening notes.write warns only when the agent is open to strangers, and narrowing never does", () => {
+test("widening notes.write or notes.read warns only when the agent is open to strangers, and narrowing never does", () => {
   const { store } = setup();
   const governance = new Governance(store, { notify: () => undefined, isLocalAgent: () => true });
   governance.writeDefaults(bytes(ANN));
@@ -267,6 +271,11 @@ test("widening notes.write warns only when the agent is open to strangers, and n
   assert.equal(set("notes.max", "20000").warning, undefined, "another setting says nothing");
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("notes.write", "all").warning, undefined, "shut to strangers, there is nothing to warn of");
+  assert.equal(set("notes.read", "all").warning, undefined, "nor for reading");
+  set("notes.read", "own");
+  set("bounds.unknown.not_accepting", "false");
+  assert.match(set("notes.read", BEA).warning ?? "", /can now read other agents' notes/);
+  assert.equal(set("notes.read", "own").warning, undefined);
 });
 
 test("a source must be a message or a post the writer holds, and each change's stamp replaces the last", () => {

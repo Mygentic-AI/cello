@@ -14,6 +14,7 @@ import { type RunningAccountPage, serveAccountPage } from "./account-page.ts";
 import { Channels } from "./channels.ts";
 import { Discovery } from "./discovery.ts";
 import { requirePerson as requirePersonFor } from "./errors.ts";
+import { NoteQueries } from "./note-query.ts";
 import { Notes } from "./notes.ts";
 import { Notifiers } from "./notifiers.ts";
 import { logEvent } from "./log.ts";
@@ -89,7 +90,9 @@ const notes: Notes = new Notes(store, engine.governance.reach, {
   bell: (agentHex, noteHex) => ring(agentHex, { type: "note_due", agent: engine.agentName(agentHex), agent_id: agentHex, note_id: noteHex }),
   hasNotifier: (agentHex) => notifiers.has(agentHex),
   tellOperator: (agentHex, noteHex) => notifiers.noteDue(agentHex, noteHex),
+  agents: () => engine.agentHexes(),
 });
+const noteQueries = new NoteQueries();
 // Rings the notes whose check-by time has passed, each once. A failure is one agent's, and is logged by name.
 function ringNotes(only?: string): void {
   for (const agentHex of only === undefined ? engine.agentHexes() : [only]) {
@@ -596,6 +599,8 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return notes.get(named(params), params["note"], params["history"] === true);
     case "note_list":
       return notes.list(named(params), params);
+    case "note_query":
+      return notes.query(named(params), params["sql"], noteQueries);
     case "note_remove": {
       const writer = named(params);
       const owner = noteOwner(writer, params);
