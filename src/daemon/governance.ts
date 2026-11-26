@@ -11,7 +11,7 @@ import { PolicyProposals } from "./policy-proposals.ts";
 import { ISSUER_KINDS, RULE_DIRECTIONS, RULE_SCOPES, type RuleDirection, type RuleScope, type SignalRule, SignalRules, isNoRule } from "./signal-rules.ts";
 import { MAX_PRESENTED_SIGNALS } from "../protocol/structures.ts";
 import { PolicyStore, type PolicyScope, type PolicyType, PolicyValidationError } from "./policy-store.ts";
-import { CALLING_RAISES_KEY, type Direction, Reach } from "./reach.ts";
+import { CALLING_RAISES_KEY, type Direction, Reach, listOf } from "./reach.ts";
 import { SettingError, changeSetting, listSettings } from "./settings.ts";
 import type { Store } from "./store.ts";
 import { TIER, type Tier, tierFromName, tierName } from "./tiers.ts";
@@ -373,10 +373,20 @@ export class Governance {
   #notesWarning(agentId: Uint8Array, agentHex: string, name: string, direction: Direction): { warning?: string } {
     if (direction !== "loosen") return {};
     if (name === "bounds.unknown.not_accepting") {
-      if (this.reach.setting(agentId, "notes.read") === "own") return {};
-      const row = this.#store.agents().find((agent) => toHex(agent.agent_id) === agentHex);
+      const here = this.#store.agents();
+      const row = here.find((agent) => toHex(agent.agent_id) === agentHex);
       if (!row) throw new LocalError("unknown_agent", `there's no agent ${agentHex} on this daemon`);
-      return { warning: `Unknown agents can now reach ${row.name}, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent ${agentHex}` };
+      // Only notes that could exist now count: another agent on this daemon that the setting covers.
+      const others = here.map((agent) => toHex(agent.agent_id)).filter((id) => id !== agentHex);
+      const covers = (key: string): boolean => {
+        const allowed = this.reach.setting(agentId, key);
+        return allowed === "all" ? others.length > 0 : allowed !== "own" && listOf(allowed).some((id) => others.includes(id));
+      };
+      const reaches = ["notes.read", "notes.write"].filter(covers);
+      if (reaches.length === 0) return {};
+      const what = reaches.length === 2 ? "read and write" : reaches[0] === "notes.read" ? "read" : "write";
+      const stop = reaches.map((key) => `cello settings-set ${key} own --agent ${agentHex}`).join(" and ");
+      return { warning: `Unknown agents can now reach ${row.name}, and it can ${what} your other agents' notes. To stop that: ${stop}` };
     }
     if ((name === "notes.write" || name === "notes.read") && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut) {
       return { warning: `This agent accepts sessions from strangers, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}` };

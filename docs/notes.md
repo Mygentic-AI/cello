@@ -114,11 +114,13 @@ cello settings-set notes.history_kinds promise,price --agent Ann
 
 A note of a listed kind keeps at least `notes.history_default` versions, and asking for fewer is refused with `history_required`. Anyone can add a kind. Taking one off takes a person.
 
-An agent can still remove a note of a listed kind. The note goes, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it, and when. `note-get` then says when and by whom it was removed, and `note-query` reads what was kept:
+An agent can still remove a note of a listed kind. The note goes, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it, and when. `note-get` then says when and by whom it was removed, and `note-query` reads what was kept. The removal and `note-get` print the command, run as the agent named on the call, with the owner's id in the query:
 
 ```
-cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '9f2c41d07ab35e68' ORDER BY id" --agent <agent_id>
+cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE agent_id = '<owner_id>' AND note_id = '9f2c41d07ab35e68' ORDER BY id" --agent <agent_id>
 ```
+
+When that agent's `notes.read` doesn't cover the owner, no command is printed: it says reading the history takes `notes.read` covering the owner.
 
 ## Querying
 
@@ -151,12 +153,12 @@ A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It
 
 Two settings say whose notes an agent reaches beyond its own:
 
-- **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`.
+- **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`. That limits what the agent reads when it acts as itself. It doesn't stop a program on this machine that names another agent with `--agent`, since CELLO takes each local call's word for which agent it acts as (see the end of this section).
 - **`notes.write`**: whose notes this agent may set and remove with `--owner`, in the same form. It starts at `own`. The note is still stamped with the agent that wrote it.
 
 Narrowing either one needs no person. Naming anyone new, or going back to `all`, takes a person. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
 
-A stranger's words could end up in another agent's notes, or talk the agent into repeating them, so you're warned when an agent is both open to unknown agents and reaching other agents' notes. Widening `notes.write` or `notes.read` on an agent that accepts sessions from strangers warns you, and so does opening an agent to unknown agents (`bounds.unknown.not_accepting false`) while its `notes.read` lets it read other agents' notes:
+A stranger's words could end up in another agent's notes, or talk the agent into repeating them, so you're warned when an agent is both open to unknown agents and reaching other agents' notes. Widening `notes.write` or `notes.read` on an agent that accepts sessions from strangers warns you, and so does opening an agent to unknown agents (`bounds.unknown.not_accepting false`) while its `notes.read` or `notes.write` covers another agent on this daemon. The warning says read, write or both, as applies, and gives the command for each:
 
 ```
 Unknown agents can now reach Ann, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent <agent_id>

@@ -102,7 +102,7 @@ test("a change touches only the fields it names, clear empties one, and times wi
   assert.throws(() => notes.set(ANN, ANN, { body: "x", check_by: "2026-12-01-05:00" }), refusal("bad_argument", /^check_by is a date with no time.*such as 2026-12-01T00:00-05:00/));
   const offset = notes.set(ANN, ANN, { body: "x", check_by: "2026-12-01T00:00-05:00", expires: "2027-01-01T00:00+02:00" }) as Note;
   assert.deepEqual([offset.check_by, offset.expires_at], ["2026-12-01T05:00:00.000Z", "2026-12-31T22:00:00.000Z"], "the form it suggests is taken");
-  assert.equal((notes.set(ANN, ANN, { body: "x", expires: "2027-01-01Z" }) as Note).expires_at, "2027-01-01T00:00:00.000Z", "Z on a date alone is still UTC, as before");
+  assert.equal((notes.set(ANN, ANN, { body: "x", expires: "2027-01-01Z" }) as Note).expires_at, "2027-01-01T00:00:00.000Z", "Z on a date alone is UTC");
   const made = notes.set(ANN, ANN, { body: "Quote sent.", kind: "deal", status: "waiting on Ana", with: PEER, check_by: "2026-12-01T09:00", expires: "2027-01-01", show_at_start: true }) as Note;
   assert.equal(made.check_by, "2026-12-01T09:00:00.000Z");
   assert.equal(made.expires_at, "2027-01-01T00:00:00.000Z");
@@ -305,7 +305,7 @@ test("reading starts open for an agent that never stored a value, and a value it
   const { store, reach } = setup();
   assert.equal(reach.setting(bytes(ANN), "notes.read"), "all");
   assert.equal(reach.setting(bytes(ANN), "notes.write"), "own", "writing stays shut");
-  // Bea locked down, and Cal's store is from before notes.read existed, so it holds no value until the daemon starts.
+  // Bea locked down, and Cal's store holds no value for notes.read, so it takes the default when the daemon starts.
   reach.plan(bytes(BEA), "notes.read", "own").apply();
   store.prepare("DELETE FROM agent_settings WHERE agent_id = ? AND key = 'notes.read'").run(bytes(CAL));
   const started = new Reach(store);
@@ -340,17 +340,39 @@ test("being open to strangers while reaching other agents' notes warns once, fro
   set("notes.read", "own");
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined);
-  // Writing alone doesn't count for this warning: it is told when notes.write is widened.
+  // Open to strangers, widening writing warns.
   assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from strangers, and it can now write other agents' notes/);
   assert.equal(set("notes.write", "own").warning, undefined, "narrowing says nothing");
   assert.equal(set("notes.max", "20000").warning, undefined, "another setting says nothing");
-  // Open to strangers, widening reading explicitly warns as before; shut, it doesn't.
+  // Open to strangers, widening reading warns; shut, it doesn't.
   assert.match(set("notes.read", BEA).warning ?? "", /accepts sessions from strangers, and it can now read other agents' notes/);
   assert.equal(set("notes.read", "own").warning, undefined);
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("notes.write", "all").warning, undefined, "shut to strangers, there is nothing to warn of");
   assert.equal(set("notes.read", "all").warning, undefined, "nor for reading");
-  assert.equal(set("bounds.unknown.not_accepting", "false").warning, opened, "and opening now warns again");
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, `Unknown agents can now reach Ann, and it can read and write your other agents' notes. To stop that: cello settings-set notes.read own --agent ${ANN} and cello settings-set notes.write own --agent ${ANN}`, "and opening now warns of both");
+  // Shut, writing widened, re-opened: writing alone warns on re-opening.
+  set("notes.read", "own");
+  set("notes.write", "own");
+  set("bounds.unknown.not_accepting", "true");
+  set("notes.write", CAL);
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, `Unknown agents can now reach Ann, and it can write your other agents' notes. To stop that: cello settings-set notes.write own --agent ${ANN}`);
+  // A setting naming only agents that aren't on this daemon reaches no notes, so re-opening says nothing.
+  set("notes.write", "own");
+  set("notes.read", "ff".repeat(32));
+  set("bounds.unknown.not_accepting", "true");
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined);
+});
+
+test("re-opening the only agent on a daemon to strangers warns of nothing, since there are no other agents' notes", () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "cello-notes-")), "cello.db"));
+  store.insertAgent(bytes(ANN), "Ann", new Uint8Array(32).fill(1), new Uint8Array(32).fill(11));
+  const governance = new Governance(store, { notify: () => undefined, isLocalAgent: () => true });
+  governance.writeDefaults(bytes(ANN));
+  const set = (name: string, value: string): { warning?: string } => governance.settingsSet(bytes(ANN), ANN, { name, value, caller: "cli", person_confirmed: true }) as { warning?: string };
+  set("notes.write", "all");
+  set("bounds.unknown.not_accepting", "true");
+  assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined, "reading and writing all, with nobody else here");
 });
 
 test("a source must be a message or a post the writer holds, and each change's stamp replaces the last", () => {
@@ -460,12 +482,15 @@ test("removing a note whose kind must keep history: the note goes, its versions 
   const gone = notes.remove(BEA, ANN, kept.id) as { removed: boolean; history_kept: number; history_note: string };
   assert.equal(gone.removed, true);
   assert.equal(gone.history_kept, 2);
-  // Bea removed it, but the history is Ann's, so the command names Ann, or pasted it would fail or read the wrong agent's.
-  const command = `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '${kept.id}' ORDER BY id" --agent ${ANN}`;
+  // Bea removed it, so the command runs as Bea, never as Ann, and the query keeps to Ann's history.
+  const command = (agent: string): string => `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE agent_id = '${ANN}' AND note_id = '${kept.id}' ORDER BY id" --agent ${agent}`;
   assert.match(gone.history_note, /kind promise must keep history/);
-  assert.ok(gone.history_note.endsWith(`Read them with: ${command}`), gone.history_note);
+  assert.ok(gone.history_note.endsWith(`Read them with: ${command(BEA)}`), gone.history_note);
   assert.throws(() => notes.get(ANN, ANN, kept.id, true), refusal("no_such_note", new RegExp(`removed at ${new Date(clock.now).toISOString()} by ${BEA}.*past versions are kept`)));
-  assert.throws(() => notes.get(ANN, ANN, kept.id, true), (err: unknown) => err instanceof LocalError && err.message.endsWith(`past versions are kept: ${command}`));
+  assert.throws(() => notes.get(ANN, ANN, kept.id, true), (err: unknown) => err instanceof LocalError && err.message.endsWith(`past versions are kept. Read them with: ${command(ANN)}`));
+  // A caller whose notes.read doesn't cover the owner is told what reading it takes, and given no command.
+  set("notes.read", "own", BEA);
+  assert.throws(() => notes.set(BEA, ANN, { note: kept.id, status: "x" }), (err: unknown) => err instanceof LocalError && err.message.endsWith("past versions are kept. Reading them takes Bea's setting notes.read covering Ann.") && !err.message.includes("note-query"));
   assert.equal((notes.list(ANN, ANN, {}) as { notes: Note[] }).notes.some((note) => note.id === kept.id), false, "the note itself is gone");
 
   const entries = changesOf(notes).filter((row) => row[2] === kept.id);

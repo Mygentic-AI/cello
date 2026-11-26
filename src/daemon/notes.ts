@@ -116,7 +116,6 @@ const NOTHING_SHOWN: ShownNotes = { commit: () => undefined };
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 const bytesOf = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, "hex"));
 const iso = (at: number | null): string | null => (at === null ? null : new Date(at).toISOString());
-const historyQuery = (ownerHex: string, noteHex: string): string => `cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE note_id = '${noteHex}' ORDER BY id" --agent ${ownerHex}`;
 
 function label(params: Record<string, unknown>, name: string): string | undefined {
   const value = params[name];
@@ -216,8 +215,15 @@ export class Notes {
     });
   }
 
-  // Looked up under its owner, so one agent's id never reaches another's note.
-  #find(ownerHex: string, noteId: unknown): Row {
+  // How the caller reads a removed note's kept history: a command run as the caller, never as the owner, so it's
+  // offered only when the caller's notes.read covers the owner.
+  #historyRead(callerHex: string, ownerHex: string, noteHex: string): string {
+    if (!this.readableBy(callerHex).includes(ownerHex)) return `Reading them takes ${this.#host.agentName(callerHex)}'s setting notes.read covering ${this.#host.agentName(ownerHex)}.`;
+    return `Read them with: cello note-query "SELECT changed_at, written_by, removed, before FROM note_changes WHERE agent_id = '${ownerHex}' AND note_id = '${noteHex}' ORDER BY id" --agent ${callerHex}`;
+  }
+
+  // Looked up under its owner, so one agent's id never reaches another's note. The caller is who is told about it.
+  #find(callerHex: string, ownerHex: string, noteId: unknown): Row {
     const row = typeof noteId === "string" && /^[0-9a-f]{16}$/.test(noteId)
       ? this.#store.prepare(`SELECT ${COLUMNS} FROM notes WHERE agent_id = ? AND id = ?`).get(bytesOf(ownerHex), bytesOf(noteId)) as Row | undefined
       : undefined;
@@ -225,7 +231,7 @@ export class Notes {
       const gone = typeof noteId === "string" && /^[0-9a-f]{16}$/.test(noteId)
         ? this.#store.prepare("SELECT written_by, changed_at FROM note_changes WHERE agent_id = ? AND note_id = ? AND removed = 1").get(bytesOf(ownerHex), bytesOf(noteId)) as { written_by: Uint8Array; changed_at: number } | undefined
         : undefined;
-      if (gone) throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)}'s note ${noteId as string} was removed at ${iso(gone.changed_at) as string} by ${hex(gone.written_by)}. Its kind must keep history, so its past versions are kept: ${historyQuery(ownerHex, noteId as string)}`);
+      if (gone) throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)}'s note ${noteId as string} was removed at ${iso(gone.changed_at) as string} by ${hex(gone.written_by)}. Its kind must keep history, so its past versions are kept. ${this.#historyRead(callerHex, ownerHex, noteId as string)}`);
       throw new LocalError("no_such_note", `${this.#host.agentName(ownerHex)} has no note ${String(noteId)}. note-list shows them.`);
     }
     return row;
@@ -335,9 +341,9 @@ export class Notes {
       this.#store.prepare(`INSERT INTO notes (${SUPPLIED_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(noteId, owner, bytesOf(writerHex), now, now, row.kind, row.status, row.entity, row.with_id, row.session_id, row.channel_id, row.check_by, row.expires_at, row.show_at_start, row.keep_history, source, row.body);
       logEvent("note.set", { agent: ownerHex, note: hex(noteId), written_by: writerHex, created: true });
-      return { set: true, created: true, agent: name, ...this.#view(this.#find(ownerHex, hex(noteId))) };
+      return { set: true, created: true, agent: name, ...this.#view(this.#find(writerHex, ownerHex, hex(noteId))) };
     }
-    const old = this.#find(ownerHex, params["note"]);
+    const old = this.#find(writerHex, ownerHex, params["note"]);
     if (Object.keys(given).length === 0 && params["clear"] === undefined && source === null) throw new LocalError("bad_argument", "Nothing to change: give a field, or clear one.");
     const next: Supplied = { ...old, ...given };
     for (const column of cleared) (next as unknown as Record<string, unknown>)[column] = EMPTY[column];
@@ -355,7 +361,7 @@ export class Notes {
       this.#store.prepare("DELETE FROM note_changes WHERE note_id = ? AND id NOT IN (SELECT id FROM note_changes WHERE note_id = ? ORDER BY id DESC LIMIT ?)").run(old.id, old.id, next.keep_history);
     });
     logEvent("note.set", { agent: ownerHex, note: hex(old.id), written_by: writerHex, created: false });
-    return { set: true, created: false, agent: name, ...this.#view(this.#find(ownerHex, hex(old.id))) };
+    return { set: true, created: false, agent: name, ...this.#view(this.#find(writerHex, ownerHex, hex(old.id))) };
   }
 
   // Another agent's notes take the reader's notes.read setting, the same one note-query goes by. Checked before
@@ -372,7 +378,7 @@ export class Notes {
     this.#mayRead(readerHex, ownerHex);
     const agentHex = ownerHex;
     this.#sweep(agentHex);
-    const row = this.#find(agentHex, noteId);
+    const row = this.#find(readerHex, agentHex, noteId);
     const changes = history
       ? (this.#store.prepare("SELECT written_by, changed_at, source, before FROM note_changes WHERE note_id = ? ORDER BY id DESC").all(row.id) as { written_by: Uint8Array; changed_at: number; source: string | null; before: string }[])
         .map((change) => ({ changed_at: iso(change.changed_at), written_by: hex(change.written_by), source: change.source, before: JSON.parse(change.before) as unknown }))
@@ -548,7 +554,7 @@ export class Notes {
   remove(writerHex: string, ownerHex: string, noteId: unknown): unknown {
     this.#mayWrite(writerHex, ownerHex);
     this.#sweep(ownerHex);
-    const row = this.#find(ownerHex, noteId);
+    const row = this.#find(writerHex, ownerHex, noteId);
     const name = this.#host.agentName(ownerHex);
     const kind = this.#listedKind(ownerHex, [row.kind, ...this.#keptKinds(row.id)]);
     if (kind === undefined) {
@@ -564,7 +570,7 @@ export class Notes {
     logEvent("note.removed", { agent: ownerHex, note: hex(row.id), written_by: writerHex, history_kept: kept });
     return {
       removed: true, agent: name, id: hex(row.id), history_kept: kept,
-      history_note: `Notes of kind ${kind} must keep history for ${name}, so the note is gone but its ${kept} kept ${kept === 1 ? "entry stays" : "entries stay"}, the last recording this removal, who made it and when. Read them with: ${historyQuery(ownerHex, hex(row.id))}`,
+      history_note: `Notes of kind ${kind} must keep history for ${name}, so the note is gone but its ${kept} kept ${kept === 1 ? "entry stays" : "entries stay"}, the last recording this removal, who made it and when. ${this.#historyRead(writerHex, ownerHex, hex(row.id))}`,
     };
   }
 
