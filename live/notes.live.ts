@@ -212,8 +212,18 @@ test("note-query runs one read-only statement over an agent's notes; a locked-do
   // Sol reads Rae's notes from the start. Locked down to his own, which needs nobody and warns of nothing, he can't.
   const raes = `SELECT count(*) AS n FROM notes WHERE agent_id = '${rae}'`;
   assert.ok((query(raes, "Sol", "sol-shell").rows[0]?.["n"] as number) >= 3, "reading is open by default");
+  // --mine keeps a question about Sol's own to his own, though Rae's are open to him.
+  assert.equal((ok(["note-query", raes, "--mine", "--agent", "Sol"], "sol-shell") as unknown as Answer).rows[0]?.["n"], 0);
+  // note-list and note-get read Rae's with --owner, by name or agent_id.
+  const listed = ok(["note-list", "--owner", "Rae", "--kind", "sale", "--agent", "Sol"], "sol-shell") as unknown as { agent: string; notes: Note[] };
+  assert.deepEqual([listed.agent, listed.notes.length], ["Rae", 3]);
+  const sale = listed.notes[0]?.id as string;
+  assert.equal((ok(["note-get", sale, "--owner", rae, "--agent", "Sol"], "sol-shell") as unknown as Note).agent_id, rae);
   assert.equal(ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell")["warning"], undefined, "narrowing takes nobody");
   assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0);
+  assert.match(refused(["note-list", "--owner", "Rae", "--agent", "Sol"], "not_allowed_to_read", "sol-shell"), /notes\.read/);
+  refused(["note-get", sale, "--owner", "Rae", "--agent", "Sol"], "not_allowed_to_read", "sol-shell");
+  refused(["note-list", "--owner", "Nobody", "--agent", "Sol"], "unknown_agent", "sol-shell");
   // Widening it back, by name or by going back to the default, takes a person, who is told Sol is open to strangers.
   assert.match(refused(["settings-set", "notes.read", rae, "--agent", "Sol"], "person_required", "sol-shell"), /notes\.read/);
   refused(["settings-set", "notes.read", "--clear", "--agent", "Sol"], "person_required", "sol-shell");
