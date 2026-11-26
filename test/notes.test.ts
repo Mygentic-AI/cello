@@ -525,6 +525,7 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
           noteAbout("2222222222222222", "Quinn's budget is 40k.", { with_id: P2 }),
           noteAbout("3333333333333333", "Renew the domain.", { past_check_by: true }),
           noteAbout("4444444444444444", "For this talk only.", { session_id: S1 }),
+          noteAbout("7777777777777777", "Say who you act for."),
           noteAbout("5555555555555555", "Chase Quinn.", { with_id: P2, past_check_by: true, operator_unreachable: "Your operator couldn't be told that this note's check-by time passed, so it is listed here." }),
         ], more_note: "3 more notes are marked to show here." },
       }],
@@ -540,6 +541,10 @@ test("Hermes, peer scope: a session's read keeps each note in its own conversati
   assert.match(chat(`Ann/${P2}`), /Quinn's budget is 40k\./);
   assert.match(chat(`Ann/${P2}`), /Note 5555555555555555, past its check-by time\. Your operator couldn't be told[^\n]*\nChase Quinn\./);
   assert.match(chat("Ann"), /Renew the domain\..*3 more notes/s);
+  // A note about nobody marked to show as every session starts goes to the agent's own chat too, so under peer scope
+  // the customer's conversation doesn't see it.
+  assert.match(chat("Ann"), /Say who you act for\./);
+  assert.doesNotMatch(chat(`Ann/${P1}`), /Say who you act for/);
   assert.equal(turns.filter((turn) => turn.chat === `Ann/${P2}`)[0]?.user, P2);
 });
 
