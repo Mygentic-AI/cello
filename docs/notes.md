@@ -31,7 +31,7 @@ cello note-set --note 9f2c41d07ab35e68 --status "quote sent" --agent Ann
 cello note-set --note 9f2c41d07ab35e68 --clear check-by,status --agent Ann
 ```
 
-`cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good, with its history, unless its kind must keep history (below). `note-list` has a filter for each label and scope, and cuts a long body to 200 characters.
+`cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good, with its history, unless its kind must keep history (below). `note-list` has a filter for each label and scope, and cuts a long body to 200 characters, marked `body_cut`. It answers with `total`, how many match, and `more` when that is more than it returned. On each note, `rang_at` is when the ring for its check-by time was done, or null until then.
 
 ## The fields
 
@@ -46,7 +46,7 @@ Every field is optional. A note can be only a body, or only a label, but it need
 | `--with`, `--session`, `--channel` | Its scope (below). | It isn't about one contact, conversation or channel. |
 | `--check-by` | A time to be rung if it still needs attention (below). With no zone it's UTC. | Nothing has to happen by a time, which is most notes. |
 | `--expires` | A time after which the note is removed, with its history. With no zone it's UTC. | You want to keep it. |
-| `--show-at-start` | Show it unasked where it belongs. Turn it off with `--clear show-at-start`. | Nearly always. |
+| `--show-at-start` | Show it unasked where it belongs (below). Turn it off with `--clear show-at-start`. | Nearly always: keep it for the few things the agent must have in front of it. |
 | `--keep-history` | How many past versions to keep, 0 to 100 (below). | Earlier values won't matter. |
 | `--source` | The message or post that caused this change, as `<session or channel id>:<position>`. It must be one the agent holds. | It came from the agent's own reasoning. |
 
@@ -83,7 +83,7 @@ With them comes this line, fixed by the daemon:
 
 ## The check-by time
 
-When a note's check-by time passes, the note rings once and never again for that time. A new time rings once more. A note with no check-by time never rings, and nothing in CELLO treats a note as unfinished or chases it for being old.
+When a note's check-by time passes, the note rings once and never again for that time. Sending the same time again changes nothing, and a new time rings once more. Clear it when the matter is done. A note with no check-by time never rings, and nothing in CELLO treats a note as unfinished or chases it for being old.
 
 The agent that holds the note is rung, and nobody else. A ring can be about 30 seconds late.
 
