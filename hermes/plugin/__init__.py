@@ -323,6 +323,8 @@ def _note_lines(page: Any) -> List[str]:
             first += ", past its check-by time"
         if one.get("contact_removed"):
             first += ", about a contact you removed"
+        if isinstance(one.get("operator_unreachable"), str) and one["operator_unreachable"]:
+            first += ". " + one["operator_unreachable"]
         body = one.get("body")
         text = "\n" + _their_words(body) if isinstance(body, str) and body else ""
         if one.get("body_cut"):
@@ -995,12 +997,10 @@ class CelloAdapter(BasePlatformAdapter):
         for one in (held.get("due") if isinstance(held, dict) else None) or []:
             if isinstance(one, dict) and isinstance(one.get("session_id"), str):
                 due_by_session.setdefault(one["session_id"], []).append(one)
-        # This read also took the agent's notes that were due, and the daemon now counts them as shown. They go with the
-        # first session delivered, or to the agent's own chat when there is none.
-        notes = result.get("notes")
+        # This read also took the agent's notes that were due, and the daemon now counts them as shown: each goes to the
+        # chat it belongs in, never along with whichever session happened to be read.
+        await self._route_notes(result.get("notes"), None, None, None)
         sessions_read = list(dict.fromkeys(list(by_session) + list(due_by_session)))
-        if not sessions_read and _note_lines(result):
-            await self._start_turn(self._agent_name, "cello-daemon", "\n\n".join(_note_lines(result)), {"cello_notes": True}, "notice")
         for session_id in sessions_read:
             messages = by_session.get(session_id, [])
             peer = await self._peer_of(session_id, {"from_id": messages[0].get("from_id")} if messages else {})
@@ -1009,8 +1009,7 @@ class CelloAdapter(BasePlatformAdapter):
                 logger.error("[cello] Session %s was read with no counterparty to route by. Its text is in the transcript.", session_id)
                 continue
             policies = [p for p in result.get("policies") or [] if p.get("session_id") == session_id]
-            await self._deliver(session_id, peer, chat_id, [{"messages": messages, "notices": [], "policies": policies, "reminders": {"due": due_by_session.get(session_id, [])}, "notes": notes}])
-            notes = None
+            await self._deliver(session_id, peer, chat_id, [{"messages": messages, "notices": [], "policies": policies, "reminders": {"due": due_by_session.get(session_id, [])}}])
 
     async def _read(self, session_id: str) -> Any:
         """Each page is used up once it's written, so this holds on to all of them."""
@@ -1069,6 +1068,45 @@ class CelloAdapter(BasePlatformAdapter):
             await self._start_turn(chat, peer or "cello-daemon", OPERATOR_HEADING + " About session " + sid + ".\n" + reply["text"], {"cello_operator": True}, "notice")
         return here
 
+    async def _note_chat(self, note: Dict[str, Any], current_session: Optional[str], current_peer: Optional[str], current_chat: Optional[str]) -> str:
+        """Where one of the agent's own notes goes. Under peer scope a note about one contact goes only to that contact's
+        conversation, and every other note, due or about nobody, to the agent's own chat: never into another customer's."""
+        if self._session_scope != "peer":
+            return current_chat or self._agent_name
+        contact = _safe_scalar(note.get("with_id"))
+        if contact:
+            return current_chat if current_chat and contact == current_peer else (self._chat_id_for(contact) or self._agent_name)
+        sid = _safe_scalar(note.get("session_id"))
+        if sid:
+            if current_chat and sid == current_session:
+                return current_chat
+            # The agent's own chat when the session's counterparty can't be found: never a guess at someone else's.
+            return self._bindings.get(sid) or self._chat_id_for(await self._peer_of(sid, {})) or self._agent_name
+        return self._agent_name
+
+    async def _route_notes(self, held: Any, current_session: Optional[str], current_peer: Optional[str], current_chat: Optional[str]) -> List[str]:
+        """Returns the block for the chat being delivered, and starts a turn in each other chat a note belongs in. The
+        daemon counts these notes as told once this read's answer reached the bridge, and there is no later step to put
+        that off, so every note has a place: the agent's own chat when nowhere else fits."""
+        shown = [one for one in ((held.get("shown") if isinstance(held, dict) else None) or []) if isinstance(one, dict)]
+        if not shown:
+            return []
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for one in shown:
+            groups.setdefault(await self._note_chat(one, current_session, current_peer, current_chat), []).append(one)
+        more = held.get("more_note") if isinstance(held.get("more_note"), str) else None
+        # How many more there are goes with the agent's own notes, where note-list can be run without a customer watching.
+        more_goes = self._agent_name if self._agent_name in groups else next(iter(groups))
+        here: List[str] = []
+        for chat, notes in groups.items():
+            lines = _note_lines({"notes": {"shown": notes, **({"more_note": more} if more and chat == more_goes else {})}})
+            if chat == current_chat:
+                here += lines
+            elif lines:
+                contact = next((n.get("with_id") for n in notes if _safe_scalar(n.get("with_id"))), None)
+                await self._start_turn(chat, contact or "cello-daemon", "\n\n".join(lines), {"cello_notes": True}, "notice")
+        return here
+
     async def _deliver(self, session_id: str, peer: Optional[str], chat_id: str, pages: List[Dict[str, Any]]) -> None:
         messages: List[Dict[str, Any]] = []
         notices: List[Dict[str, Any]] = []
@@ -1081,7 +1119,7 @@ class CelloAdapter(BasePlatformAdapter):
             notices += page.get("notices") or []
             replies += _operator_replies(page)
             reminded += _reminder_lines(page, session_id)
-            noted += _note_lines(page)
+            noted += await self._route_notes(page.get("notes"), session_id, peer, chat_id)
             for held in page.get("policies") or []:
                 rules += _policy_lines(held)
         # Policies first, then Reminders, which rank below them, then what the operator said.

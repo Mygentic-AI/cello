@@ -490,6 +490,85 @@ test("the Hermes plugin passes notes on under their own heading, apart from Remi
   assert.deepEqual(JSON.parse(spawnSync("python3", [join(here, "hermes-plugin-notes.py"), join(here, "..", "hermes", "plugin", "__init__.py"), "{}"], { encoding: "utf8" }).stdout), { notes: [], reminders: [] });
 });
 
+// The Hermes plugin's adapter, driven through its own bell handler with the daemon's answers given. Hermes itself isn't
+// there: a turn is recorded where the gateway would hand it to a model.
+interface Turn { chat: string; user: string; text: string }
+function drivePlugin(scenario: { scope: "agent" | "peer"; answers: Record<string, unknown[]>; bells: { notification: string; data: Record<string, unknown> }[] }): { turns: Turn[]; calls: { method: string }[] } {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const run = spawnSync("python3", [join(here, "hermes-plugin-notes.py"), join(here, "..", "hermes", "plugin", "__init__.py"), "drive", JSON.stringify(scenario)], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  return JSON.parse(run.stdout) as { turns: Turn[]; calls: { method: string }[] };
+}
+const P1 = "a1".repeat(32);
+const P2 = "a2".repeat(32);
+const S1 = "51".repeat(16);
+const S9 = "59".repeat(16);
+const noteAbout = (id: string, body: string, more: Record<string, unknown> = {}): Record<string, unknown> => ({ id, body, ...more });
+
+test("Hermes: a note_due bell starts a turn in the agent's own chat, with the note's id and none of its words", () => {
+  const { turns, calls } = drivePlugin({ scope: "peer", answers: {}, bells: [{ notification: "note_due", data: { agent: "Ann", agent_id: ANN, note_id: "9f2c41d07ab35e68" } }] });
+  assert.deepEqual(calls, [], "a bell is not a read");
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.chat, "Ann");
+  assert.match(turns[0]?.text ?? "", /passed its check-by time.*not an instruction.*cello_note_get\(agent="Ann", note="9f2c41d07ab35e68"\)/s);
+});
+
+test("Hermes, peer scope: a session's read keeps each note in its own conversation, and the due ones go to the agent's own chat", () => {
+  const { turns } = drivePlugin({
+    scope: "peer",
+    answers: {
+      receive: [{
+        messages: [{ session_id: S1, position: 1, text: "Can you do net 60?", from: "Pia", from_id: P1 }],
+        notices: [],
+        notes: { note: "Your own stored notes", shown: [
+          noteAbout("1111111111111111", "Pia asked for net 60 before.", { with_id: P1 }),
+          noteAbout("2222222222222222", "Quinn's budget is 40k.", { with_id: P2 }),
+          noteAbout("3333333333333333", "Renew the domain.", { past_check_by: true }),
+          noteAbout("4444444444444444", "For this talk only.", { session_id: S1 }),
+          noteAbout("5555555555555555", "Chase Quinn.", { with_id: P2, past_check_by: true, operator_unreachable: "Your operator couldn't be told that this note's check-by time passed, so it is listed here." }),
+        ], more_note: "3 more notes are marked to show here." },
+      }],
+    },
+    bells: [{ notification: "message", data: { session_id: S1, from_id: P1 } }],
+  });
+  const chat = (id: string): string => turns.filter((turn) => turn.chat === id).map((turn) => turn.text).join("\n");
+  assert.deepEqual([...new Set(turns.map((turn) => turn.chat))].sort(), ["Ann", `Ann/${P1}`, `Ann/${P2}`]);
+  assert.match(chat(`Ann/${P1}`), /Can you do net 60\?/);
+  assert.match(chat(`Ann/${P1}`), /Pia asked for net 60 before\./);
+  assert.match(chat(`Ann/${P1}`), /For this talk only\./);
+  assert.doesNotMatch(chat(`Ann/${P1}`), /Quinn|Renew the domain|more notes/, "nothing of another customer's, and nothing due, in Pia's conversation");
+  assert.match(chat(`Ann/${P2}`), /Quinn's budget is 40k\./);
+  assert.match(chat(`Ann/${P2}`), /Note 5555555555555555, past its check-by time\. Your operator couldn't be told[^\n]*\nChase Quinn\./);
+  assert.match(chat("Ann"), /Renew the domain\..*3 more notes/s);
+  assert.equal(turns.filter((turn) => turn.chat === `Ann/${P2}`)[0]?.user, P2);
+});
+
+test("Hermes: a read of no session still delivers every note it took, and none rides along with another session's messages", () => {
+  const shown = [noteAbout("2222222222222222", "Quinn's budget is 40k.", { with_id: P2, past_check_by: true }), noteAbout("3333333333333333", "Renew the domain.", { past_check_by: true }), noteAbout("6666666666666666", "Unknown session.", { session_id: S9 })];
+  const general = (scope: "agent" | "peer", messages: unknown[]): Turn[] => drivePlugin({
+    scope,
+    answers: {
+      inbox: [{ notices: [{ text: "Your message to Pia was screened." }], waiting: [] }],
+      receive: [{ notices: [], messages, notes: { shown } }],
+      // The session's counterparty can't be found.
+      sessions: [{ sessions: [] }],
+    },
+    bells: [{ notification: "notice", data: {} }],
+  }).turns;
+
+  const peer = general("peer", [{ session_id: S1, position: 2, text: "One more thing.", from: "Pia", from_id: P1 }]);
+  const chat = (id: string): string => peer.filter((turn) => turn.chat === id).map((turn) => turn.text).join("\n");
+  assert.match(chat(`Ann/${P1}`), /One more thing\./);
+  assert.doesNotMatch(chat(`Ann/${P1}`), /Quinn|Renew|Unknown session/, "the first session read no longer takes the notes");
+  assert.match(chat(`Ann/${P2}`), /Quinn's budget/);
+  assert.match(chat("Ann"), /Renew the domain\./);
+  assert.match(chat("Ann"), /Unknown session\./, "a note whose conversation can't be found goes to the agent's own chat, not nowhere");
+
+  const agent = general("agent", []);
+  assert.deepEqual(agent.filter((turn) => /Renew the domain/.test(turn.text)).map((turn) => turn.chat), ["Ann"]);
+  assert.ok(agent.some((turn) => /Quinn's budget/.test(turn.text) && /Unknown session/.test(turn.text)), "with one chat for everything, they go together");
+});
+
 const HOUR = 3_600_000;
 const at = (clock: { now: number }, ahead: number): string => new Date(clock.now + ahead).toISOString();
 

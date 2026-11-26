@@ -1,18 +1,79 @@
-"""Loads the real Hermes plugin with stand-ins for Hermes's own modules, and prints the text it makes of a read that
-carries the agent's notes and a Reminder, for notes.test.ts to check the two are kept apart."""
+"""Loads the real Hermes plugin with stand-ins for Hermes's own modules, for notes.test.ts.
+
+lines <page>: prints the text the plugin makes of a read that carries the agent's notes and a Reminder.
+drive <scenario>: builds the plugin's adapter, answers its daemon calls from the scenario, sends it each bell through
+                  its own entry point, and prints every turn it started and every call it made. Nothing of Hermes runs:
+                  the stand-in gateway records the turn instead of giving it to a model.
+"""
+import asyncio
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 import types
 
-for name in ("gateway", "gateway.config", "gateway.platforms", "gateway.platforms.base", "gateway.session", "gateway.session_context"):
+TURNS = []
+
+
+class BasePlatformAdapter:
+    def __init__(self, config, platform):
+        self.config = config
+        self._message_handler = True
+        self._active_sessions = {}
+        self._pending_messages = {}
+
+    def build_source(self, **fields):
+        return types.SimpleNamespace(**fields)
+
+    async def handle_message(self, event):
+        TURNS.append({"chat": event.source.chat_id, "user": event.source.user_id, "text": event.text})
+
+
+class MessageEvent:
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+def stand_in(name, **names):
     module = types.ModuleType(name)
-    module.__getattr__ = lambda attr: type(attr, (), {"__init__": lambda self, *a, **k: None})
+    module.__dict__.update(names)
     sys.modules[name] = module
+
+
+stand_in("gateway")
+stand_in("gateway.config", Platform=str, PlatformConfig=types.SimpleNamespace)
+stand_in("gateway.platforms")
+stand_in("gateway.platforms.base", BasePlatformAdapter=BasePlatformAdapter, MessageEvent=MessageEvent, MessageType=types.SimpleNamespace(TEXT="text"), SendResult=types.SimpleNamespace, merge_pending_message_event=lambda *a, **k: None)
+stand_in("gateway.session", build_session_key=lambda source, **k: source.chat_id)
+stand_in("gateway.session_context", get_session_env=lambda *a, **k: None)
+os.environ["HERMES_HOME"] = tempfile.mkdtemp()
 
 spec = importlib.util.spec_from_file_location("cello_plugin", sys.argv[1])
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
 
-page = json.loads(sys.argv[2])
-print(json.dumps({"notes": plugin._note_lines(page), "reminders": plugin._reminder_lines(page, page.get("session"))}))
+
+async def drive(scenario):
+    adapter = plugin.CelloAdapter(types.SimpleNamespace(extra={"agent_name": "Ann", "session_scope": scenario["scope"]}))
+    answers = scenario["answers"]
+    calls = []
+
+    async def call(method, params=None, timeout=None):
+        calls.append({"method": method, "params": params or {}})
+        queue = answers.get(method) or []
+        if not queue:
+            raise RuntimeError("the scenario has no answer left for " + method)
+        return queue.pop(0)
+
+    adapter._call = call
+    for frame in scenario["bells"]:
+        await adapter._on_notification(frame)
+    return {"turns": TURNS, "calls": calls}
+
+
+if sys.argv[2] == "drive":
+    print(json.dumps(asyncio.run(drive(json.loads(sys.argv[3])))))
+else:
+    page = json.loads(sys.argv[2])
+    print(json.dumps({"notes": plugin._note_lines(page), "reminders": plugin._reminder_lines(page, page.get("session"))}))
