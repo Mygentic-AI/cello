@@ -24,11 +24,11 @@ cello note-set "Bea runs purchasing at Acme. Prefers short calls." --with <agent
 
 The answer gives the note's id.
 
-To change a note, name it. Only the fields you give change, and `--clear` empties the ones you name, with commas between:
+To change a note, name it. Only the fields you give change, and `--clear` empties the ones you name, with commas between. Name each as its option, with or without the dashes: `check-by` and `check_by` are the same. The names a note reads back under, such as `expires_at`, are taken too.
 
 ```
 cello note-set --note 9f2c41d07ab35e68 --status "quote sent" --agent Ann
-cello note-set --note 9f2c41d07ab35e68 --clear check_by,status --agent Ann
+cello note-set --note 9f2c41d07ab35e68 --clear check-by,status --agent Ann
 ```
 
 `cello note-get <note>` shows one in full, `cello note-list` lists them with the most recently changed first, and `cello note-remove <note>` removes one for good. `note-list` has a filter for each label and scope, and cuts a long body to 200 characters.
@@ -44,20 +44,22 @@ Every field is optional. A note can be only a body, or only a label, but it need
 | `--status` | Where it stands, in your own words, such as "waiting on Ana". | It isn't something that progresses. |
 | `--entity` | A person or company with no agent (below). | It's about nobody, or only the contact it's scoped to. |
 | `--with`, `--session`, `--channel` | Its scope (below). | It isn't about one contact, conversation or channel. |
-| `--check-by` | A time to be rung if it still needs attention (below). | Nothing has to happen by a time, which is most notes. |
-| `--expires` | A time after which the note is removed, with its history. | You want to keep it. |
-| `--show-at-start` | Show it unasked where it belongs. Turn it off with `--clear show_at_start`. | Nearly always. |
+| `--check-by` | A time to be rung if it still needs attention (below). With no zone it's UTC. | Nothing has to happen by a time, which is most notes. |
+| `--expires` | A time after which the note is removed, with its history. With no zone it's UTC. | You want to keep it. |
+| `--show-at-start` | Show it unasked where it belongs. Turn it off with `--clear show-at-start`. | Nearly always. |
 | `--keep-history` | How many past versions to keep, 0 to 100 (below). | Earlier values won't matter. |
 | `--source` | The message or post that caused this change, as `<session or channel id>:<position>`. It must be one the agent holds. | It came from the agent's own reasoning. |
 
-Labels hold 200 characters. A time with no zone is UTC, not your local time.
+Labels hold 200 characters.
+
+**A time with no zone is UTC, not your local time.** `--check-by 2026-12-01T09:00` means 09:00 UTC. For 09:00 where you are, give your offset: `--check-by 2026-12-01T09:00+02:00`.
 
 ## Scope
 
 A note can belong to a contact, a session, a channel, any combination, or none.
 
 - **`--with <agent_id>`**, a contact: shown as each session with that contact starts.
-- **`--session <id>`**, one open conversation: removed with its history when the session closes. It can only be written once the session exists, which is usually after its start was shown, so it's for keeping track during the conversation.
+- **`--session <id>`**, one open conversation: removed with its history when the session closes. It can only be written once the session exists, which is usually after its start was shown, so it's for keeping track during the conversation. `--show-at-start` on it is usually the wrong choice: it shows only as that one session starts, and that start has nearly always passed by the time the note can be written, so it is never shown. For something to have in front of you the next time you talk to a contact, use `--with`.
 - **`--channel <id>`**: shown on the agent's first read of that channel after a caller takes the agent up.
 - **None**: shown as every session starts, whoever it's with.
 
@@ -73,7 +75,7 @@ cello note-query "SELECT DISTINCT entity FROM notes WHERE entity IS NOT NULL"
 
 ## Showing at the start
 
-A marked note comes unasked, under `notes` in the answer. The one who places a call gets it with the answer to `initiate-session` or its first read. The one called gets it with the first read after a message has arrived. Each shows once per session, at most `notes.start_max` at once, newest change first, with a count of the rest. After a daemon restart they show again.
+A marked note comes unasked, under `notes` in the answer. The one who places a call gets it with the answer to `initiate-session` or its first read. The one called gets it with the first read after a message has arrived. Each shows once per session, at most `notes.start_max` at once, newest change first. When more were due, the answer says how many of each were left out and how to see them: a note past its check-by time comes with the next read, and one marked to show is listed by `cello note-list --show-at-start`. After a daemon restart they show again.
 
 With them comes this line, fixed by the daemon:
 

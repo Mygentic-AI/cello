@@ -86,6 +86,14 @@ test("every field is optional: a note can be only a body or only a label, and an
   assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: true }), refusal("bad_argument"));
 });
 
+test("clear takes a field as its option names it, with - or _, and as a note reads it back", () => {
+  const { notes, clock } = setup();
+  const made = notes.set(ANN, ANN, { body: "x", with: PEER, check_by: at(clock, HOUR), expires: at(clock, 2 * HOUR), show_at_start: true, status: "open" }) as Note;
+  const cleared = notes.set(ANN, ANN, { note: made.id, clear: "check-by, show-at-start,expires_at,with_id,status" }) as Note;
+  assert.deepEqual([cleared.check_by, cleared.show_at_start, cleared.expires_at, cleared.with_id, cleared.status], [null, false, null, null, null]);
+  assert.throws(() => notes.set(ANN, ANN, { note: made.id, clear: "colour" }), refusal("bad_argument", /source/));
+});
+
 test("a change touches only the fields it names, clear empties one, and times with no zone are UTC", () => {
   const { notes, clock } = setup();
   assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: "2026-02-31" }), refusal("bad_argument"), "a day that doesn't exist must not roll into March");
@@ -410,9 +418,27 @@ test("at most notes.start_max are shown at once, newest change first, with long 
   const got = notes.onRead(ANN, [{ session: SESSION, peer: PEER }]) as Shown;
   assert.deepEqual(got.shown?.shown.map((note) => [note.body?.length, note.body_cut]), [[200, true], [6, undefined]]);
   assert.equal(got.shown?.more, 1);
-  assert.match(got.shown?.more_note ?? "", /note-list/);
+  assert.equal(got.shown?.more_note, `At most 2 notes are shown at once (the setting notes.start_max). 1 more note marked to show here wasn't shown, and isn't held over for later: note-list with show_at_start lists every note marked to show; add with ${PEER} for this contact's.`);
   assert.equal((notes.list(ANN, { show_at_start: true }) as { total: number }).total, 3);
   assert.equal((notes.list(ANN, {}) as { total: number }).total, 3);
+});
+
+test("what was left out says which notes they were, and the due ones left out come with the next read", () => {
+  const { notes, clock, set } = setup();
+  set("notes.start_max", "2");
+  const due = ["due one", "due two", "due three"].map((body) => (notes.set(ANN, ANN, { body, check_by: at(clock, HOUR) }) as Note).id);
+  notes.set(ANN, ANN, { body: "marked", show_at_start: true });
+  clock.now += HOUR;
+  const first = notes.onRead(ANN, [{ session: SESSION, peer: PEER }]) as Shown;
+  assert.deepEqual(first.shown?.shown.map((note) => note.id), due.slice(0, 2));
+  assert.equal(first.shown?.more, 2);
+  assert.match(first.shown?.more_note ?? "", /1 more note past its check_by time wasn't shown: it comes with your next read, and note-list with due lists every one\./);
+  assert.match(first.shown?.more_note ?? "", /1 more note marked to show here wasn't shown/);
+  assert.doesNotMatch(first.shown?.more_note ?? "", /notes are marked to show/, "a due note isn't called one marked to show");
+  first.commit();
+  const next = notes.onRead(ANN, []) as Shown;
+  assert.deepEqual(next.shown?.shown.map((note) => note.id), [due[2]], "the due one left out came with the next read, as it said");
+  assert.equal(next.shown?.more_note, undefined);
 });
 
 test("a note about a removed contact is kept, marked and not shown, a stranger's is shown, and adding the contact back restores it", () => {

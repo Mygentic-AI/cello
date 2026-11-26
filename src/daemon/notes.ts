@@ -85,6 +85,10 @@ const FIELD_COLUMNS: Record<string, keyof Supplied> = {
   body: "body", kind: "kind", status: "status", entity: "entity", with: "with_id", session: "session_id", channel: "channel_id",
   check_by: "check_by", expires: "expires_at", show_at_start: "show_at_start", keep_history: "keep_history",
 };
+// clear names a field as the option that sets it, which is how the help lists them. A note reads back some of them under
+// longer names, and the command line spells each with -, so those are taken too.
+const CLEARABLE = [...Object.keys(FIELD_COLUMNS), "source"];
+const READ_BACK_NAMES: Record<string, string> = { with_id: "with", session_id: "session", channel_id: "channel", expires_at: "expires" };
 const EMPTY: Supplied = { kind: null, status: null, entity: null, with_id: null, session_id: null, channel_id: null, check_by: null, expires_at: null, show_at_start: 0, keep_history: 0, body: null };
 
 export interface NoteHost {
@@ -251,12 +255,12 @@ export class Notes {
   #cleared(params: Record<string, unknown>, given: Partial<Supplied>): (keyof Supplied)[] {
     const clear = params["clear"];
     if (clear === undefined) return [];
-    const names = typeof clear === "string" ? clear.split(",").map((name) => name.trim()).filter((name) => name !== "") : [];
-    if (names.length === 0) throw new LocalError("bad_argument", `clear takes field names with commas between: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
+    const names = typeof clear === "string" ? clear.split(",").map((name) => name.trim().replaceAll("-", "_")).filter((name) => name !== "").map((name) => READ_BACK_NAMES[name] ?? name) : [];
+    if (names.length === 0) throw new LocalError("bad_argument", `clear takes field names with commas between: ${CLEARABLE.join(", ")}`);
     return names.map((name) => {
       // The stamp's source is emptied by any change that doesn't give one, so clearing it is a change of its own and needs no column.
       const column = name === "source" ? undefined : FIELD_COLUMNS[name];
-      if (name !== "source" && column === undefined) throw new LocalError("bad_argument", `clear doesn't know the field ${name}. It takes: ${Object.keys(FIELD_COLUMNS).join(", ")}`);
+      if (name !== "source" && column === undefined) throw new LocalError("bad_argument", `clear doesn't know the field ${name}. It takes: ${CLEARABLE.join(", ")}`);
       if ((column !== undefined && given[column] !== undefined) || (name === "source" && params["source"] !== undefined)) throw new LocalError("bad_argument", `${name} is both given and cleared. Do one.`);
       return column;
     }).filter((column) => column !== undefined);
@@ -382,15 +386,23 @@ export class Notes {
     return { ...this.#view(row), ...(cut ? { body: (row.body as string).slice(0, LIST_BODY_CHARS), body_cut: true } : {}) };
   }
 
-  // What goes to the agent unasked: the newest changes first, no more than notes.start_max, and how to see the rest.
-  #shown(agentHex: string, rows: Row[]): Record<string, unknown> | undefined {
+  // What goes to the agent unasked, no more than notes.start_max: the notes past their check_by first, then those marked
+  // to show here, newest change first. What was left out is said for each, with how to see it: the two come back
+  // differently, since a due note is listed again on the next read and a start's note isn't shown again.
+  #shown(agentHex: string, due: Row[], atStart: Row[], startList: string): Record<string, unknown> | undefined {
+    const rows = [...due, ...atStart];
     if (rows.length === 0) return undefined;
     const max = this.#reach.number(bytesOf(agentHex), "notes.start_max");
-    const more = rows.length - max;
+    const dueLeft = Math.max(0, due.length - max);
+    const startLeft = Math.max(0, atStart.length - Math.max(0, max - due.length));
+    const said = [
+      ...(dueLeft > 0 ? [`${dueLeft} more ${dueLeft === 1 ? "note past its check_by time wasn't" : "notes past their check_by time weren't"} shown: ${dueLeft === 1 ? "it comes" : "they come"} with your next read, and note-list with due lists every one.`] : []),
+      ...(startLeft > 0 ? [`${startLeft} more ${startLeft === 1 ? "note marked to show here wasn't" : "notes marked to show here weren't"} shown, and ${startLeft === 1 ? "isn't" : "aren't"} held over for later: ${startList}`] : []),
+    ];
     return {
       note: NOTES_NOTE,
       shown: rows.slice(0, max).map((row) => this.#short(row)),
-      ...(more > 0 ? { more, more_note: `${more} more ${more === 1 ? "note is" : "notes are"} marked to show here, and at most ${max} are shown at once. List them all with note-list and show_at_start.` } : {}),
+      ...(said.length > 0 ? { more: dueLeft + startLeft, more_note: `At most ${max} notes are shown at once (the setting notes.start_max). ${said.join(" ")}` } : {}),
     };
   }
 
@@ -437,7 +449,9 @@ export class Notes {
     const due = this.#dueUntold(agentHex);
     if (starting.length === 0 && due.length === 0) return NOTHING_SHOWN;
     const dueIds = new Set(due.map((row) => hex(row.id)));
-    const shown = this.#shown(agentHex, [...due, ...atStart.filter((row) => !dueIds.has(hex(row.id)))]);
+    const peers = [...new Set(starting.map((one) => one.peer))];
+    const startList = `note-list with show_at_start lists every note marked to show${peers.length === 1 ? `; add with ${peers[0] as string} for this contact's` : ""}.`;
+    const shown = this.#shown(agentHex, due, atStart.filter((row) => !dueIds.has(hex(row.id))), startList);
     const told = due.slice(0, this.#reach.number(bytesOf(agentHex), "notes.start_max"));
     return {
       ...(shown ? { shown } : {}),
@@ -480,7 +494,7 @@ export class Notes {
     const channelHex = channelId.toLowerCase();
     const key = `${agentHex}:${channelHex}`;
     if (this.#channelsRead.has(key)) return NOTHING_SHOWN;
-    const shown = this.#shown(agentHex, this.#startNotes(agentHex).filter((row) => row.channel_id !== null && hex(row.channel_id) === channelHex));
+    const shown = this.#shown(agentHex, [], this.#startNotes(agentHex).filter((row) => row.channel_id !== null && hex(row.channel_id) === channelHex), `note-list with channel ${channelHex} and show_at_start lists them all.`);
     return { ...(shown ? { shown } : {}), commit: () => { this.#channelsRead.add(key); } };
   }
 
