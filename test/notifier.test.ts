@@ -1168,6 +1168,6 @@ test("a note past its time tells the operator a fixed line with the note's id, n
   assert.equal(notifiers.has(AGENT), true);
   const before = sent.length;
   await notifiers.noteDue(AGENT, "9f2c41d07ab35e68");
-  assert.deepEqual(sent.slice(before).map((one) => one.text), ["Your agent Ann has a note that has passed its check-by time. It is note 9f2c41d07ab35e68, and this command shows it: cello note-get 9f2c41d07ab35e68"]);
+  assert.deepEqual(sent.slice(before).map((one) => one.text), [`Your agent Ann has a note that has passed its check-by time. It is note 9f2c41d07ab35e68, and this command shows it: cello note-get 9f2c41d07ab35e68 --agent ${AGENT}`]);
   assert.deepEqual(screened, [], "nothing the agent wrote is in it, so there was nothing to screen");
 });
