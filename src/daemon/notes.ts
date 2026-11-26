@@ -141,6 +141,9 @@ function time(params: Record<string, unknown>, name: string): number | undefined
   const refuse = (): never => { throw new LocalError("bad_argument", `${name} must be a time such as 2026-12-01T09:00 or 2027-01-01. With no zone it's read as UTC.`); };
   if (typeof value !== "string") return refuse();
   const shape = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (shape && shape[1] === undefined && shape[4] !== undefined && shape[4] !== "Z") {
+    throw new LocalError("bad_argument", `${name} is a date with no time, and a date with no time can't take an offset such as ${shape[4]}. Give a time with the offset, such as ${value.slice(0, 10)}T00:00${shape[4]}, or the date alone for UTC.`);
+  }
   const at = shape ? Date.parse(shape[1] !== undefined && shape[4] === undefined ? `${value}Z` : value) : NaN;
   // A day that doesn't exist, such as 31 February, would otherwise roll into the next month without a word.
   const day = value.slice(0, 10);

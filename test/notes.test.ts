@@ -97,6 +97,12 @@ test("clear takes a field as its option names it, with - or _, and as a note rea
 test("a change touches only the fields it names, clear empties one, and times with no zone are UTC", () => {
   const { notes, clock } = setup();
   assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: "2026-02-31" }), refusal("bad_argument"), "a day that doesn't exist must not roll into March");
+  // A date alone can't carry an offset, and the refusal says so and shows the form that works, for both times.
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", expires: "2027-01-01+02:00" }), refusal("bad_argument", /^expires is a date with no time, and a date with no time can't take an offset such as \+02:00\. Give a time with the offset, such as 2027-01-01T00:00\+02:00, or the date alone for UTC\.$/));
+  assert.throws(() => notes.set(ANN, ANN, { body: "x", check_by: "2026-12-01-05:00" }), refusal("bad_argument", /^check_by is a date with no time.*such as 2026-12-01T00:00-05:00/));
+  const offset = notes.set(ANN, ANN, { body: "x", check_by: "2026-12-01T00:00-05:00", expires: "2027-01-01T00:00+02:00" }) as Note;
+  assert.deepEqual([offset.check_by, offset.expires_at], ["2026-12-01T05:00:00.000Z", "2026-12-31T22:00:00.000Z"], "the form it suggests is taken");
+  assert.equal((notes.set(ANN, ANN, { body: "x", expires: "2027-01-01Z" }) as Note).expires_at, "2027-01-01T00:00:00.000Z", "Z on a date alone is still UTC, as before");
   const made = notes.set(ANN, ANN, { body: "Quote sent.", kind: "deal", status: "waiting on Ana", with: PEER, check_by: "2026-12-01T09:00", expires: "2027-01-01", show_at_start: true }) as Note;
   assert.equal(made.check_by, "2026-12-01T09:00:00.000Z");
   assert.equal(made.expires_at, "2027-01-01T00:00:00.000Z");

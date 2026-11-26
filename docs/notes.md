@@ -52,7 +52,7 @@ Every field is optional. A note can be only a body, or only a label, but it need
 
 Labels hold 200 characters.
 
-**A time with no zone is UTC, not your local time.** `--check-by 2026-12-01T09:00` means 09:00 UTC. For 09:00 where you are, give your offset: `--check-by 2026-12-01T09:00+02:00`.
+**A time with no zone is UTC, not your local time.** `--check-by 2026-12-01T09:00` means 09:00 UTC. For 09:00 where you are, give your offset: `--check-by 2026-12-01T09:00+02:00`. A date alone, such as `--expires 2027-01-01`, is midnight UTC and takes no offset: for midnight where you are, give the time too, `--expires 2027-01-01T00:00+02:00`.
 
 ## Scope
 
