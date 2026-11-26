@@ -153,7 +153,7 @@ A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It
 
 Two settings say whose notes an agent reaches beyond its own:
 
-- **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`. That limits what the agent reads when it acts as itself. It doesn't stop a program on this machine that names another agent with `--agent`, since CELLO takes each local call's word for which agent it acts as (see the end of this section).
+- **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`. That limits what the agent reads when it acts as itself, not a program on this machine that names another agent with `--agent` (see the end of this section).
 - **`notes.write`**: whose notes this agent may set and remove with `--owner`, in the same form. It starts at `own`. The note is still stamped with the agent that wrote it.
 
 Narrowing either one needs no person. Naming anyone new, or going back to `all`, takes a person. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
