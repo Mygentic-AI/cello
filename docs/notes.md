@@ -70,7 +70,7 @@ Only notes marked `--show-at-start` are shown.
 `--entity` names someone the note concerns who has no agent: `--entity acme`. `acme` and `Acme Ltd` would be two entities, so before a new spelling the agent checks the ones it has used:
 
 ```
-cello note-query "SELECT DISTINCT entity FROM notes WHERE entity IS NOT NULL"
+cello note-query "SELECT DISTINCT entity FROM notes WHERE entity IS NOT NULL" --mine
 ```
 
 ## Showing at the start
@@ -122,7 +122,13 @@ cello note-query "SELECT changed_at, written_by, removed, before FROM note_chang
 
 ## Querying
 
-`cello note-query` runs one SQL statement over the notes an agent can read: its own, and every other agent's on the daemon unless `notes.read` is narrowed (below). Every row has `agent_id`, so add `WHERE agent_id = '<agent_id>'` for one agent's only. It only reads: the statement must start with `SELECT` or `WITH`, and it runs on a copy with writing switched off. It sees two tables. Ids are lowercase hex, and times are ISO text in UTC.
+`cello note-query` runs one SQL statement over the notes an agent can read: its own, and every other agent's on the daemon unless `notes.read` is narrowed (below). Every row has `agent_id`, so they can be told apart. With `--mine` it sees only the agent's own notes and their history, whatever `notes.read` allows, so a question about the agent's own, such as how many clients it has, takes `--mine`:
+
+```
+cello note-query "SELECT count(*) AS clients FROM notes WHERE kind = 'client'" --mine --agent Ann
+```
+
+It only reads: the statement must start with `SELECT` or `WITH`, and it runs on a copy with writing switched off. It sees two tables. Ids are lowercase hex, and times are ISO text in UTC.
 
 - **notes**: `id`, `agent_id`, `written_by`, `created_at`, `updated_at`, `kind`, `status`, `entity`, `with_id`, `session_id`, `channel_id`, `check_by`, `rang_at`, `expires_at`, `show_at_start`, `keep_history`, `source`, `body`, `contact_removed`.
 - **note_changes**, one row per kept past version: `id`, `note_id`, `agent_id`, `written_by`, `changed_at`, `source`, `before`, the whole note before that change, as JSON, and `removed`, which is 1 on the entry that records a note's removal.
@@ -139,7 +145,7 @@ Totals from JSON bodies:
 cello note-query "SELECT json_extract(body, '$.region') AS region, sum(json_extract(body, '$.amount')) AS total FROM notes WHERE kind = 'deal' AND json_valid(body) GROUP BY region"
 ```
 
-A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It returns at most `notes.query_rows` rows, and a longer result is cut and says `cut: true`. An answer larger than `notes.query_bytes` is refused with `query_answer_too_large`. At most two queries run at once on a daemon.
+A query is stopped after `notes.query_ms` and refused with `query_timed_out`. It returns at most `notes.query_rows` rows, and a longer result is cut and says `cut: true`. An answer larger than `notes.query_bytes` is refused with `query_answer_too_large`, and one that needs more memory than a query may use with `query_out_of_memory`: select fewer or smaller columns. SQL that SQLite refuses comes back as `query_failed` with SQLite's own words. At most two queries run at once on a daemon, and a third is refused with `too_many_queries`. A query that names `note_changes` copies the past versions too, so it takes longer.
 
 ## Whose notes
 

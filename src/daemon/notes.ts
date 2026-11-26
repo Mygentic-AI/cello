@@ -579,9 +579,10 @@ export class Notes {
   // The rows a query by this agent sees, in the shape agents write SQL against: ids as hex and times as ISO text. Read
   // a batch at a time, so a large store is never held whole on the daemon's side. Past versions can be a hundred times
   // the notes themselves, so they're copied only for a statement that names their table.
-  *queryRows(readerHex: string, withChanges: boolean): Generator<QueryRow[]> {
+  // mine narrows it to the reader's own, whatever notes.read allows.
+  *queryRows(readerHex: string, withChanges: boolean, mine = false): Generator<QueryRow[]> {
     const text = (bytes: Uint8Array | null): string | null => bytes && hex(bytes);
-    for (const agentHex of this.readableBy(readerHex)) {
+    for (const agentHex of mine ? [readerHex] : this.readableBy(readerHex)) {
       this.#sweep(agentHex);
       const agent = bytesOf(agentHex);
       const removed = new Map<string, boolean>();
@@ -608,11 +609,13 @@ export class Notes {
   }
 
   // One read-only statement over the notes this agent may read, within its limits of time and rows.
-  async query(agentHex: string, sql: unknown, queries: NoteQueries): Promise<unknown> {
+  async query(agentHex: string, sql: unknown, queries: NoteQueries, mine?: unknown): Promise<unknown> {
+    // Ignoring a malformed mine would read more than was asked for.
+    if (mine !== undefined && typeof mine !== "boolean") throw new LocalError("bad_argument", "mine is true or false, or left out");
     const agent = bytesOf(agentHex);
     const limits = { ms: this.#reach.number(agent, "notes.query_ms"), rows: this.#reach.number(agent, "notes.query_rows"), bytes: this.#reach.number(agent, "notes.query_bytes") };
     // SQL has no way to reach a table without writing its name, quoted or not, so a statement without it can't read it.
-    const answer = await queries.run(sql, this.queryRows(agentHex, typeof sql === "string" && /note_changes/i.test(sql)), limits);
+    const answer = await queries.run(sql, this.queryRows(agentHex, typeof sql === "string" && /note_changes/i.test(sql), mine === true), limits);
     logEvent("note.queried", { agent: agentHex, rows: answer.rows.length, cut: answer.cut });
     return {
       agent: this.#host.agentName(agentHex),

@@ -606,7 +606,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return notes.list(reader, noteOwner(reader, params), params);
     }
     case "note_query":
-      return notes.query(named(params), params["sql"], noteQueries);
+      return notes.query(named(params), params["sql"], noteQueries, params["mine"]);
     case "note_remove": {
       const writer = named(params);
       const owner = noteOwner(writer, params);

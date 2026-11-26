@@ -181,6 +181,20 @@ test("an agent sees every agent's notes until notes.read narrows it, and every r
   assert.deepEqual(await whose("notes"), ["Ann"]);
 });
 
+test("mine sees only the agent's own notes and history, though notes.read would show the others", async () => {
+  const { notes, queries, ask } = setup();
+  for (const agent of [ANN, BEA]) {
+    const made = notes.set(agent, agent, { kind: "client", body: NAMES[agent], keep_history: 1 }) as { id: string };
+    notes.set(agent, agent, { note: made.id, status: "changed" });
+  }
+  const mine = async (sql: string, value: unknown = true): Promise<Answer> => await notes.query(ANN, sql, queries, value) as Answer;
+  assert.deepEqual((await ask("SELECT count(*) AS clients FROM notes WHERE kind = 'client'")).rows, [{ clients: 2 }], "without mine, Bea's client counts too");
+  assert.deepEqual((await mine("SELECT count(*) AS clients FROM notes WHERE kind = 'client'")).rows, [{ clients: 1 }]);
+  assert.deepEqual((await mine("SELECT DISTINCT agent_id FROM note_changes")).rows, [{ agent_id: ANN }]);
+  assert.deepEqual((await mine("SELECT count(*) AS n FROM notes", false)).rows, [{ n: 2 }], "false is the same as leaving it out");
+  await assert.rejects(mine("SELECT 1", "yes"), refusal("bad_argument", /mine/), "a malformed mine is refused, not read as leaving it out");
+});
+
 test("an endless query is killed at its limit, the daemon's side keeps answering, and it doesn't hold a place after", async () => {
   const { ask, set, queries } = setup();
   set("notes.query_ms", "400");
