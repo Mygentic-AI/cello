@@ -490,7 +490,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     scoped: true,
     acts: false,
     personOnly: true,
-    description: "Needs a human operator. End this agent for good. It can't be undone by anyone: no server will let it connect, and starting a conversation with it is refused by name. Reason compromise records, in the signed statement, that you believe its keys are stolen. Its record stays readable here. If a server can't be reached, this still takes effect here, reports deferred, and keeps trying. With --forget, it's also taken off this machine's lists and its name is freed for a new agent: its keys and history stay in the database, but no command can reach them any more.",
+    description: "Needs a human operator. End this agent for good. It can't be undone by anyone: no server will let it connect, and starting a conversation with it is refused by name. Reason compromise records, in the signed statement, that you believe its keys are stolen. Its record stays readable here. If a server can't be reached, this still takes effect here, reports deferred, and keeps trying. With --forget, it's also taken off this machine's lists and its name is freed for a new agent: its keys and conversation history stay in the database, but no command can reach them any more. Its notes, Reminders and notifiers are deleted.",
     params: [
       { name: "reason", kind: "string", allowed: ["owner_request", "compromise"], description: "Why. The default is owner_request." },
       { name: "forget", kind: "boolean", description: "Also take it off this machine's lists and free its name." },
@@ -528,7 +528,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     scoped: true,
     acts: false,
     personOnly: true,
-    description: "Needs a human operator. Use retire --forget, which does the same: retire this agent for good, then take it off this machine's lists and free its name. Its keys and history stay in the database, unreachable by any command. It can't be undone.",
+    description: "Needs a human operator. Use retire --forget, which does the same: retire this agent for good, then take it off this machine's lists and free its name. Its keys and conversation history stay in the database, unreachable by any command. Its notes, Reminders and notifiers are deleted. It can't be undone.",
     params: [],
   },
   {
