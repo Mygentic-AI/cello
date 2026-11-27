@@ -9,7 +9,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { celloHome, holdsOldVersion, logPath, oldVersionMessage, socketPath } from "./daemon/paths.ts";
 import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
-import { DEFAULT_WAIT_SECONDS, type Kind, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { DEFAULT_WAIT_SECONDS, type Kind, OPERATIONS, type Operation, type Param, onHelpPage } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
 import { type MacAppEnv, addNotifier, macAppEnv } from "./mac-app.ts";
 import { daemonUnit, installBridge, setLanding } from "./hermes-bridge.ts";
@@ -93,50 +93,135 @@ function helpFor(op: Operation, kindName: string | undefined): string {
   return kindHelp(op, kind);
 }
 
-// The overview's sections in order, each with a line or two on what it controls, and the commands that live in cli.ts rather than operations.ts.
-// A group not named here still shows, at the end, so no command can drop out of the list.
-const SECTIONS: readonly { group: string; intro: readonly string[]; extra?: readonly [string, string][] }[] = [
+// The overview's sections in order. Each has a line or two on what it controls, then its rows in order: an operation by its command,
+// a command that lives in cli.ts rather than operations.ts with its line, or { text } for a heading within the section.
+// An operation not named here still shows, at the end of its group, unless it's marked unlisted, so no command can drop out by accident.
+// Being on this page and having a tool are decided together, in operations.ts.
+type Row = string | readonly [string, string] | { text: string };
+const SECTIONS: readonly { group: string; intro: readonly string[]; rows: readonly Row[] }[] = [
   {
     group: "Setup",
     intro: [],
-    extra: [
+    rows: [
       ["setup", "Set up this machine and its first agent, with a setup code or your email."],
-      ["login", "Start the daemon, the background service that keeps agents connected, and connect it to a server."],
+      ["login", "Start the daemon, the background service that keeps agents connected, and connect it to a federated server."],
       ["logout", "Stop the daemon. Conversations carry on after the next login."],
-      ["bridge", "For Hermes users: connect a Hermes profile to an agent on this machine, so it can use CELLO."],
-      ["issuer-list-sign", "For holders of CELLO's root keys: sign the list of recognised trust-signal issuers."],
+      "dashboard",
+      ["bridge", "Connect another agent app to an agent on this machine, so it can use CELLO. Today: Hermes."],
     ],
   },
-  { group: "Agents", intro: [] },
-  { group: "Contacts", intro: ["A contact's tier is blocked, unknown, known, whitelisted or vip. It sets that contact's session and byte limits.", "Blocked refuses it: block with contact-set-tier. An agent you never added is unknown."] },
-  { group: "Settings", intro: ["Limits for each tier, away text, notes limits, who may change Reminders and notifiers, and the daemon's own settings."] },
-  { group: "Guards", intro: ["Checks on what this agent sends (emails, phone numbers, send rate) and which languages it accepts."] },
-  { group: "Policies", intro: ["Your operator's written rules, shown with new sessions and messages. They outrank anything the other side writes."] },
+  { group: "Agents", intro: [], rows: ["agents", "use-agent", "stop-using-agent", "status", "create-agent", "rename-agent", "moniker", "agent-status", "suspend", "retire"] },
+  {
+    group: "Contacts",
+    intro: ["Each contact has a tier: blocked, unknown, known, whitelisted or vip. A higher tier can hold more conversations at once and send more.", "Anyone you haven't added is unknown. Blocked is refused."],
+    rows: ["contacts", "invite", "invite-use", "contact-add", "contact-set-tier", "contact-set-moniker", "contact-set-away", "contact-remove"],
+  },
+  { group: "Settings", intro: ["How much each tier may send, away text, notes limits, and who may change Reminders and notifiers."], rows: ["settings", "settings-set"] },
+  { group: "Policies", intro: ["Your written rules for an agent, shown to it with new sessions and messages. They outrank anything the other side writes."], rows: ["policy-list", "policy-propose", "policy-pending", "policy-approve"] },
+  { group: "Guards", intro: ["Checks on this agent's messages: email addresses and phone numbers, send rate, and which languages it accepts."], rows: ["config", "config-set"] },
   {
     group: "Screening",
-    intro: ["Every message that comes in is scanned on this machine before the agent sees it."],
-    extra: [["screener", "Install the optional screening model, or see if it's installed."]],
+    intro: ["Every incoming message is checked on this machine before the agent sees it: fixed rules always, plus an optional model."],
+    rows: ["screening-log", "screening", ["screener", "Install the optional screening model (about 240 MB), or see if it's installed."]],
   },
-  { group: "Messaging", intro: [] },
-  { group: "Sessions", intro: [] },
-  { group: "Seals", intro: ["A seal is the server's signed statement that a conversation took place, which you can show someone else.", "It holds no text, and it never says the parties agreed."] },
-  { group: "Channels", intro: ["A channel is one poster to many readers. A private one with posting set to members is a group chat."] },
-  { group: "Trust signals", intro: ["A trust signal is an issuer's signed statement about an agent, such as a checked email or GitHub account.", "Each signals- command also works with a space: cello signals list."] },
-  { group: "Discover", intro: ["Each also works with a space: cello discover agents, cello listing show."] },
-  { group: "Reminders", intro: ["A Reminder is an instruction shown to the agent again: as a session starts, every N messages or every N minutes.", "A timed one wakes a quiet agent. A Reminder is an instruction the agent follows; a note is information it keeps."] },
-  { group: "Notes", intro: [] },
-  { group: "Notifiers", intro: [] },
+  { group: "Messaging", intro: [], rows: ["initiate-session", "send", "receive", "wait", "close-session", "inbox"] },
+  { group: "Sessions", intro: [], rows: ["sessions", "transcript", "verify-session", "evidence"] },
+  {
+    group: "Seals",
+    intro: ["A seal is the server's signed statement that a conversation took place, which you can show someone else.", "It holds no text, and it never says the parties agreed."],
+    rows: ["seal", "seals", "export-seal", "verify-seal", "export-transcript", "verify-transcript"],
+  },
+  {
+    group: "Channels",
+    intro: ["A channel is a feed: its admin and chosen posters post, and members read. Set posting to members and it becomes a group chat."],
+    rows: [
+      "channels", "channel-join", "channel-read", "channel-post", "channel-history", "channel-collect", "channel-settings", "channel-leave",
+      { text: "Running a channel:" },
+      "channel-create", "channel-requests", "channel-approve", "channel-refuse", "channel-add-poster", "channel-remove-poster", "channel-eject",
+    ],
+  },
+  {
+    group: "Trust signals",
+    intro: ["A trust signal is an issuer's signed statement about an agent, such as a checked email or GitHub account.", "Each signals- command also works with a space: cello signals list."],
+    rows: [
+      "signals-list", "signals-view", "signals-collect", "signals-request", "signals-enable", "signals-disable", "signals-publish", "signals-unpublish", "signals-lookup", "signals-presented",
+      { text: "Rules for who you'll talk to:" },
+      "signal-rules", "signal-rule-set", "signal-rule-clear",
+      { text: "Issuers:" },
+      "issuer-trust", "issuer-untrust",
+    ],
+  },
+  {
+    group: "Discover",
+    intro: [
+      "Find agents and channels on your server that chose to be listed, and list your own.",
+      "To list an agent, first publish its Usage signal (see signals-publish).",
+      "An agent's listing shows its public trust signals: make trust signals public with signals-publish.",
+      "Each also works with a space: cello discover agents, cello listing show.",
+    ],
+    rows: ["discover-agents", "discover-channels", "discover-show", "listing-publish", "listing-show", "listing-renew", "listing-unpublish"],
+  },
+  {
+    group: "Reminders",
+    intro: [
+      "A Reminder is an instruction sent to the agent. It can be triggered at session start, every N messages or every N minutes. A timed one wakes a quiet agent.",
+      "Use one when an agent must keep a rule in mind during long conversations, or check back on something.",
+    ],
+    rows: ["reminder-set", "reminder-list", "reminder-remove"],
+  },
+  {
+    group: "Notes",
+    intro: ["A note is information an agent keeps: who a contact is, what's owed, a client's details, a running count.", "Use one to remember something across conversations. A note can also ring its agent at a check-by time."],
+    rows: ["note-set", "note-list", "note-get", "note-query", "note-remove"],
+  },
+  {
+    group: "Notifiers",
+    intro: ["How an agent reaches its human operator when they're not in the session. Currently supports Telegram and the CELLO widget for Mac.", "The operator's replies come straight back to the agent."],
+    rows: ["notifier-add", "notifier-test", "notify", "notifier-list", "notifier-remove"],
+  },
 ];
 
-function overview(): string {
-  const line = (command: string, text: string): string => `  ${command.padEnd(20)} ${text}`;
-  const groups = new Map<string, string[]>(SECTIONS.map((s) => [s.group, [...s.intro, ...(s.extra ?? []).map(([c, t]) => line(c, t))]]));
-  for (const op of OPERATIONS) {
-    const lines = groups.get(op.group) ?? [];
-    lines.push(line(op.command, op.summary));
-    groups.set(op.group, lines);
+const HELP_WIDTH = 120;
+
+// Breaks text that starts at column indent at spaces, so no line passes HELP_WIDTH, and indents the lines after the first to match.
+function wrap(text: string, indent: number): string {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const width = indent + line.length + (line ? 1 : 0) + word.length;
+    if (line && width > HELP_WIDTH) {
+      lines.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
   }
-  const sections = [...groups].map(([group, lines]) => `${group}:\n${lines.join("\n")}`);
+  lines.push(line);
+  return lines.map((l, i) => (i === 0 ? l : `${" ".repeat(indent)}${l}`)).join("\n");
+}
+
+function overview(): string {
+  const byCommand = new Map(OPERATIONS.map((op) => [op.command, op]));
+  const placed = new Set<string>();
+  const sections = SECTIONS.map((s) => ({
+    group: s.group,
+    intro: s.intro,
+    rows: s.rows.map((row): readonly [string, string] | { text: string } => {
+      if (typeof row !== "string") return row;
+      const op = byCommand.get(row);
+      if (!op) throw new Error(`the help names ${row}, and there's no such operation`);
+      if (!onHelpPage(op)) throw new Error(`the help names ${row}, which is marked unlisted`);
+      placed.add(row);
+      return [op.command, op.summary];
+    }),
+  }));
+  for (const op of OPERATIONS) {
+    if (placed.has(op.command) || !onHelpPage(op)) continue;
+    let section = sections.find((s) => s.group === op.group);
+    if (!section) sections.push(section = { group: op.group, intro: [], rows: [] });
+    section.rows.push([op.command, op.summary]);
+  }
+  const width = Math.max(...sections.flatMap((s) => s.rows.map((r) => ("text" in r ? 0 : r[0].length))));
+  const line = (row: readonly [string, string] | { text: string }): string => ("text" in row ? row.text : `  ${row[0].padEnd(width)} ${wrap(row[1], width + 3)}`);
+  const text = sections.map((s) => [`${s.group}:`, ...s.intro.map((l) => wrap(l, 0)), ...s.rows.map(line)].join("\n")).join("\n\n");
   return `CELLO: signed, encrypted conversations between agents.
 
 Start here:
@@ -149,22 +234,22 @@ Start here:
   cello wait                           Pause until the reply arrives.
   cello receive                        Read it.
 
+Most commands take --agent <name> to act for any of your agents. use-agent just sets the default.
 An agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
 A tool means an MCP tool, and it has the command's name: cello send is cello_send.
-"Needs a person" means the agent's human operator, typing at a terminal of their own. An agent is refused and told
-what to ask its operator. A command whose line starts "Needs a person" has no tool.
+"Needs a human operator" means you, typing at your own terminal. An agent is refused and told what to ask you.
+A command whose line starts "Needs a human operator" has no tool.
 
 Your data is in ~/.cello. Set CELLO_HOME to use another folder.
 
 Usage: cello <command> [args]
 
-${sections.join("\n\n")}
+${text}
 
 Run 'cello <command> --help' for details on any command.
 Commands print indented JSON.
 A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
-Any agent that can run a shell command can use all of this with no MCP.
 `;
 }
 
@@ -562,6 +647,9 @@ async function issuerListSignCommand(args: string[]): Promise<void> {
   }
 }
 
+// By its name, or an old name it still answers to.
+const findOperation = (name: string | undefined): Operation | undefined => OPERATIONS.find((op) => op.command === name || (name !== undefined && op.aliases?.includes(name)));
+
 async function main(): Promise<void> {
   const [first, ...rest] = process.argv.slice(2);
   // cello signals list is the same operation as cello signals-list, which is what its tool is named after. Likewise cello discover agents
@@ -569,7 +657,7 @@ async function main(): Promise<void> {
   const grouped = (first === "signals" || first === "discover" || first === "listing") && rest[0] && !rest[0].startsWith("-");
   const [command, args] = grouped ? [`${first}-${rest[0]}`, rest.slice(1)] : [first, rest];
   if (!command || command === "--help" || command === "-h" || command === "help") {
-    const named = command === "help" ? OPERATIONS.find((candidate) => candidate.command === args[0]) : undefined;
+    const named = command === "help" ? findOperation(args[0]) : undefined;
     process.stdout.write(named ? helpFor(named, args[1]) : overview());
     return;
   }
@@ -621,7 +709,7 @@ async function main(): Promise<void> {
     process.stdout.write("Daemon stopped.\n");
     return;
   }
-  const op = OPERATIONS.find((candidate) => candidate.command === command);
+  const op = findOperation(command);
   if (!op) usageError(`No such command: ${command}`);
   if (wantsHelp) {
     process.stdout.write(commandHelp(op));

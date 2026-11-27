@@ -133,7 +133,8 @@ function side(name: string, home: Server) {
       if (caller) terminal["CELLO_CALLER"] = caller;
       const done = spawnSync("python3", ["-c", TERMINAL, answer, process.execPath, cliFor(args), ...args], { encoding: "utf8", timeout: 40_000, env: terminal });
       assert.equal(done.status, 0, `the terminal didn't run: ${done.stderr}`);
-      return done.stdout;
+      // The command line indents its JSON. Closing up "key": value lets a check match "key":value either way.
+      return done.stdout.replace(/":\s+/g, "\":");
     },
     statusLog: () => self.act("agent-status") as { status_here: string; servers: { server: string; status: string; reachable: boolean; verified: boolean; log: { status: string; reason: string; issuer: string; witnessed_at: string }[] }[] },
   };
@@ -432,6 +433,17 @@ test("the kill switch stops an agent at once, on each server, and leaves it able
   const again = gus.must(["create-agent", "Gus"]);
   assert.notEqual(again["agent_id"], gusAgent.id);
   say("remove-agent retired it and freed the name");
+
+  // retire --forget is the same thing, and keeps the reason it was given.
+  const ivy = side("Ivy", A);
+  const ivyAgent = await create(ivy);
+  assert.equal(ivy.run(["retire", "--forget", "--agent", "Ivy"]).json["error"], "person_required", "a pipe isn't a person");
+  assert.match(ivy.atTerminal(["retire", "--forget", "--reason", "compromise", "--agent", "Ivy"]), /"removed":true/);
+  assert.deepEqual((ivy.must(["agents"]) as { agents: unknown[] }).agents, []);
+  assert.equal(statusOn(A, ivyAgent.id), "retired");
+  assert.equal(sql(A, `SELECT reason FROM agent_status WHERE agent_id = '\\x${ivyAgent.id}'`), "compromise");
+  assert.notEqual(ivy.must(["create-agent", "Ivy"])["agent_id"], ivyAgent.id);
+  say("retire --forget retired it with its reason and freed the name");
 
   // ---- A waiting call re-checks its caller at delivery. ----
   const hal = side("Hal", A);

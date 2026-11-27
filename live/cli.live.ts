@@ -99,8 +99,12 @@ test("a whole conversation with no MCP: start, all three signals, a daemon kill,
   // Help: one line per command at the top, and details per command, with no agent or daemon needed for either.
   const overview = cello(["-h"]);
   assert.equal(overview.status, 0);
+  // Exactly these are left off the page, and still work. account is dashboard's old name, and issuer-list-sign is for root-key holders.
+  const offPage = ["commit-read", "greetings", "publish-status", "remove-agent"];
+  const onPage = (command: string): boolean => new RegExp(`^  ${command} `, "m").test(overview.stdout);
+  for (const command of ["account", "issuer-list-sign"]) assert.ok(!onPage(command), `${command} should be off the help`);
   for (const op of OPERATIONS) {
-    assert.ok(overview.stdout.includes(`  ${op.command}`), `${op.command} is missing from the help`);
+    assert.equal(onPage(op.command), !offPage.includes(op.command), `${op.command} ${offPage.includes(op.command) ? "should be off" : "is missing from"} the help`);
     const own = cello([op.command, "--help"]);
     assert.equal(own.status, 0);
     assert.match(own.stdout, new RegExp(`^Usage: cello ${op.command}`));

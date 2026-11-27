@@ -10,7 +10,7 @@ import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
-import { OPERATIONS } from "../src/ipc/operations.ts";
+import { OPERATIONS, hasTool } from "../src/ipc/operations.ts";
 
 const repo = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const serverDir = process.env["CELLO_SERVER_DIR"] ?? join(repo, "..", "cello-server");
@@ -292,7 +292,7 @@ test("the installed cello-mcp speaks real stdio, starts before login, lists ever
   try {
     assert.ok(client.getServerCapabilities()?.experimental?.["claude/channel"], "it declares itself as a channel");
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
-    assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly && !op.programOnly).map((op) => op.tool).sort());
+    assert.deepEqual(tools, OPERATIONS.filter(hasTool).map((op) => op.tool).sort());
 
     const call = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       const result = await client.callTool({ name, arguments: args }) as { content: { text: string }[] };

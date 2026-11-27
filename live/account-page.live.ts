@@ -110,8 +110,8 @@ function http(port: number, path: string, opts: { token?: string; host?: string;
 }
 
 const linkOf = (m: Machine): { port: number; token: string } => {
-  const found = /http:\/\/127\.0\.0\.1:(\d+)\/#([0-9a-f]{64})/.exec(m.person(["account"]));
-  assert.ok(found, "cello account printed no link");
+  const found = /http:\/\/127\.0\.0\.1:(\d+)\/#([0-9a-f]{64})/.exec(m.person(["dashboard"]));
+  assert.ok(found, "cello dashboard printed no link");
   return { port: Number(found[1]), token: found[2] as string };
 };
 
@@ -139,7 +139,8 @@ test("the page shows this machine's own agents, signals, contacts, settings and 
   const bea = m.ok(["create-agent", "Bea"])["agent_id"] as string;
   m.ok(["contact-add", bea, "--agent", "Ann"]);
 
-  // The link comes only from a person at a terminal, and a pipe gets a refusal that says why.
+  // The link comes only from a person at a terminal, and a pipe gets a refusal that says why. account is dashboard's old name.
+  m.refused(["dashboard"], "person_required");
   m.refused(["account"], "person_required");
   const link = linkOf(m);
   assert.equal(link.port, port);
@@ -280,7 +281,7 @@ test("the link stays the same across a login, and a port someone else holds cost
     });
     assert.match(String((status["account_page"] as { problem: string }).problem), new RegExp(`port ${taken}`));
     assert.equal(((m.ok(["agents"]) as { agents: unknown[] }).agents).length, 1, "the daemon should carry on without the page");
-    m.refused(["account"], "person_required");
+    m.refused(["dashboard"], "person_required");
     assert.match(m.person(["account"]), /account_page_unavailable|isn't running/);
   } finally {
     holder.close();

@@ -54,7 +54,7 @@ Data lives in `~/.cello`, or in `CELLO_HOME` if it's set before any `cello` comm
 - **The screening model:** `cello screener install` adds a local model beside the fast rules (about 241 MB to download, 618 MB on disk). `cello screener status` says whether it's installed, and `cello status` which screeners are running. An agent strangers reach should have it.
 - **A way to reach the operator:** the `cello-operator` skill.
 - **Signals beyond email:** verify a phone, add a passkey, link GitHub or X on the account site, then `cello signals collect`. The `cello-signals` skill.
-- **The account page:** `cello account` prints a link, for this machine only, to a page showing the agents, their signals, contacts, settings and guards.
+- **The dashboard:** `cello dashboard` prints a link, for this machine only, to a page showing the agents, their signals, contacts, settings and guards.
 
 ## Check it works
 

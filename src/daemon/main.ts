@@ -179,6 +179,16 @@ function requirePerson(params: Record<string, unknown>): void {
   if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
 }
 
+// retire --forget, and remove-agent: retire, then drop everything this daemon keeps live for the agent.
+async function removeAgent(agent: string, reason: unknown): Promise<unknown> {
+  const answer = await engine.removeAgent(agent, reason);
+  holders.delete(agent);
+  notifiers.forget(agent);
+  engine.reminders.forget(agent);
+  notes.forget(agent);
+  return answer;
+}
+
 // For a command a person will paste into a shell: single quotes, so nothing in an agent's text is run or expanded.
 const shellQuoted = (value: unknown): string => `'${String(value ?? "").replaceAll("'", "'\\''")}'`;
 
@@ -356,9 +366,9 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return { pid: process.pid, home, main_thread: { longest_stall_ms: longestStallMs }, account_page: accountPageState, ...(engine.status() as object) };
     }
     // The link carries the secret, so it goes only to a person at a terminal.
-    case "account": {
+    case "dashboard": {
       requirePerson(params);
-      if (!accountPage) throw new LocalError("account_page_unavailable", `The account page isn't running: ${accountPageState.problem ?? "it hasn't started yet"}.`);
+      if (!accountPage) throw new LocalError("account_page_unavailable", `The dashboard isn't running: ${accountPageState.problem ?? "it hasn't started yet"}.`);
       return { url: `http://127.0.0.1:${accountPage.port}/#${accountPageToken}` };
     }
     case "create_agent":
@@ -508,17 +518,12 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return engine.suspend(engine.resolveAgent(text(params, "agent")), params["reason"]);
     case "retire":
       requirePerson(params);
+      if (params["forget"] === true) return removeAgent(engine.resolveAgent(text(params, "agent")), params["reason"]);
       return engine.retire(engine.resolveAgent(text(params, "agent")), params["reason"]);
-    case "remove_agent": {
+    // The same as retire --forget.
+    case "remove_agent":
       requirePerson(params);
-      const agent = engine.resolveAgent(text(params, "agent"));
-      const answer = await engine.removeAgent(agent);
-      holders.delete(agent);
-      notifiers.forget(agent);
-      engine.reminders.forget(agent);
-      notes.forget(agent);
-      return answer;
-    }
+      return removeAgent(engine.resolveAgent(text(params, "agent")), undefined);
     case "agent_status":
       return engine.agentStatus(engine.resolveAgent(text(params, "agent")));
     // Reading a record acts as nobody, so these need no hold.

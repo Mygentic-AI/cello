@@ -1,9 +1,9 @@
 // How an operation becomes a tool, for every route that serves tools. It names no MCP SDK, so each route can bring its own.
 import { z } from "zod";
 import { DaemonGone, DaemonRefused } from "./ipc/client.ts";
-import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param } from "./ipc/operations.ts";
+import { DEFAULT_WAIT_SECONDS, OPERATIONS, type Operation, type Param, hasTool } from "./ipc/operations.ts";
 
-export const TOOL_OPERATIONS: readonly Operation[] = OPERATIONS.filter((op) => !op.personOnly && !op.programOnly);
+export const TOOL_OPERATIONS: readonly Operation[] = OPERATIONS.filter(hasTool);
 
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 

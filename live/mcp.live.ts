@@ -12,7 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { DAEMON_STOPPED_DOORBELL, SIGNAL_ERROR, channelNoticeDoorbell } from "../src/guidance.ts";
-import { OPERATIONS } from "../src/ipc/operations.ts";
+import { OPERATIONS, hasTool } from "../src/ipc/operations.ts";
 
 const url = process.env["CELLO_URL"] ?? "ws://127.0.0.1:18090/v1";
 const home = mkdtempSync(join(tmpdir(), "cello-mcp-"));
@@ -82,11 +82,11 @@ test("the tools work, doorbells wake with no text in them, and they come back af
   assert.ok(one.client.getServerCapabilities()?.experimental?.["claude/channel"], "it declares itself as a channel");
   const tools = (await one.client.listTools()).tools.map((t) => t.name).sort();
   // The tools are the same operations as the command line, one for one.
-  assert.deepEqual(tools, OPERATIONS.filter((op) => !op.personOnly && !op.programOnly).map((op) => op.tool).sort());
+  assert.deepEqual(tools, OPERATIONS.filter(hasTool).map((op) => op.tool).sort());
   assert.ok(!tools.includes("cello_screening"), "weakening screening is never an agent's tool");
   const help = cli("--help");
-  for (const op of OPERATIONS) {
-    assert.ok(help.includes(`  ${op.command}`), `${op.tool} has no command: ${op.command}`);
+  for (const op of OPERATIONS.filter(hasTool)) {
+    assert.ok(help.includes(`  ${op.command} `), `${op.tool} has no command on the help page: ${op.command}`);
     assert.equal(op.tool, `cello_${op.command.replaceAll("-", "_")}`, "a tool and its command carry the same name");
   }
 

@@ -2090,9 +2090,9 @@ export class Engine {
   }
 
   // Retires it, then takes it off this machine's lists and frees its name. Its keys and history stay in the database, as a record.
-  async removeAgent(agentHex: string): Promise<unknown> {
+  async removeAgent(agentHex: string, reason: unknown): Promise<unknown> {
     const agent = this.#requireAgent(agentHex);
-    const answer = await this.retire(agentHex, undefined);
+    const answer = await this.retire(agentHex, reason);
     this.#store.markRemoved(agent.signer.id);
     this.#agents.delete(agent.hex);
     for (const route of [this.#home, ...this.#visiting.values()]) route.wanted.delete(agent.hex);
