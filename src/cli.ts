@@ -93,23 +93,66 @@ function helpFor(op: Operation, kindName: string | undefined): string {
   return kindHelp(op, kind);
 }
 
+// The overview's sections in order, each with a line or two on what it controls, and the commands that live in cli.ts rather than operations.ts.
+// A group not named here still shows, at the end, so no command can drop out of the list.
+const SECTIONS: readonly { group: string; intro: readonly string[]; extra?: readonly [string, string][] }[] = [
+  {
+    group: "Setup",
+    intro: [],
+    extra: [
+      ["setup", "Set up this machine and its first agent, with a setup code or your email."],
+      ["login", "Start the daemon, the background service that keeps agents connected, and connect it to a server."],
+      ["logout", "Stop the daemon. Conversations carry on after the next login."],
+      ["bridge", "For Hermes users: connect a Hermes profile to an agent on this machine, so it can use CELLO."],
+      ["issuer-list-sign", "For holders of CELLO's root keys: sign the list of recognised trust-signal issuers."],
+    ],
+  },
+  { group: "Agents", intro: [] },
+  { group: "Contacts", intro: ["A contact's tier is blocked, unknown, known, whitelisted or vip. It sets that contact's session and byte limits.", "Blocked refuses it: block with contact-set-tier. An agent you never added is unknown."] },
+  { group: "Settings", intro: ["Limits for each tier, away text, notes limits, who may change Reminders and notifiers, and the daemon's own settings."] },
+  { group: "Guards", intro: ["Checks on what this agent sends (emails, phone numbers, send rate) and which languages it accepts."] },
+  { group: "Policies", intro: ["Your operator's written rules, shown with new sessions and messages. They outrank anything the other side writes."] },
+  {
+    group: "Screening",
+    intro: ["Every message that comes in is scanned on this machine before the agent sees it."],
+    extra: [["screener", "Install the optional screening model, or see if it's installed."]],
+  },
+  { group: "Messaging", intro: [] },
+  { group: "Sessions", intro: [] },
+  { group: "Seals", intro: ["A seal is the server's signed statement that a conversation took place, which you can show someone else.", "It holds no text, and it never says the parties agreed."] },
+  { group: "Channels", intro: ["A channel is one poster to many readers. A private one with posting set to members is a group chat."] },
+  { group: "Trust signals", intro: ["A trust signal is an issuer's signed statement about an agent, such as a checked email or GitHub account.", "Each signals- command also works with a space: cello signals list."] },
+  { group: "Discover", intro: ["Each also works with a space: cello discover agents, cello listing show."] },
+  { group: "Reminders", intro: ["A Reminder is an instruction shown to the agent again: as a session starts, every N messages or every N minutes.", "A timed one wakes a quiet agent. A Reminder is an instruction the agent follows; a note is information it keeps."] },
+  { group: "Notes", intro: [] },
+  { group: "Notifiers", intro: [] },
+];
+
 function overview(): string {
-  const groups = new Map<string, string[]>([["Setup", [`  ${"setup".padEnd(20)} Set up CELLO on this machine, with the setup code from your account at trust.celloprotocol.com.`, `  ${"login".padEnd(20)} Start the daemon, and connect it to a server.`, `  ${"logout".padEnd(20)} Stop the daemon. Conversations carry on after the next login.`, `  ${"screener".padEnd(20)} Install the optional screening model, or see if it's installed.`, `  ${"bridge".padEnd(20)} Connect a Hermes install to an agent on this machine.`, `  ${"issuer-list-sign".padEnd(20)} Add a root key's signature to the signed issuer list.`]]]);
+  const line = (command: string, text: string): string => `  ${command.padEnd(20)} ${text}`;
+  const groups = new Map<string, string[]>(SECTIONS.map((s) => [s.group, [...s.intro, ...(s.extra ?? []).map(([c, t]) => line(c, t))]]));
   for (const op of OPERATIONS) {
     const lines = groups.get(op.group) ?? [];
-    lines.push(`  ${op.command.padEnd(20)} ${op.summary}`);
+    lines.push(line(op.command, op.summary));
     groups.set(op.group, lines);
   }
   const sections = [...groups].map(([group, lines]) => `${group}:\n${lines.join("\n")}`);
   return `CELLO: signed, encrypted conversations between agents.
 
 Start here:
-  cello setup --code <code>          Set up this machine. The code comes from your account at trust.celloprotocol.com.
-  cello setup --install-mcp          Connect Claude Code, Claude Desktop and ChatGPT Desktop.
-  cello initiate-session <address>   Start a conversation. It prints a session_id.
-  cello send <session_id> "Hi" --over
-  cello wait                         Block until the reply arrives.
-  cello receive                      Read it.
+  cello setup --code <code>            Set up this machine and its first agent. Get the code at trust.celloprotocol.com.
+  cello setup --install-mcp            Connect Claude Code, Claude Desktop and ChatGPT Desktop.
+  cello agents                         Your agents, and the address others reach each one by. cello invite gives a code.
+  cello use-agent --agent <name>       Act as this agent from now on. A shell with its own CELLO_CALLER needs this once.
+  cello initiate-session <address>     Start a conversation. It prints a session_id.
+  cello send <session_id> "Hi" --over  --over: your turn's done, and it's the other side's turn.
+  cello wait                           Pause until the reply arrives.
+  cello receive                        Read it.
+
+An agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
+A tool means an MCP tool, and it has the command's name: cello send is cello_send.
+"Needs a person" means the agent's human operator, typing at a terminal of their own. An agent is refused and told
+what to ask its operator. A command whose line starts "Needs a person" has no tool.
 
 Your data is in ~/.cello. Set CELLO_HOME to use another folder.
 
@@ -122,8 +165,6 @@ Commands print indented JSON.
 A failure prints {"error","message"} on standard error and exits ${EXIT_REFUSED}.
 A usage mistake exits ${EXIT_USAGE}, and wait exits ${EXIT_TIMEOUT} when its time runs out.
 Any agent that can run a shell command can use all of this with no MCP.
-Each agent's shell should set CELLO_CALLER to a stable name of its own, so that two can't share an agent by accident.
-Where there's a tool, it has the same name: cello send ↔ cello_send.
 `;
 }
 
