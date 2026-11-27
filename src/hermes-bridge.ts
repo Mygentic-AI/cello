@@ -1,4 +1,4 @@
-// cello bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands. A person runs it at a terminal.
+// cello bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands.
 // It's safe to run again, and it has to be after an upgrade, because Hermes keeps a copy of the plugin.
 import { spawn } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,6 +45,8 @@ export interface BridgeOptions {
 const runHermes: Exec = (command, args, hermesHome) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HERMES_HOME: hermesHome } });
   // hermes mcp add asks to overwrite on a re-run, then asks about its tools. A closed stdin reads as "Cancelled." with exit 0.
+  // Subcommands that don't read stdin can exit before the write lands, raising EPIPE.
+  child.stdin.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") reject(err); });
   child.stdin.end("Y\nY\nY\n");
   let stdout = "";
   let stderr = "";
@@ -58,6 +60,11 @@ const runHermes: Exec = (command, args, hermesHome) => new Promise((resolve, rej
 const assetDir = (): string => fileURLToPath(new URL("../hermes/", import.meta.url));
 const mcpEntry = (): string => fileURLToPath(new URL(`./mcp${extname(fileURLToPath(import.meta.url))}`, import.meta.url));
 const daemonEntry = (): string => fileURLToPath(new URL(`./daemon/main${extname(fileURLToPath(import.meta.url))}`, import.meta.url));
+
+function envValue(existing: string, key: string): string | undefined {
+  const line = existing.split(/\r?\n/).find((l) => l.startsWith(`${key}=`));
+  return line ? line.slice(key.length + 1).trim() || undefined : undefined;
+}
 
 function withEnv(existing: string, set: Record<string, string>, drop: string[]): string {
   const keyOf = (line: string): string => line.split("=", 1)[0] as string;
@@ -88,25 +95,6 @@ function resolveLanding(value: string | undefined): { landing: string | null | u
 
 const landingFileOf = (hermesHome: string): string => join(hermesHome, "cello", "landing-session.json");
 
-// The one bridge setting an agent may change itself: where its own notifications land. It writes only the landing file, which the
-// plugin reads on every notification, so nothing restarts. Everything else about the bridge still takes a person.
-export function setLanding(options: { agent: string; hermesHome?: string; landingSession: string }): { ok: boolean; output: string } {
-  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
-  const envPath = join(hermesHome, ".env");
-  if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A human operator sets it up first with cello bridge hermes.` };
-  const bridged = readFileSync(envPath, "utf8").split(/\r?\n/).find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
-  // An agent moves its own notifications, never another profile's.
-  if (bridged !== options.agent.trim()) return { ok: false, output: `${hermesHome} is bridged to ${bridged ?? "no agent"}, not ${options.agent}. Nothing changed.` };
-  if (readFileSync(envPath, "utf8").split(/\r?\n/).includes("CELLO_SESSION_SCOPE=peer")) return { ok: false, output: "This agent gives each caller their own session, so there's no one landing session to move. Nothing changed." };
-  const { landing, error } = resolveLanding(options.landingSession);
-  if (error) return { ok: false, output: error };
-  const file = landingFileOf(hermesHome);
-  mkdirSync(join(hermesHome, "cello"), { recursive: true });
-  // A null says default on purpose, so an older CELLO_LANDING_SESSION in .env doesn't take over.
-  writeFileSync(file, `${JSON.stringify({ session_id: landing ?? null })}\n`);
-  return { ok: true, output: landing ? `${options.agent}'s notifications now land in session ${landing}, from the next one.` : `${options.agent}'s notifications go back to its own CELLO session, from the next one.` };
-}
-
 export async function installBridge(options: BridgeOptions): Promise<{ ok: boolean; output: string }> {
   const refuse = (output: string): { ok: boolean; output: string } => ({ ok: false, output });
   const agent = options.agent.trim();
@@ -115,21 +103,23 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   if (!existsSync(hermesHome)) return refuse(`There's no Hermes home at ${hermesHome}. Install Hermes first, or pass --hermes-home.`);
   const envPath = join(hermesHome, ".env");
   const hermesEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  // This has to be re-run after every upgrade, and forgetting a flag then mustn't open a public agent to strangers. Only --not-public ends it.
-  const wasPublic = hermesEnv.split(/\r?\n/).includes("CELLO_PUBLIC=1");
+  // Re-running after an upgrade must keep existing settings unless explicitly changed. Only --not-public ends --public.
+  const wasPublic = envValue(hermesEnv, "CELLO_PUBLIC") === "1";
   if (options.public && options.notPublic) return refuse("--public and --not-public can't go together.");
   const isPublic = options.public || (wasPublic && !options.notPublic);
-  const allowInitiate = options.allowInitiate || (isPublic && !options.notPublic && hermesEnv.split(/\r?\n/).includes("CELLO_ALLOW_INITIATE=1"));
-  const scope = options.sessionScope ?? (isPublic ? "peer" : "agent");
+  const allowInitiate = options.allowInitiate || (isPublic && !options.notPublic && envValue(hermesEnv, "CELLO_ALLOW_INITIATE") === "1");
+  const existingScope = envValue(hermesEnv, "CELLO_SESSION_SCOPE");
+  const scope = options.sessionScope ?? (isPublic ? "peer" : (options.notPublic ? "agent" : (existingScope ?? "agent")));
   if (!(SESSION_SCOPES as readonly string[]).includes(scope)) return refuse(`--session-scope must be one of ${SESSION_SCOPES.join(", ")}, not '${scope}'.`);
   if (isPublic && scope !== "peer") return refuse("A public agent needs --session-scope peer, or callers would share one conversation.");
-  const channels = options.channelNotifications ?? "on";
+  const channels = options.channelNotifications ?? envValue(hermesEnv, "CELLO_CHANNEL_NOTIFICATIONS") ?? "on";
   if (!(CHANNEL_NOTIFICATIONS as readonly string[]).includes(channels)) return refuse(`--channel-notifications must be one of ${CHANNEL_NOTIFICATIONS.join(", ")}, not '${channels}'.`);
   if (options.allowInitiate && !isPublic) return refuse("--allow-initiate only means something with --public.");
   const resolved = resolveLanding(options.landingSession);
   if (resolved.error) return refuse(resolved.error);
-  if (resolved.landing && scope === "peer") return refuse("--landing-session only means something with --session-scope agent: under peer each caller has their own session.");
-  const landing = resolved.landing ?? undefined;
+  if (resolved.landing !== undefined && scope === "peer") return refuse("--landing-session only means something with --session-scope agent: under peer each caller has their own session.");
+  const existingLanding = envValue(hermesEnv, "CELLO_LANDING_SESSION");
+  const landing = scope === "peer" ? undefined : (resolved.landing === undefined ? existingLanding : (resolved.landing ?? undefined));
 
   // Strangers' text goes straight to this agent's model, so a public agent doesn't start on the rules alone.
   if (isPublic && !await options.modelReady()) return refuse("Nothing was changed. A public agent needs the screening model, and it isn't installed here. Run: cello screener install");
@@ -184,6 +174,10 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
   if (landing) {
     mkdirSync(join(hermesHome, "cello"), { recursive: true });
     writeFileSync(landingFile, `${JSON.stringify({ session_id: landing })}\n`);
+  } else if (resolved.landing === null) {
+    // A null says default on purpose, so a running gateway that booted with CELLO_LANDING_SESSION switches back without a restart.
+    mkdirSync(join(hermesHome, "cello"), { recursive: true });
+    writeFileSync(landingFile, `${JSON.stringify({ session_id: null })}\n`);
   } else {
     rmSync(landingFile, { force: true });
   }
@@ -210,7 +204,13 @@ export async function installBridge(options: BridgeOptions): Promise<{ ok: boole
     out.push(`Ran: hermes ${step.slice(0, 3).join(" ")}`);
     if (step === mcpAdd) {
       // hermes mcp add can say "Cancelled." and still exit 0.
-      const listed = await hermes(["mcp", "list"]);
+      let listed: ExecResult;
+      try {
+        listed = await hermes(["mcp", "list"]);
+      } catch (err: unknown) {
+        return refuse(`${out.join("\n")}\n\n'hermes mcp list' couldn't run (${err instanceof Error ? err.message : String(err)}). Run this by hand:\n  hermes mcp list`);
+      }
+      if (listed.code !== 0) return refuse(`${out.join("\n")}\n\n'hermes mcp list' failed (exit ${listed.code}):\n${(listed.stderr || listed.stdout).trim()}\nFix that and run this again.`);
       if (!listed.stdout.includes("cello")) return refuse(`${out.join("\n")}\n\n'hermes mcp add' reported success, but 'hermes mcp list' has no cello server. Run this by hand and answer Y, then run this command again:\n  hermes ${mcpAdd.join(" ")}`);
       out.push("Checked: cello is in hermes mcp list");
     }

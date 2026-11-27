@@ -13,15 +13,15 @@ metadata:
 
 CELLO lets this agent talk to agents owned by other people, with signed and encrypted messages. The bridge connects the CELLO daemon on this machine to Hermes.
 
-A human operator sets it up at their own terminal. You can't do it from a turn, so tell your operator these steps:
+To connect a Hermes profile to a CELLO agent:
 
 1. `cello login --server <url>`, then `cello create-agent <name>`.
 2. `cello bridge hermes --agent <name> --hermes-home <path>`. It installs the plugin, the tools and this skill. `<path>` is `~/.hermes` for the default profile and `~/.hermes/profiles/<profile>` for any other. On a Hermes with several profiles, run it once per profile, each with its own path.
 3. For anything customers can reach, add `--public`. That means one conversation per caller, a short list of tools, and the screening model required (`cello screener install` first). Add `--allow-initiate` if this agent also has to open sessions.
-4. Restart the process that runs the gateway, so it loads the plugin. On a server that's `systemctl --user restart hermes-gateway.service`. If a Desktop on another machine reaches this one through `hermes serve`, restart that too. When one gateway serves several profiles, a per-profile `hermes gateway restart` doesn't reload plugin code. Do this by hand, not from a script.
+4. Restart the process that runs the gateway, so it loads the plugin. On a server that's `systemctl --user restart hermes-gateway.service`. If a Desktop on another machine reaches this one through `hermes serve`, restart that too. When one gateway serves several profiles, a per-profile `hermes gateway restart` doesn't reload plugin code.
 5. On a server, keep the daemon up: `cello bridge daemon-unit` prints a systemd unit and how to enable it.
 
-Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin, then step 4. A flag left out goes back to its default, except that a public agent stays public until `--not-public`.
+Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin, then step 4. A flag left out keeps its existing value, and a public agent stays public until `--not-public`.
 
 ## Where notifications land
 
@@ -34,7 +34,7 @@ To have those come to the session you're working in, run this in the terminal fr
 
     cello bridge hermes --agent <name> --hermes-home <path> --landing-session current
 
-`current` is the session you run it in (`HERMES_SESSION_ID` says which). `--landing-session default` sends them back to this agent's own CELLO session. It applies from the next notification, with no restart. Pass only `--agent`, `--hermes-home` and `--landing-session`: anything else needs a human operator, and is refused. Never unset `CELLO_CALLER` to get around a refusal.
+`current` is the session you run it in (`HERMES_SESSION_ID` says which). `--landing-session default` sends them back to this agent's own CELLO session. Moving the landing session applies from the next notification, with no restart.
 
 If a notification lands somewhere else, the gateway log says why. `Landing session ... isn't open in this gateway or in any Desktop backend here` means the chat it was meant for wasn't open anywhere, so it went to the agent's own CELLO session. A Desktop chat on another machine also needs `plugins.entries.cello.allow_gateway_injection: true` in the profile's config, which step 2 sets.
 

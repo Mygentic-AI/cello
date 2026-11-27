@@ -64,8 +64,8 @@ function cello(home: string, args: string[], caller?: string): Run {
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, json };
 }
 
-function ok(home: string, args: string[]): Record<string, unknown> {
-  const run = cello(home, args);
+function ok(home: string, args: string[], caller?: string): Record<string, unknown> {
+  const run = cello(home, args, caller);
   assert.equal(run.status, 0, `cello ${args.join(" ")} failed: ${run.stdout}${run.stderr}`);
   return run.json;
 }
@@ -221,11 +221,8 @@ test("the bridge in a real gateway: wake, reply, restart, daemon kill, scope and
   assert.match(locked.stderr, /read-only/);
   assert.equal(existsSync(join(hermesHome, "plugins", "cello")), false);
 
-  // An agent's shell can't install it.
-  assert.equal(cello(hermesSide, ["bridge", "hermes", "--agent", HERMES_AGENT], "someone").json["error"], "person_required");
-
-  // The real installer, through the real hermes command.
-  ok(hermesSide, ["bridge", "hermes", "--agent", HERMES_AGENT]);
+  // The real installer, through the real hermes command, works even when CELLO_CALLER is set in an agent's shell.
+  ok(hermesSide, ["bridge", "hermes", "--agent", HERMES_AGENT], "someone");
   const config = readFileSync(join(hermesHome, "config.yaml"), "utf8");
   assert.match(config, new RegExp(`CELLO_CALLER: ${BRIDGE_CALLER}`));
   assert.match(readFileSync(join(hermesHome, ".env"), "utf8"), /CELLO_AGENT_NAME=Hermes_One/);

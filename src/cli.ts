@@ -12,7 +12,7 @@ import { DaemonGone, DaemonRefused, IpcClient } from "./ipc/client.ts";
 import { DEFAULT_WAIT_SECONDS, type Kind, OPERATIONS, type Operation, type Param, onHelpPage } from "./ipc/operations.ts";
 import { exportTranscript, runLocal } from "./local-operations.ts";
 import { type MacAppEnv, addNotifier, macAppEnv } from "./mac-app.ts";
-import { daemonUnit, installBridge, setLanding } from "./hermes-bridge.ts";
+import { daemonUnit, installBridge } from "./hermes-bridge.ts";
 import { SETUP_HELP, setup } from "./setup.ts";
 import { commandSigner, parseRootName, signIssuerListFile } from "./issuer-list-sign.ts";
 import { RootKeysNotConfigured } from "./protocol/issuer-list.ts";
@@ -482,7 +482,7 @@ const BRIDGE_USAGE = `Usage: cello bridge hermes --agent <name> [--hermes-home <
        cello bridge daemon-unit
 
 hermes connects one Hermes profile to one CELLO agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin.
-A flag you leave out goes back to its default.
+A flag you leave out keeps its existing value (or its default on a first install).
 
 The bridge decides where the agent's notifications go: a new session request, a message, a channel post.
   --session-scope agent    (default) a session the agent opens answers in the Hermes chat that opened it. Everything else goes
@@ -494,17 +494,15 @@ The bridge decides where the agent's notifications go: a new session request, a 
   --landing-session default  back to the agent's own CELLO session.
   --channel-notifications on|off  whether a new post on a channel the agent follows wakes it (default on).
 
-An agent can move its own notifications, with no human operator and no restart: inside Hermes, run
+An agent can move its own notifications without restarting the gateway: inside Hermes, run
   cello bridge hermes --agent <name> --hermes-home <path> --landing-session current
-so sessions others open, and channel posts, land in the session it's working in. Only --agent, --hermes-home and --landing-session go with it.
-Everything else needs a human operator.
+so sessions others open, and channel posts, land in the session it's working in.
 
 A Hermes with several profiles: run this once per profile, with --hermes-home pointing at that profile (for example ~/.hermes/profiles/<name>).
 --public is for an agent unknown agents can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.
 daemon-unit prints a systemd unit that keeps the daemon up on a server.
 `;
 
-// For a person at a terminal, like the other commands that change what an agent can do. A shell naming itself as a caller is an agent's, by the rule in the help.
 async function bridgeCommand(args: string[]): Promise<void> {
   const [target, ...rest] = args;
   if (target === undefined || target === "--help" || target === "-h") {
@@ -533,16 +531,6 @@ async function bridgeCommand(args: string[]): Promise<void> {
   }
   const agent = values["--agent"];
   if (!agent) usageError(`bridge hermes needs --agent. ${BRIDGE_USAGE}`);
-  if (process.env["CELLO_CALLER"]) {
-    // An agent's shell may move where its own notifications land, as v1 let it, and nothing else.
-    const landingOnly = values["--landing-session"] !== undefined && flags.size === 0
-      && Object.keys(values).every((k) => ["--agent", "--hermes-home", "--landing-session"].includes(k));
-    if (!landingOnly) fail(`${JSON.stringify({ error: "person_required", message: "Installing or changing a bridge needs a human operator. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own. An agent may only move its own notifications: cello bridge hermes --agent <name> --landing-session current" })}\n`, EXIT_REFUSED);
-    const moved = setLanding({ agent, hermesHome: values["--hermes-home"], landingSession: values["--landing-session"] as string });
-    if (!moved.ok) fail(`${moved.output}\n`, EXIT_REFUSED);
-    process.stdout.write(`${moved.output}\n`);
-    return;
-  }
   const result = await installBridge({
     agent,
     hermesHome: values["--hermes-home"],

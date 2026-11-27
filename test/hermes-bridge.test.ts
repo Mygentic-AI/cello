@@ -1,10 +1,12 @@
 // What a forgotten flag or a failed step does to an install. A live run wouldn't show these, because the public path needs the model.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type BridgeOptions, type Exec, installBridge, setLanding } from "../src/hermes-bridge.ts";
+import { fileURLToPath } from "node:url";
+import { type BridgeOptions, type Exec, installBridge } from "../src/hermes-bridge.ts";
 
 function recorder(failOn?: string): { calls: string[][]; exec: Exec } {
   const calls: string[][] = [];
@@ -78,47 +80,87 @@ test("a public agent stays public after Hermes on Windows rewrites .env with CRL
   assert.doesNotMatch(toolsOf(again.calls) ?? "", /cello_create_agent/, "strangers don't get the full tool set");
 });
 
-test("an agent moves its own notifications to the session it's in, and back, and nothing else", async () => {
+test("an agent shell with CELLO_CALLER set can install and update its own bridge through the CLI", () => {
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
-  assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "current" }).ok, false, "no bridge yet");
-  assert.equal((await installBridge(options(home, recorder().exec))).ok, true);
-  const before = readFileSync(join(home, ".env"), "utf8");
+  const bin = mkdtempSync(join(tmpdir(), "cello-bin-"));
+  const log = join(bin, "calls.log");
+  const shim = join(bin, "hermes");
+  writeFileSync(shim, `#!/bin/sh\necho "$@" >> "${log}"\nif [ "$1" = "mcp" ] && [ "$2" = "list" ]; then echo "cello"; fi\n`);
+  chmodSync(shim, 0o755);
 
+  const env = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, CELLO_CALLER: "hermes", HERMES_SESSION_ID: "local-1e631a4ad46ac395c5d7ddedecc8378adcd37e5e40f8b6647b59dab8c098fdb9" };
+  const installed = spawnSync(process.execPath, [cli, "bridge", "hermes", "--agent", "Desk", "--hermes-home", home], { encoding: "utf8", env });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.ok(existsSync(join(home, "plugins", "cello", "__init__.py")));
+  assert.match(readFileSync(join(home, ".env"), "utf8"), /CELLO_AGENT_NAME=Desk/);
+  const calls = readFileSync(log, "utf8");
+  assert.match(calls, /mcp add cello/);
+  assert.match(calls, /plugins enable cello/);
+
+  const moved = spawnSync(process.execPath, [cli, "bridge", "hermes", "--agent", "Desk", "--hermes-home", home, "--landing-session", "current"], { encoding: "utf8", env });
+  assert.equal(moved.status, 0, moved.stderr);
+  assert.equal(landingIn(home), "local-1e631a4ad46ac395c5d7ddedecc8378adcd37e5e40f8b6647b59dab8c098fdb9");
+
+  const reset = spawnSync(process.execPath, [cli, "bridge", "hermes", "--agent", "Desk", "--hermes-home", home, "--landing-session", "default"], { encoding: "utf8", env });
+  assert.equal(reset.status, 0, reset.stderr);
+  assert.equal(landingIn(home), null, "default writes null so a running gateway stops using an older CELLO_LANDING_SESSION without restarting");
+  assert.doesNotMatch(readFileSync(join(home, ".env"), "utf8"), /CELLO_LANDING_SESSION/);
+});
+
+test("an install takes current and default too, validates session ids, and refuses landing sessions under peer scope", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   const saved = process.env["HERMES_SESSION_ID"];
   try {
     delete process.env["HERMES_SESSION_ID"];
-    assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "current" }).ok, false, "current outside a Hermes session");
+    assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "current" }))).ok, false, "current outside a Hermes session");
     process.env["HERMES_SESSION_ID"] = "local-1e631a4ad46ac395c5d7ddedecc8378adcd37e5e40f8b6647b59dab8c098fdb9";
-    assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "current" }).ok, true);
+    assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "current" }))).ok, true);
     assert.equal(landingIn(home), "local-1e631a4ad46ac395c5d7ddedecc8378adcd37e5e40f8b6647b59dab8c098fdb9");
   } finally {
     if (saved === undefined) delete process.env["HERMES_SESSION_ID"];
     else process.env["HERMES_SESSION_ID"] = saved;
   }
-  assert.equal(readFileSync(join(home, ".env"), "utf8"), before, "only the landing file changes");
 
-  assert.equal(setLanding({ agent: "Other", hermesHome: home, landingSession: "20261107_075030_72e2f2e2" }).ok, false, "never another profile's agent");
-  assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "no spaces allowed" }).ok, false);
-
-  assert.equal(setLanding({ agent: "Desk", hermesHome: home, landingSession: "default" }).ok, true);
-  assert.equal(landingIn(home), null, "default is written as null, so an older CELLO_LANDING_SESSION can't take over");
-});
-
-test("an install takes current and default too, and refuses a landing session under peer scope", async () => {
-  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
+  assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "no spaces allowed" }))).ok, false);
   assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "20261107_075030_72e2f2e2" }))).ok, true);
   assert.equal(landingIn(home), "20261107_075030_72e2f2e2");
+  // Re-running without --landing-session preserves the existing landing session across upgrades.
+  assert.equal((await installBridge(options(home, recorder().exec))).ok, true);
+  assert.equal(landingIn(home), "20261107_075030_72e2f2e2");
+
   assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "default" }))).ok, true);
-  assert.equal(existsSync(join(home, "cello", "landing-session.json")), false);
+  assert.equal(landingIn(home), null);
   assert.doesNotMatch(readFileSync(join(home, ".env"), "utf8"), /CELLO_LANDING_SESSION/);
+
   assert.equal((await installBridge(options(home, recorder().exec, { sessionScope: "peer", landingSession: "20261107_075030_72e2f2e2" }))).ok, false);
+  assert.equal((await installBridge(options(home, recorder().exec, { sessionScope: "peer", landingSession: "default" }))).ok, false);
 });
 
-test("the plugin isn't enabled unless the tools it needs were added", async () => {
+test("re-running keeps existing scope and channel notifications, and refuses moving landing on a peer-scope profile", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
+  assert.equal((await installBridge(options(home, recorder().exec, { sessionScope: "peer", channelNotifications: "off" }))).ok, true);
+  assert.equal((await installBridge(options(home, recorder().exec, { landingSession: "20261107_075030_72e2f2e2" }))).ok, false, "peer scope isn't silently collapsed to agent");
+  assert.equal((await installBridge(options(home, recorder().exec))).ok, true);
+  const env = readFileSync(join(home, ".env"), "utf8");
+  assert.match(env, /CELLO_SESSION_SCOPE=peer/);
+  assert.match(env, /CELLO_CHANNEL_NOTIFICATIONS=off/);
+});
+
+test("the plugin isn't enabled unless the tools it needs were added, and mcp list failure names itself", async () => {
   const home = mkdtempSync(join(tmpdir(), "cello-bt-"));
   const failing = recorder("mcp");
   assert.equal((await installBridge(options(home, failing.exec))).ok, false);
   assert.equal(failing.calls.some((c) => c[0] === "plugins"), false);
+
+  const listFailing: Exec = (_command, args) => {
+    if (args[0] === "mcp" && args[1] === "list") return Promise.resolve({ code: 1, stdout: "", stderr: "config unreadable" });
+    return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+  };
+  const listed = await installBridge(options(home, listFailing));
+  assert.equal(listed.ok, false);
+  assert.match(listed.output, /'hermes mcp list' failed \(exit 1\)/);
+  assert.match(listed.output, /config unreadable/);
 });
 
 const injectionOf = (calls: string[][]): string | undefined => calls.find((c) => c[0] === "config" && c[2] === "plugins.entries.cello.allow_gateway_injection")?.[3];
