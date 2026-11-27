@@ -81,7 +81,7 @@ function commandHelp(op: Operation): string {
     );
   }
   if (op.scoped) details.push(`  ${"--agent".padEnd(20)} The agent's name or id. Can be left out once chosen with use-agent.`);
-  if (op.acts) details.push(`  ${"--force".padEnd(20)} Take the agent from another caller that holds it.`);
+  if (op.acts) details.push(`  ${"--force".padEnd(20)} Take the agent over from another caller acting as it.`);
   return `Usage: ${usageLine(op)}\n\n${op.description}\n${details.length > 0 ? `\n${details.join("\n")}\n` : ""}`;
 }
 
@@ -492,10 +492,10 @@ The bridge decides where the agent's notifications go: a new session request, a 
   --landing-session default  back to the agent's own CELLO session.
   --channel-notifications on|off  whether a new post on a channel the agent follows wakes it (default on).
 
-An agent can move its own notifications, with no person and no restart: inside Hermes, run
+An agent can move its own notifications, with no human operator and no restart: inside Hermes, run
   cello bridge hermes --agent <name> --hermes-home <path> --landing-session current
 so sessions others open, and channel posts, land in the session it's working in. Only --agent, --hermes-home and --landing-session go with it.
-Everything else takes a person at a terminal.
+Everything else needs a human operator.
 
 A Hermes with several profiles: run this once per profile, with --hermes-home pointing at that profile (for example ~/.hermes/profiles/<name>).
 --public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.

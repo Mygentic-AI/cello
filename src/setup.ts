@@ -32,7 +32,7 @@ export const INVITE_LINES = {
 
 export const SETUP_HELP = `Usage: cello setup [--name <agent>] [--email <address>] [--email-code <code>] [--invite <code>] [--code <code>] [--server <url>] [--issuer <url>] [--concierge <address>] [--install-mcp] [--yes] [--json]
 
-Set up CELLO on this machine: start the background program, create an agent's key, check your email with a code we send (or redeem a setup code), get a verified email or phone signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
+Set up CELLO on this machine: start the daemon (the background service that keeps agents connected), create an agent's key, check your email with a code we send (or redeem a setup code), get a verified email or phone signal, register, and say hello to the CELLO Concierge. Run it again and it changes nothing.
 
 At a terminal it asks for the agent's name, your email and the emailed code, one at a time. With no terminal it never asks: give the values as flags, in two runs, because the code is sent by the first:
   cello setup --yes --name Ann --email ann@example.com
@@ -46,7 +46,7 @@ At a terminal it asks for the agent's name, your email and the emailed code, one
   --server     The server, the first time only. The default is ${DEFAULT_SERVER_URL}.
   --issuer     The issuer, if it isn't the default.
   --concierge  The agent to call at the end. Give none to skip the call this once, and keep the setting as it is.
-  --yes        Start the background program without asking.
+  --yes        Start the daemon without asking.
   --install-mcp  Find Claude Code, Claude Desktop and ChatGPT Desktop on this machine, connect each one, and say what changed. Without it, setup only prints the Claude Code commands.
   --json       Answer in JSON.
 `;
