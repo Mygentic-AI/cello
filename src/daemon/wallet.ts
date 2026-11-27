@@ -660,7 +660,7 @@ export class Wallet {
     const row = this.#find(agentHex, prefix);
     this.#signals.trust(row.issuer_address, row.issuer_pubkey);
     logEvent("signal.issuer.trusted", { agent: agentHex, issuer: row.issuer_address });
-    this.#hooks.notify(fromHex(agentHex), `A person at this machine's terminal added ${plainName(row.issuer_address)} to the trusted list, so its signals now count as verified here. If that wasn't you, a person can take it off with issuer-untrust.`);
+    this.#hooks.notify(fromHex(agentHex), `A human operator at this machine's terminal added ${plainName(row.issuer_address)} to the trusted list, so its signals now count as verified here. If that wasn't you, take it off with issuer-untrust: anyone can, an agent included.`);
     return { trusted: plainName(row.issuer_address), issuer_pubkey: row.issuer_pubkey };
   }
 

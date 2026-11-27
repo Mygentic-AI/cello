@@ -719,7 +719,7 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
   assert.equal((await run(home, ["signals", "view", "zz", "--agent", "Ann"])).json["error"], "bad_argument");
   assert.equal((await run(home, ["signals", "view", "00000000", "--agent", "Ann"])).json["error"], "signal_not_found");
 
-  // Adding to the trusted list takes a person at a terminal. A pipe gets a refusal, and nothing changes.
+  // Adding to the trusted list needs a human operator at a terminal. A pipe gets a refusal, and nothing changes.
   const piped = await run(home, ["issuer-trust", hash, "--agent", "Ann"]);
   assert.equal(piped.json["error"], "person_required");
   assert.equal((await listed(home, "Ann")).signals[0]?.counts_as_verified, false);
@@ -731,13 +731,14 @@ test("the wallet keeps only what passes, stacks its notes, and survives a restar
   await ok(home, ["issuer-untrust", hash, "--agent", "Ann"]);
   assert.equal((await listed(home, "Ann")).signals.some((s) => s.counts_as_verified), false);
 
-  // Over MCP, the wallet is the same operations, with the agent named on each call, and the person's command isn't there.
+  // Over MCP, the wallet is the same operations, with the agent named on each call. issuer-trust needs a human operator
+  // and isn't there. issuer-untrust only tightens, so it is.
   const client = new Client({ name: "setup-live", version: "0" });
   const stderrFree = new StdioClientTransport({ command: process.execPath, args: [mcp], env: { ...process.env as Record<string, string>, HOME: home, CELLO_HOME: home } });
   await client.connect(stderrFree);
   const tools = (await client.listTools()).tools.map((tool) => tool.name);
-  for (const name of ["cello_signals_list", "cello_signals_view", "cello_signals_enable", "cello_signals_disable", "cello_signals_collect"]) assert.ok(tools.includes(name), name);
-  for (const name of ["cello_issuer_trust", "cello_issuer_untrust", "cello_setup"]) assert.equal(tools.includes(name), false, name);
+  for (const name of ["cello_signals_list", "cello_signals_view", "cello_signals_enable", "cello_signals_disable", "cello_signals_collect", "cello_issuer_untrust"]) assert.ok(tools.includes(name), name);
+  for (const name of ["cello_issuer_trust", "cello_setup"]) assert.equal(tools.includes(name), false, name);
   const answer = await client.callTool({ name: "cello_signals_list", arguments: { agent: "Ann" } }, z.any() as never) as { content: { text: string }[] };
   assert.ok((JSON.parse(answer.content[0]?.text as string) as Listed).signals.length >= 4);
   await client.close();

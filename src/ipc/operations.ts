@@ -1174,8 +1174,7 @@ The code stops agents that are simply trying commands, and pipes and scripts wit
     summary: "Stop accepting signals from an issuer you added.",
     scoped: true,
     acts: false,
-    personOnly: true,
-    description: "For a human operator at their own terminal, and never available as a tool. Takes the issuer of a signal you hold back off this machine's trusted list.",
+    description: "Takes the issuer of a signal you hold back off this machine's trusted list, so its signals show as unknown again. This only tightens, so anyone can do it, an agent included. Putting it back needs a human operator, with issuer-trust.",
     params: [SIGNAL_HASH],
   },
   {

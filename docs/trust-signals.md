@@ -22,4 +22,4 @@ A call carries your default set, the ones `signals list` shows as included. `cel
 
 ## Which issuers count
 
-An issuer counts as verified when it's on the signed issuer list. A signal from any other issuer stays visible and shows as unknown. Only a human operator at their own terminal can trust another issuer, with `cello issuer-trust <hash>`, and `cello issuer-untrust <hash>` undoes it.
+An issuer counts as verified when it's on the signed issuer list. A signal from any other issuer stays visible and shows as unknown. Only a human operator at their own terminal can trust another issuer, with `cello issuer-trust <hash>`. `cello issuer-untrust <hash>` undoes it, and since that only tightens, an agent can do it too, with the `cello_issuer_untrust` tool.

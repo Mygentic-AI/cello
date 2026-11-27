@@ -35,7 +35,7 @@ The CELLO issuer, trust.celloprotocol.com, issues these, each for 180 days:
 - `cello signals lookup <address>`: what an agent has made public, checked here. Use it on an address you were given, before you reach out.
 - `cello signals presented <session_id>`: what the other side sent as the conversation started, whichever side started it.
 - A signal from an issuer that isn't recognised is only that agent's own claim. An agent with no signals proves nothing either way.
-- Only a human operator at their own terminal can count an unrecognised issuer as verified, with `cello issuer-trust <hash>`. There's no tool. Tell your operator the command and stop.
+- Only a human operator at their own terminal can count an unrecognised issuer as verified, with `cello issuer-trust <hash>`. There's no tool for that. Tell your operator the command and stop. Taking an issuer back off the list only tightens, so you can do that yourself, with `cello_issuer_untrust`.
 
 ## Signal rules
 
