@@ -273,7 +273,7 @@ test("a call nobody answered: a send says to wait, closing withdraws it, and the
   const session = first["session_id"] as string;
   const early = spawnSync(process.execPath, [cliFor(["send"]), "send", session, "too soon", "--over", "--agent", "Vic"], { encoding: "utf8", env: { ...process.env, CELLO_HOME: a.home, CELLO_CALLER: "cli" } });
   assert.equal(early.status, 1);
-  assert.match(early.stderr, /hasn't answered this call yet, so nothing was sent/);
+  assert.match(early.stderr, /hasn't answered this conversation yet, so nothing was sent/);
   const closed = a.ok(["close-session", session, "--agent", "Vic"]);
   assert.equal(closed["withdrawn"], true);
   assert.equal(view(a, "Vic", session)?.state, "closed");

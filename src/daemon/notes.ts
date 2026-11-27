@@ -242,7 +242,7 @@ export class Notes {
     if (writerHex === ownerHex) return;
     const allowed = this.#reach.setting(bytesOf(writerHex), "notes.write");
     if (allowed === "all" || listOf(allowed).includes(ownerHex)) return;
-    throw new LocalError("not_allowed_to_write", `${this.#host.agentName(writerHex)} may write only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing changed for ${this.#host.agentName(ownerHex)}. The setting is notes.write, and widening it takes a person at a terminal: cello settings-set notes.write ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${writerHex}`);
+    throw new LocalError("not_allowed_to_write", `${this.#host.agentName(writerHex)} may write only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing changed for ${this.#host.agentName(ownerHex)}. The setting is notes.write, and widening it needs a human operator at their own terminal: cello settings-set notes.write ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${writerHex}`);
   }
 
   // The fields this call gives, each checked. Anything not named is left out, so a change touches only what it names.
@@ -315,7 +315,7 @@ export class Notes {
     const owner = bytesOf(ownerHex);
     const kind = this.#listedKind(ownerHex, kinds);
     const floor = kind === undefined ? 0 : this.#reach.number(owner, "notes.history_default");
-    if (asked !== undefined && asked < floor) throw new LocalError("history_required", `Notes of kind ${kind as string} must keep at least ${floor} past versions for ${this.#host.agentName(ownerHex)}, and this asked for ${asked}. The kind is listed in the setting notes.history_kinds, and taking it off takes a person.`);
+    if (asked !== undefined && asked < floor) throw new LocalError("history_required", `Notes of kind ${kind as string} must keep at least ${floor} past versions for ${this.#host.agentName(ownerHex)}, and this asked for ${asked}. The kind is listed in the setting notes.history_kinds, and taking it off needs a human operator.`);
     return asked ?? Math.max(had, floor);
   }
 
@@ -334,7 +334,7 @@ export class Notes {
       if (Object.keys(given).length === 0) throw new LocalError("bad_argument", "A note needs something in it: a body, a label, or anything else. Every field is optional, but not all at once.");
       const max = this.#reach.number(owner, "notes.max");
       const count = (this.#store.prepare("SELECT count(*) AS c FROM notes WHERE agent_id = ?").get(owner) as { c: number }).c;
-      if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} ${count === 1 ? "note" : "notes"}, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it takes a person.`);
+      if (count >= max) throw new LocalError("too_many_notes", `${name} already has ${count} ${count === 1 ? "note" : "notes"}, and ${max} is the most it holds. None is dropped to make room: remove some with note-remove. The limit is the setting notes.max, and raising it needs a human operator.`);
       const row: Supplied = { ...EMPTY, ...given };
       row.keep_history = this.#keep(ownerHex, [row.kind], given.keep_history, 0);
       const noteId = new Uint8Array(randomBytes(8));
@@ -371,7 +371,7 @@ export class Notes {
     if (!this.#host.agents().includes(ownerHex)) throw new LocalError("unknown_agent", `There's no agent ${ownerHex} on this daemon, so it has no notes to read. agents lists the ones here.`);
     if (this.readableBy(readerHex).includes(ownerHex)) return;
     const allowed = this.#reach.setting(bytesOf(readerHex), "notes.read");
-    throw new LocalError("not_allowed_to_read", `${this.#host.agentName(readerHex)} may read only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing of ${this.#host.agentName(ownerHex)}'s was read. The setting is notes.read, and widening it takes a person at a terminal: cello settings-set notes.read ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${readerHex}`);
+    throw new LocalError("not_allowed_to_read", `${this.#host.agentName(readerHex)} may read only ${allowed === "own" ? "its own notes" : "its own notes and those of the agents its setting names"}, so nothing of ${this.#host.agentName(ownerHex)}'s was read. The setting is notes.read, and widening it needs a human operator at their own terminal: cello settings-set notes.read ${[...(allowed === "own" ? [] : listOf(allowed)), ownerHex].join(",")} --agent ${readerHex}`);
   }
 
   get(readerHex: string, ownerHex: string, noteId: unknown, history: boolean): unknown {

@@ -320,7 +320,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const agents = this.#agents();
     const locked = agents.filter((agent) => this.#ctx.host.notifiersLocked(agent.agent_id));
     if (locked.length > 0) {
-      throw new LocalError("notifiers_locked", `Nothing was removed: the notifiers of ${locked.map((a) => a.agent).join(", ")} are locked (notifiers.anyone_can_change is off). A person at a terminal can remove the Mac from each with: cello notifier-remove mac --agent <agent>, then remove CELLO again.`);
+      throw new LocalError("notifiers_locked", `Nothing was removed: the notifiers of ${locked.map((a) => a.agent).join(", ")} are locked (notifiers.anyone_can_change is off). A human operator at their own terminal can remove the Mac from each with: cello notifier-remove mac --agent <agent>, then remove CELLO again.`);
     }
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac'").run();
     this.prune();
@@ -340,7 +340,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const name = this.#nameOf(agent);
     // The same lock notifier-remove respects. This socket is no person at a terminal.
     if (this.#ctx.host.notifiersLocked(agent)) {
-      throw new LocalError("notifiers_locked", `${name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be removed from it from the app. A person at a terminal can: cello notifier-remove ${theirs[0]?.name ?? "mac"} --agent ${agent}`);
+      throw new LocalError("notifiers_locked", `${name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be removed from it from the CELLO widget for Mac. A human operator at their own terminal can: cello notifier-remove ${theirs[0]?.name ?? "mac"} --agent ${agent}`);
     }
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac' AND agent_id = ?").run(idOf(agent));
     this.prune();
@@ -366,7 +366,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const theirs = typeof agent === "string" ? this.#ctx.host.localAgents().find((a) => a.agentHex === agent) : undefined;
     if (!theirs) throw new LocalError("no_such_agent", "Name an agent on this machine by its agent_id. agents lists them.");
     if (this.#ctx.host.notifiersLocked(theirs.agentHex)) {
-      throw new LocalError("notifiers_locked", `${theirs.name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be added for it from the app. A person at a terminal can: cello notifier-add mac --route-only --agent ${theirs.agentHex}`);
+      throw new LocalError("notifiers_locked", `${theirs.name}'s notifiers are locked (notifiers.anyone_can_change is off), so the Mac can't be added for it from the CELLO widget for Mac. A human operator at their own terminal can: cello notifier-add mac --route-only --agent ${theirs.agentHex}`);
     }
     // A route that couldn't be told of the new one is said, never swallowed: it's how a tricked add would show.
     const result = await this.#ctx.addRoute(theirs.agentHex) as { told_existing?: string[]; could_not_tell?: { notifier: string }[] };

@@ -9,7 +9,7 @@ description: >
 author: cello-protocol
 requires_env:
   - name: CELLO_AGENT_NAME
-    description: "The CELLO agent this Hermes instance holds. Setting it enables the adapter."
+    description: "The CELLO agent this Hermes instance acts as. Setting it enables the adapter."
     prompt: "CELLO agent name"
     password: false
     category: setting

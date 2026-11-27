@@ -74,7 +74,7 @@ function doorbellText(frame: IpcNotification): string {
   switch (frame.notification) {
     case "session_started": return "CELLO: a session has started. There's nothing to read yet, and another doorbell rings when a message arrives.";
     case "message": return "CELLO: a message is waiting. Call cello_receive to read it.";
-    case "away_greeting": return "CELLO: nobody is reachable as the agent you called, and it left an automatic greeting. Call cello_receive to read it.";
+    case "away_greeting": return "CELLO: nobody is attending the agent you started a conversation with, and it left an automatic greeting. Call cello_receive to read it.";
     case "peer_closed": return "CELLO: the other side closed their side. Call cello_receive, then cello_close_session.";
     case "session_closed": return "CELLO: this session is now closed on both sides.";
     case "operator_message": return "CELLO: your human operator has replied. Call cello_receive to read it.";
@@ -87,7 +87,7 @@ function doorbellText(frame: IpcNotification): string {
     case "channel_notice": return channelNoticeDoorbell(frame.data["notice_kind"], frame.data["channel_id"]) ?? "CELLO: there's a notice about a channel. Call cello_channels to see it.";
     case "channel_request": return "CELLO: someone has asked to join a channel you administer. Call cello_channel_requests to see who.";
     case "screening_delayed": return "CELLO: a long message is still being screened, so there's nothing new to read yet. Another doorbell rings when it's ready. To say something now, such as stop, send it as a notice.";
-    case "agent_displaced": return "CELLO: another session took over this agent. Tools won't act for it here unless forced.";
+    case "agent_displaced": return "CELLO: another session is now acting as this agent. Tools won't act for it here unless forced.";
     default: return `CELLO: ${frame.notification}.`;
   }
 }

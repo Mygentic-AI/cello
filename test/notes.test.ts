@@ -341,11 +341,11 @@ test("being open to strangers while reaching other agents' notes warns once, fro
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("bounds.unknown.not_accepting", "false").warning, undefined);
   // Open to strangers, widening writing warns.
-  assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from strangers, and it can now write other agents' notes/);
+  assert.match(set("notes.write", BEA).warning ?? "", /accepts sessions from unknown agents, and it can now write other agents' notes/);
   assert.equal(set("notes.write", "own").warning, undefined, "narrowing says nothing");
   assert.equal(set("notes.max", "20000").warning, undefined, "another setting says nothing");
   // Open to strangers, widening reading warns; shut, it doesn't.
-  assert.match(set("notes.read", BEA).warning ?? "", /accepts sessions from strangers, and it can now read other agents' notes/);
+  assert.match(set("notes.read", BEA).warning ?? "", /accepts sessions from unknown agents, and it can now read other agents' notes/);
   assert.equal(set("notes.read", "own").warning, undefined);
   set("bounds.unknown.not_accepting", "true");
   assert.equal(set("notes.write", "all").warning, undefined, "shut to strangers, there is nothing to warn of");

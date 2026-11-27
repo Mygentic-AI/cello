@@ -39,7 +39,7 @@ export const REFUSAL_SENTENCES = {
   busy: "This agent can't take another conversation from you right now.",
   session_limit: "You have reached the number of conversations this agent allows you. Close one, and try again.",
   // The same words whatever the rule, so a caller can't read the rule or the tier from the refusal. Its public signals are where to look.
-  signals_required: "This agent asks for signals your call didn't show. Look up its public signals, then call again with the ones it needs.",
+  signals_required: "This agent asks for signals you didn't show when starting this conversation. Look up its public signals, then start again with the ones it needs.",
 } as const;
 export type RefusalCode = keyof typeof REFUSAL_SENTENCES;
 
@@ -89,7 +89,7 @@ export class Governance {
     const confirmed = params["person_confirmed"] === true;
     this.guards.record(agentId, key, from, to, direction, confirmed);
     logEvent("governance.changed", { agent: toHex(agentId), key, from, to, direction, confirmed });
-    if (direction === "loosen") this.#hooks.notify(agentId, `${key} changed from ${JSON.stringify(from)} to ${JSON.stringify(to)}, by a person at this machine's terminal. If that wasn't you, run: ${undo}`);
+    if (direction === "loosen") this.#hooks.notify(agentId, `${key} changed from ${JSON.stringify(from)} to ${JSON.stringify(to)}, by a human operator at this machine's terminal. If that wasn't you, run: ${undo}`);
   }
 
   // ---- The gate. Runs before any key material exists, and asks nobody: a call either fits what the owner set or it's refused. ----
@@ -116,8 +116,8 @@ export class Governance {
   noteRefusal(agentId: Uint8Array, agentHex: string, callerHex: string, code: RefusalCode): void {
     const told = this.reach.addRefusal(agentId, fromHex(callerHex), code, code !== "not_accepting", this.reach.number(agentId, "limits.cap_alarm_minutes") * 60_000);
     logEvent("session.refused", { agent: agentHex, caller: callerHex, reason: code });
-    if (told && code === "signals_required") this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and didn't show the signals your inbound rule asks for. See the rule with: cello signal-rules --agent ${agentHex}. To let it through anyway, a person can add it as a contact: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
-    else if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a person runs: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+    if (told && code === "signals_required") this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and didn't show the signals your inbound rule asks for. See the rule with: cello signal-rules --agent ${agentHex}. To let it through anyway, a human operator can add it as a contact: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
+    else if (told) this.#hooks.notify(agentId, `${callerHex} tried to start a conversation and was over a limit (${code}). To give it more room, a human operator runs: cello contact-set-tier ${callerHex} --tier whitelisted --agent ${agentHex}`);
   }
 
   knocks(agentId: Uint8Array, agentHex: string): unknown[] {
@@ -241,7 +241,7 @@ export class Governance {
   #ruleKey(params: Params): { direction: RuleDirection; scope: RuleScope; target: string } {
     const direction = params["direction"];
     const scope = params["scope"];
-    if (!RULE_DIRECTIONS.includes(direction as RuleDirection)) throw new LocalError("bad_argument", "direction must be inbound (who calls you) or outbound (who you call).");
+    if (!RULE_DIRECTIONS.includes(direction as RuleDirection)) throw new LocalError("bad_argument", "direction must be inbound (who starts a conversation with you) or outbound (who you start one with).");
     if (!RULE_SCOPES.includes(scope as RuleScope)) throw new LocalError("bad_argument", "scope must be default, tier or contact.");
     try {
       return { direction: direction as RuleDirection, scope: scope as RuleScope, target: SignalRules.checkTarget(scope as RuleScope, optionalText(params, "target")) };
@@ -261,7 +261,7 @@ export class Governance {
     const rule: SignalRule = { require_types: [...new Set(types)], require_issuer_kind: (kind as SignalRule["require_issuer_kind"] | undefined) ?? null, min_count: (min as number | undefined) ?? 0 };
     if (isNoRule(rule)) throw new LocalError("bad_argument", "A rule needs something in it: require_types, require_issuer_kind or min_count. To remove a rule, use signal-rule-clear.");
     // A call carries at most this many signals, so a rule asking for more could never be met and would refuse everyone.
-    if (rule.min_count > MAX_PRESENTED_SIGNALS || rule.require_types.length > MAX_PRESENTED_SIGNALS) throw new LocalError("bad_argument", `A call carries at most ${MAX_PRESENTED_SIGNALS} signals, so a rule can't ask for more than that.`);
+    if (rule.min_count > MAX_PRESENTED_SIGNALS || rule.require_types.length > MAX_PRESENTED_SIGNALS) throw new LocalError("bad_argument", `A conversation starts with at most ${MAX_PRESENTED_SIGNALS} signals, so a rule can't ask for more than that.`);
     return rule;
   }
 
@@ -297,7 +297,7 @@ export class Governance {
     const weakens = this.rules.weakens(agentId, direction, scope, target, next, contactTier as never);
     const label = `${direction} ${scope}${target ? ` ${target}` : ""}`;
     const undo = this.#ruleCommand(direction, scope, target, before, agentHex);
-    if (weakens) requirePerson(params, `This loosens the ${label} signal rule for ${agentHex}, from ${this.#describeRule(before)} to ${this.#describeRule(next)}, so a call is let through that is stopped now.`, this.#ruleCommand(direction, scope, target, next, agentHex));
+    if (weakens) requirePerson(params, `This loosens the ${label} signal rule for ${agentHex}, from ${this.#describeRule(before)} to ${this.#describeRule(next)}, so a conversation is let through that is stopped now.`, this.#ruleCommand(direction, scope, target, next, agentHex));
     this.rules.put(agentId, direction, scope, target, next);
     this.#weakened(agentId, `signal_rule.${direction}.${scope}${target ? `.${target}` : ""}`, this.#describeRule(before), this.#describeRule(next), weakens ? "loosen" : "tighten", params, undo);
     return { direction, scope, target: target || undefined, ...next, loosened: weakens };
@@ -310,7 +310,7 @@ export class Governance {
     const contactTier = scope === "contact" ? tierName(this.contacts.tierOf(agentId, fromHex(target))) : "unknown";
     const weakens = this.rules.weakens(agentId, direction, scope, target, null, contactTier as never);
     const redo = this.#ruleCommand(direction, scope, target, before, agentHex);
-    if (weakens) requirePerson(params, `Removing the ${direction} ${scope}${target ? ` ${target}` : ""} signal rule for ${agentHex} lets through calls it stops now.`, this.#ruleCommand(direction, scope, target, null, agentHex));
+    if (weakens) requirePerson(params, `Removing the ${direction} ${scope}${target ? ` ${target}` : ""} signal rule for ${agentHex} lets through conversations it stops now.`, this.#ruleCommand(direction, scope, target, null, agentHex));
     this.rules.clear(agentId, direction, scope, target);
     this.#weakened(agentId, `signal_rule.${direction}.${scope}${target ? `.${target}` : ""}`, this.#describeRule(before), "no rule", weakens ? "loosen" : "tighten", params, redo);
     return { direction, scope, target: target || undefined, cleared: true, loosened: weakens };
@@ -389,7 +389,7 @@ export class Governance {
       return { warning: `Unknown agents can now reach ${row.name}, and it can ${what} your other agents' notes. To stop that: ${stop}` };
     }
     if ((name === "notes.write" || name === "notes.read") && !this.reach.limitsFor(agentId, TIER.UNKNOWN).shut) {
-      return { warning: `This agent accepts sessions from strangers, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to strangers: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}` };
+      return { warning: `This agent accepts sessions from unknown agents, and it can now ${name === "notes.write" ? "write" : "read"} other agents' notes. To shut it to unknown agents: cello settings-set bounds.unknown.not_accepting true --agent ${agentHex}` };
     }
     return {};
   }
@@ -412,7 +412,7 @@ export class Governance {
     if (plan.direction === "loosen") requirePerson(params, `This loosens the guard ${key}, to ${JSON.stringify(plan.value)}, for ${agentHex}.`, command);
     this.guards.apply(agentId, plan, params["person_confirmed"] === true);
     logEvent("guard.changed", { agent: agentHex, key, direction: plan.direction, confirmed: params["person_confirmed"] === true });
-    if (plan.direction === "loosen") this.#hooks.notify(agentId, `The guard ${key} changed to ${JSON.stringify(plan.value)}, by a person at this machine's terminal. If that wasn't you, a person can change it back with config-set.`);
+    if (plan.direction === "loosen") this.#hooks.notify(agentId, `The guard ${key} changed to ${JSON.stringify(plan.value)}, by a human operator at this machine's terminal. If that wasn't you, a human operator can change it back with config-set.`);
     return { key, value: plan.value, was: plan.was, direction: plan.direction };
   }
 
@@ -459,7 +459,7 @@ export class Governance {
     const rule = this.#store.screeningRule(agentId, "tier", tier) as ScreeningLevel | undefined;
     const before = rule ?? "full";
     if (tierFromName(tier) === undefined) throw new LocalError("invalid_tier", "tier must be whitelisted or vip");
-    if (level !== "full" && !WEAKENABLE_TIERS.includes(tier)) throw new LocalError("tier_not_weakenable", `Screening can't be weakened for the whole ${tier} tier, by anyone: an agent's own call or reply can put a stranger in known. It can be weakened for whitelisted or vip, or for one named agent.`);
+    if (level !== "full" && !WEAKENABLE_TIERS.includes(tier)) throw new LocalError("tier_not_weakenable", `Screening can't be weakened for the whole ${tier} tier, by anyone: an agent starting a conversation or replying can move an unknown agent to known. It can be weakened for whitelisted or vip, or for one named agent.`);
     if (LEVEL_STRENGTH[level] < LEVEL_STRENGTH[before]) {
       requirePerson(params, `This weakens screening of everything sent to ${agentHex} by anyone in the ${tier} tier, to level ${level}.\nEven a trusted agent can be compromised, and can forward something hostile it picked up elsewhere.`, `cello screening --tier ${tier} --level ${level} --agent ${agentHex}`);
     }
@@ -473,7 +473,7 @@ export class Governance {
     logEvent("screening.rule_changed", { agent: agentHex, scope, subject, from: before, to: level });
     const flags = scope === "tier" ? `--tier ${subject}` : subject;
     const whose = scope === "tier" ? `the ${subject} tier` : subject;
-    this.#hooks.notify(agentId, `The screening rule for messages from ${whose} changed from ${before} to ${level}, by a person at this machine's terminal. If that wasn't you, run: cello screening ${flags} --level full --agent ${agentHex}`);
+    this.#hooks.notify(agentId, `The screening rule for messages from ${whose} changed from ${before} to ${level}, by a human operator at this machine's terminal. If that wasn't you, run: cello screening ${flags} --level full --agent ${agentHex}`);
     return { agent_id: agentHex, ...named, level, was: before };
   }
 
@@ -514,7 +514,7 @@ export class Governance {
       ...(clear ? {} : { value: none ? { mode: "none" as const } : { mode: "text" as const, text: text as string } }),
       ...(everyN === undefined ? {} : { everyN }),
     }, params["caller"] === "cli" ? "operator" : "agent"));
-    return { ...proposal, in_force: false, next: `Nothing has changed. A person approves it at a terminal: cello policy-approve ${proposal.proposal_id} --agent ${agentHex}` };
+    return { ...proposal, in_force: false, next: `Nothing has changed. A human operator approves it at their own terminal: cello policy-approve ${proposal.proposal_id} --agent ${agentHex}` };
   }
 
   policyApprove(agentId: Uint8Array, agentHex: string, params: Params): unknown {

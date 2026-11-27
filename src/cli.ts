@@ -486,7 +486,7 @@ The bridge decides where the agent's notifications go: a new session request, a 
   --session-scope agent    (default) a session the agent opens answers in the Hermes chat that opened it. Everything else goes
                            to one session: the agent's own CELLO session, made the first time, unless a landing session is set.
   --session-scope peer     each caller gets a session of their own, kept for the next time they call, so two callers never share one.
-                           For an agent strangers reach, like a support desk. Channel notices get a session of their own.
+                           For an agent unknown agents reach, like a support desk. Channel notices get a session of their own.
   --landing-session <id>   under agent scope, send that to this Hermes session instead: a dated id, or a Desktop chat's local-... id.
   --landing-session current  the Hermes session this command runs in. HERMES_SESSION_ID says which.
   --landing-session default  back to the agent's own CELLO session.
@@ -498,7 +498,7 @@ so sessions others open, and channel posts, land in the session it's working in.
 Everything else needs a human operator.
 
 A Hermes with several profiles: run this once per profile, with --hermes-home pointing at that profile (for example ~/.hermes/profiles/<name>).
---public is for an agent strangers can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.
+--public is for an agent unknown agents can reach: one conversation per caller, a short list of tools, and the screening model required. --allow-initiate adds the tool that opens sessions to that list. A public agent stays public when you run this again, until you pass --not-public.
 daemon-unit prints a systemd unit that keeps the daemon up on a server.
 `;
 
@@ -535,7 +535,7 @@ async function bridgeCommand(args: string[]): Promise<void> {
     // An agent's shell may move where its own notifications land, as v1 let it, and nothing else.
     const landingOnly = values["--landing-session"] !== undefined && flags.size === 0
       && Object.keys(values).every((k) => ["--agent", "--hermes-home", "--landing-session"].includes(k));
-    if (!landingOnly) fail(`${JSON.stringify({ error: "person_required", message: "Installing or changing a bridge takes a person. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own. An agent may only move its own notifications: cello bridge hermes --agent <name> --landing-session current" })}\n`, EXIT_REFUSED);
+    if (!landingOnly) fail(`${JSON.stringify({ error: "person_required", message: "Installing or changing a bridge needs a human operator. This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own. An agent may only move its own notifications: cello bridge hermes --agent <name> --landing-session current" })}\n`, EXIT_REFUSED);
     const moved = setLanding({ agent, hermesHome: values["--hermes-home"], landingSession: values["--landing-session"] as string });
     if (!moved.ok) fail(`${moved.output}\n`, EXIT_REFUSED);
     process.stdout.write(`${moved.output}\n`);
@@ -622,7 +622,7 @@ async function screenerCommand(args: string[]): Promise<void> {
 // A code shown only on the terminal, so an answer can't be prepared in advance. A shell naming itself as a caller is an agent's, by the rule in the help.
 async function confirmAtTerminal(what: string): Promise<void> {
   const refuse = (error: string, message: string): never => fail(`${JSON.stringify({ error, message })}\n`, EXIT_REFUSED);
-  const refusal = "This takes a person at a terminal, on this machine. Nothing changed.";
+  const refusal = "This needs a human operator at their own terminal, on this machine. Nothing changed.";
   if (!process.stdin.isTTY || !process.stdout.isTTY) refuse("person_required", refusal);
   if (process.env["CELLO_CALLER"]) refuse("person_required", `${refusal} This shell has CELLO_CALLER set, so it's an agent's shell. Run this in a terminal of your own.`);
   const code = randomBytes(3).toString("hex");

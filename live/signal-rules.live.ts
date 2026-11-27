@@ -119,7 +119,7 @@ test("an inbound rule turns a caller away until it shows what is asked, and an o
   // Ann shows her email signal, but Bea doesn't recognise its issuer, so it doesn't count. The refusal is the fixed sentence, which says nothing about the rule.
   const unrecognised = await state(ann, "Ann", beaId);
   assert.equal(unrecognised["state"], "refused");
-  assert.match(unrecognised["message"] as string, /asks for signals your call didn't show/);
+  assert.match(unrecognised["message"] as string, /asks for signals you didn't show when starting this conversation/);
   assert.ok(!(unrecognised["message"] as string).includes("email"), "the refusal doesn't name the rule");
   assert.ok(!(unrecognised["message"] as string).includes("require"), "or give its shape");
   // Showing none is refused the same way.

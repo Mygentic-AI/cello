@@ -338,7 +338,7 @@ test("a Claude session's hold ends when its connection does, however it was take
   // The command line connects per command, and its hold lasts until it lets go.
   daemon.cli("use-agent", "--agent", "Holly");
   const after = await IpcClient.connect(sock);
-  await assert.rejects(after.call("receive", { agent: "Holly", caller: "mcp:third-session" }), /agent_held|holds Holly/);
+  await assert.rejects(after.call("receive", { agent: "Holly", caller: "mcp:third-session" }), /agent_held|is acting as Holly/);
   after.close();
 });
 

@@ -27,7 +27,7 @@ export const SIGNAL_ERROR =
   "`signal` is a PARAMETER of cello_send, alongside `text`. It is not something you write\n" +
   "into the message text — cello_send takes it from this parameter, and\n" +
   "anything you type into `text` is treated as message text and will not satisfy this check.\n" +
-  "Re-send the same call with `signal` set to one of:\n\n" +
+  "Re-send the same call with `signal` set to one of these turn markers:\n\n" +
   "  signal: \"over\"\n" +
   "    Your turn is complete. You are now entering read mode and waiting for\n" +
   "    a reply. Use this for most messages.\n\n" +
@@ -36,7 +36,7 @@ export const SIGNAL_ERROR =
   "    Use this when you want to acknowledge immediately — letting the other\n" +
   "    party know you received their message and are working on it — before\n" +
   "    going off to do the work. `est_minutes` is your estimate in minutes and\n" +
-  "    is required with this signal. The other party does not need to reply; a\n" +
+  "    is required with this turn marker. The other party does not need to reply; a\n" +
   "    follow-up message is coming from you in approximately that many minutes.\n\n" +
   "  signal: \"wrap\"\n" +
   "    This is your final message. You intend to close the session after\n" +

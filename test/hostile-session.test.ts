@@ -269,7 +269,7 @@ test("a renamed agent keeps its sessions, contacts and hold under the new name, 
   assert.ok(contacts.contacts.some((c) => c.contact_id === toHex(s.mallory.id)));
   // The hold is on the id, so the same caller still has it, and nobody else does without force.
   await s.client.call("use_agent", { agent: "Renamed", caller: "t" });
-  await assert.rejects(s.client.call("use_agent", { agent: "Renamed", caller: "other" }), /holds Renamed/);
+  await assert.rejects(s.client.call("use_agent", { agent: "Renamed", caller: "other" }), /is acting as Renamed/);
   const status = await s.client.call("status", {}) as { agents: { name: string; agent_id: string }[] };
   assert.deepEqual(status.agents.map((a) => [a.name, a.agent_id]), [["Renamed", s.agent]]);
 

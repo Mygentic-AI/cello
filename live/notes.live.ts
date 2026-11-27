@@ -137,7 +137,7 @@ test("an agent keeps notes by command line: write, change, history, source, list
   assert.match(refused(["note-set", "from Sol", "--owner", "Rae", "--agent", "Sol"], "not_allowed_to_write", "sol-shell"), /notes\.write/);
   refused(["settings-set", "notes.write", rae, "--agent", "Sol"], "person_required", "sol-shell");
   const widened = person(["settings-set", "notes.write", rae, "--agent", "Sol"]);
-  assert.match(widened, /"warning":\s*"This agent accepts sessions from strangers/, widened);
+  assert.match(widened, /"warning":\s*"This agent accepts sessions from unknown agents/, widened);
   const forRae = ok(["note-set", "from Sol", "--owner", "Rae", "--agent", "Sol"], "sol-shell") as unknown as Note;
   assert.deepEqual([forRae.agent_id, forRae.written_by], [rae, sol], "Rae's note, stamped as written by Sol");
   assert.equal((ok(["note-get", forRae.id, "--agent", "Rae"], "rae-shell") as unknown as Note).body, "from Sol");
@@ -229,7 +229,7 @@ test("note-query runs one read-only statement over an agent's notes; a locked-do
   refused(["settings-set", "notes.read", "--clear", "--agent", "Sol"], "person_required", "sol-shell");
   assert.equal(query(raes, "Sol", "sol-shell").rows[0]?.["n"], 0, "a refusal changes nothing");
   const widened = person(["settings-set", "notes.read", rae, "--agent", "Sol"]);
-  assert.match(widened, /"warning":\s*"This agent accepts sessions from strangers, and it can now read other agents' notes/, widened);
+  assert.match(widened, /"warning":\s*"This agent accepts sessions from unknown agents, and it can now read other agents' notes/, widened);
   assert.ok((query(raes, "Sol", "sol-shell").rows[0]?.["n"] as number) >= 3);
   ok(["settings-set", "notes.read", "own", "--agent", "Sol"], "sol-shell");
 });

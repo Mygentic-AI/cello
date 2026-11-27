@@ -93,7 +93,7 @@ const landingFileOf = (hermesHome: string): string => join(hermesHome, "cello", 
 export function setLanding(options: { agent: string; hermesHome?: string; landingSession: string }): { ok: boolean; output: string } {
   const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
   const envPath = join(hermesHome, ".env");
-  if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A person sets it up first with cello bridge hermes.` };
+  if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A human operator sets it up first with cello bridge hermes.` };
   const bridged = readFileSync(envPath, "utf8").split(/\r?\n/).find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
   // An agent moves its own notifications, never another profile's.
   if (bridged !== options.agent.trim()) return { ok: false, output: `${hermesHome} is bridged to ${bridged ?? "no agent"}, not ${options.agent}. Nothing changed.` };

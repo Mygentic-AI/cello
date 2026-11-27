@@ -21,7 +21,7 @@ export const INVITE_LINES = {
   inContacts: (name: string) => `The agent that calls itself "${name}" is in your contacts, and I've said hello to it.`,
   offline: (name: string) => `The agent that calls itself "${name}" is in your contacts. It isn't online right now, so say hello to it later.`,
   inContactsNoHello: (name: string, why: string) => `The agent that calls itself "${name}" is in your contacts. The hello didn't go through (${why}), so say hello to it yourself.`,
-  blocked: "Your agent has blocked the agent behind that code, so it wasn't added. Lifting a block needs a person: cello contact-set-tier.",
+  blocked: "Your agent has blocked the agent behind that code, so it wasn't added. Lifting a block needs a human operator: cello contact-set-tier.",
   unknown: "That invite code isn't valid, so setup carries on without it.",
   expired: "That invite has run out, so setup carries on without it. Ask whoever gave it to you for a new one.",
   own: "That's your own invite code, so there's nothing to add.",

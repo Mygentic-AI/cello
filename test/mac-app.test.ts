@@ -160,8 +160,8 @@ test("off a Mac it's refused, and when the daemon refuses the route the app isn'
     && err.message.startsWith("Ann already has one.") && err.message.includes(`CELLO is in ${appPath(w.home)} now`) && err.message.includes(launchFile(w.home)));
   assert.deepEqual(opened(w), []);
   // A refusal that a person confirms and retries is passed on untouched.
-  const person = (): Promise<unknown> => Promise.reject(new DaemonRefused("person_required", "Adding a notifier takes a person. Nothing changed."));
-  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, person, () => w.env), (err: unknown) => err instanceof DaemonRefused && err.message === "Adding a notifier takes a person. Nothing changed.");
+  const person = (): Promise<unknown> => Promise.reject(new DaemonRefused("person_required", "Adding a notifier needs a human operator. Nothing changed."));
+  await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, person, () => w.env), (err: unknown) => err instanceof DaemonRefused && err.message === "Adding a notifier needs a human operator. Nothing changed.");
 });
 
 test("the prebuilt app is found where npm puts the package, nested under cello or beside it, and not found when it isn't installed", () => {

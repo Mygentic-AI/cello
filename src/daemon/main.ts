@@ -123,7 +123,7 @@ function describeCaller(caller: string): string {
 function takeHold(agentHex: string, caller: string, force: boolean): void {
   const holder = holders.get(agentHex);
   if (holder && holder.caller !== caller) {
-    if (!force) throw new LocalError("agent_held", `${describeCaller(holder.caller)} holds ${engine.agentName(agentHex)}. It can be taken over with force.`);
+    if (!force) throw new LocalError("agent_held", `${describeCaller(holder.caller)} is acting as ${engine.agentName(agentHex)}. Pass force to take it over.`);
     for (const listener of [...(listeners.get(agentHex) ?? [])]) {
       if (listener.caller === caller) continue;
       // A wait in progress ends now and says why, rather than running out its time.
@@ -176,7 +176,7 @@ async function eachAgent(work: (agentHex: string) => Promise<unknown>): Promise<
 }
 
 function requirePerson(params: Record<string, unknown>): void {
-  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This takes a person at a terminal, on this machine, with the cello command. Nothing changed.");
+  if (params["person_confirmed"] !== true) throw new LocalError("person_required", "This needs a human operator at their own terminal, on this machine, with the cello command. Nothing changed.");
 }
 
 // retire --forget, and remove-agent: retire, then drop everything this daemon keeps live for the agent.
@@ -432,7 +432,7 @@ async function handle(socket: Socket | undefined, method: string, params: Record
       return discovery.showOne(acting(params), text(params, "target"));
     case "issuer_trust": {
       const agent = named(params);
-      if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a person at a terminal can do this, with the cello command.`);
+      if (params["person_confirmed"] !== true) throw new LocalError("person_required", `This would count signals from ${engine.wallet.describeIssuerOf(agent, text(params, "hash"))} as verified on this machine. Anyone can create an issuer, so this weakens a guard. Nothing changed. Only a human operator at their own terminal can do this, with the cello command.`);
       return engine.wallet.trustIssuer(agent, text(params, "hash"));
     }
     case "issuer_untrust":

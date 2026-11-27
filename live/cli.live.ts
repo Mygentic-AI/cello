@@ -200,7 +200,7 @@ test("the holder is a caller: the command line is refused an agent a session hol
 
   const refused = cello(["receive", "--agent", "Iris"]);
   assert.deepEqual([refused.status, refused.json["error"]], [1, "agent_held"]);
-  assert.match(refused.json["message"] as string, /"some-session" holds Iris/);
+  assert.match(refused.json["message"] as string, /"some-session" is acting as Iris/);
   assert.equal(cello(["verify-session", "00000000000000000000000000000000", "--agent", "Iris"]).json["error"], "unknown_session", "reading a record isn't refused for being held");
 
   assert.deepEqual(ok(["receive", "--agent", "Iris", "--force"]), { messages: [], notices: [] });
@@ -229,7 +229,7 @@ test("the holder is a caller: the command line is refused an agent a session hol
   assert.equal(cello(["use-agent", "--agent", "Iris"], undefined, "shell-a").status, 0);
   const otherShell = cello(["receive", "--agent", "Iris"], undefined, "shell-b");
   assert.deepEqual([otherShell.status, otherShell.json["error"]], [1, "agent_held"]);
-  assert.match(otherShell.json["message"] as string, /"shell-a" holds Iris/);
+  assert.match(otherShell.json["message"] as string, /"shell-a" is acting as Iris/);
   assert.equal(cello(["receive"], undefined, "shell-a").status, 0, "shell-a remembers its choice");
   assert.equal(cello(["receive"], undefined, "shell-b").json["error"], "no_current_agent", "and shell-b doesn't inherit it");
   assert.equal(cello(["receive", "--agent", "Iris", "--force"], undefined, "shell-b").status, 0);

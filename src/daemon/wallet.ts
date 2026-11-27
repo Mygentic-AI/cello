@@ -648,7 +648,7 @@ export class Wallet {
     else {
       rows = spec.split(",").map((part) => this.#find(agentHex, part.trim()));
       for (const row of rows) {
-        if (!fit(row)) throw new LocalError("signal_not_fit", `The signal ${row.signal_hash.slice(0, 12)}… can't go with a call: it is ${row.consent_state !== CONSENT_ACCEPTED ? row.consent_state : row.status === "active" ? "expired" : row.status}.`);
+        if (!fit(row)) throw new LocalError("signal_not_fit", `The signal ${row.signal_hash.slice(0, 12)}… can't go with a conversation: it is ${row.consent_state !== CONSENT_ACCEPTED ? row.consent_state : row.status === "active" ? "expired" : row.status}.`);
       }
     }
     const unique = [...new Map(rows.map((row) => [row.signal_hash, row])).values()];
