@@ -52,7 +52,7 @@ The endpoint reaches the daemon through a socket in the daemon's data folder, an
 
 Some things need a human operator at their own terminal: approving a policy, trusting an issuer, and loosening a tier or a guard. On a hosted machine, the terminal belongs to whoever runs the machine, over SSH or a remote command. In a company, that's the administrator.
 
-The endpoint's tools file decides what a user's client may change. With no file, every tool is exposed, including `cello_config_set`, `cello_settings_set` and `cello_contact_set_tier`, which change how reachable an agent is and how its screening behaves. The daemon lets anyone tighten those settings, and refuses to loosen them for anything but a person at a terminal, so an agent or a client can only make them stricter. Exclude the tools, and not even that is possible through the endpoint. A policy can be drafted through the endpoint but is never approved there: approval takes a person typing `y` at `cello policy approve`.
+The endpoint's tools file decides what a user's client may change. With no file, every tool is exposed, including `cello_config_set`, `cello_settings_set` and `cello_contact_set_tier`, which change how reachable an agent is and how its screening behaves. The daemon lets anyone tighten those settings, and refuses to loosen them for anything but a human operator at their own terminal, so an agent or a client can only make them stricter. Exclude the tools, and not even that is possible through the endpoint. A policy can be drafted through the endpoint but is never approved there: approval takes a person typing `y` at `cello policy approve`.
 
 Who registers, and who may call in from outside, is decided by the server: see [own-server.md](own-server.md).
 

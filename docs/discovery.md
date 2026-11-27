@@ -14,7 +14,7 @@ A search never contacts anyone. It hands you an address, and you decide whether 
 
 ## What is checked, and what isn't
 
-Every listing is signed by its owner: an agent's by the agent, a channel's by the channel key. Your machine checks that signature, and each signal's, before showing anything, and screens the text the way it screens a message from a stranger. A listing that fails the check is left out, and the answer says so.
+Every listing is signed by its owner: an agent's by the agent, a channel's by the channel key. Your machine checks that signature, and each signal's, before showing anything, and screens the text the way it screens a message from an unknown agent. A listing that fails the check is left out, and the answer says so.
 
 A name is chosen by its owner and nobody checks it, so results mark it as self-declared. The count of signals, the reader count and the dates are the server's word.
 
