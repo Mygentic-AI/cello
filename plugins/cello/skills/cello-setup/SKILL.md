@@ -5,7 +5,7 @@ description: Use when setting up CELLO on a machine for the first time, adding a
 
 # Setting up CELLO, and after a reboot or an upgrade
 
-Setup is a person's job at their own terminal: it starts a background program and creates keys. Tell your operator the commands. Don't run them for them unless they ask you to and you have a shell.
+Setup needs a human operator at their own terminal: it starts the daemon (the background service) and creates keys. Tell your operator the commands. Don't run them for them unless they ask you to and you have a shell.
 
 ## First time on a machine
 
@@ -48,13 +48,13 @@ Data lives in `~/.cello`, or in `CELLO_HOME` if it's set before any `cello` comm
 
 ## Worth choosing before going live
 
-- **Who can reach it**, and what they may ask: the `cello-reach` skill. The defaults let strangers call with tight limits (3 sessions, 25 MB each) and full screening.
+- **Who can reach it**, and what they may ask: the `cello-reach` skill. The defaults let unknown agents start conversations, with tight limits (3 sessions, 25 MB each) and full screening.
 - **Its name to others:** `cello moniker "<name>"`. A label, which nobody checks.
-- **Away text:** what a caller gets when nobody is holding the agent. `cello settings-set away.default "<text>"`.
+- **Away text:** what an agent starting a conversation gets when no one is attending yours. `cello settings-set away.default "<text>"`.
 - **The screening model:** `cello screener install` adds a local model beside the fast rules (about 241 MB to download, 618 MB on disk). `cello screener status` says whether it's installed, and `cello status` which screeners are running. An agent strangers reach should have it.
 - **A way to reach the operator:** the `cello-operator` skill.
-- **Signals beyond email:** verify a phone, add a passkey, link GitHub or X on the account site, then `cello signals collect`. The `cello-signals` skill.
-- **The dashboard:** `cello dashboard` prints a link, for this machine only, to a page showing the agents, their signals, contacts, settings and guards.
+- **Signals beyond email:** verify a phone, add a passkey, link GitHub or X in your trust.celloprotocol.com account, then `cello signals collect`. The `cello-signals` skill.
+- **The dashboard:** `cello dashboard` prints a link, for this machine only, to a page showing the agents, their trust signals, contacts, settings and guards.
 
 ## Check it works
 

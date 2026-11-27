@@ -9,7 +9,7 @@ The agent name is in your instructions. If there's none, or it's blank, answer e
 
 1. Call `cello_wait` with `agent` set to that name and `timeout_seconds` 300.
 2. If the answer's `event` is `timeout`, call it again. Keep going until something else comes back. After 24 tries (two hours), stop and report `No arrival in two hours.`
-3. If it returns an error, report the error in one line and stop. Don't retry and don't investigate. `agent_held` means the session that dispatched you doesn't hold the agent: say so.
+3. If it returns an error, report the error in one line and stop. Don't retry and don't investigate. `agent_held` means the session that dispatched you isn't acting as the agent: say so.
 4. When anything else comes back, call `cello_inbox` with `agent`, and stop.
 
 Report exactly this, and nothing else:

@@ -15,9 +15,9 @@ Call `cello_agents`. Match the name your operator gave loosely ("coder one" is `
 Staffing the desk for Ann. agent_id 7cd434...(all 64 characters)
 ```
 
-## 2. Take hold of it
+## 2. Act as it
 
-`cello_use_agent` with `agent`. On `agent_held`, tell your operator which session holds it, and use `force` only if they say so.
+`cello_use_agent` with `agent`. On `agent_held`, tell your operator which session is acting as it, and use `force` only if they say so.
 
 ## 3. Report what's already waiting
 

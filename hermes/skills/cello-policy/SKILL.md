@@ -16,7 +16,7 @@ Tiers decide how much a peer may send. A policy decides what a peer may ask your
 
 **The most specific one wins, and they're never combined.** `contact` (with the agent_id), then `tier` (`unknown`, `known`, `whitelisted` or `vip`), then `default`.
 
-**Every change takes two steps.** The agent drafts with `cello_policy_propose`, or you run `cello policy-propose`. Nothing changes until a person runs `cello policy-approve <id>` at a terminal. `cello policy-pending` shows what's waiting, and `cello policy-list` shows what's in force.
+**Every change takes two steps.** The agent drafts with `cello_policy_propose`, or you run `cello policy-propose`. Nothing changes until a human operator runs `cello policy-approve <id>` at their own terminal. `cello policy-pending` shows what's waiting, and `cello policy-list` shows what's in force.
 
 Colleagues:
 
