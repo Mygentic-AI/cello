@@ -202,9 +202,13 @@ test("renewing one public endorsement never makes public another endorsement fro
   const server = fakeServer();
   const a = walletOn(server, ann);
   const shown = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(71, 16), issued_at: NOW - 300, payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  a.signals.accept(ann.id, shown.hash);
   await a.wallet.publish(toHex(ann.id), shown.hash);
   const kept = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(72, 16), issued_at: NOW - 5, payload: new Uint8Array(encodeCbor({ claim: "Bob vouches for Ann" })) }));
   const renewal = await keep(a.signals, ann, envelope(toHex(ann.id), { type: "endorsement", signal_id: fill(73, 16), issued_at: NOW - 10, supersedes_hash: Buffer.from(shown.hash, "hex"), payload: new Uint8Array(encodeCbor({ claim: "Carol vouches for Ann" })) }));
+  a.signals.accept(ann.id, kept.hash);
+  assert.equal(a.signals.get(ann.id, shown.hash)?.status, "active", "a renewal waiting for acceptance replaces nothing yet");
+  a.signals.accept(ann.id, renewal.hash);
   assert.equal(await a.wallet.settlePublic(toHex(ann.id), true), 0);
   assert.deepEqual([...server.held.keys()], [toHex(fill(73, 16))], "only Carol's renewal is public");
   assert.equal(a.signals.get(ann.id, kept.hash)?.public, 0, "Bob's endorsement stays private");

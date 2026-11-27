@@ -17,14 +17,14 @@ export const AGENT_CAP = 3;
 export const EMAIL_CLAIM = "This agent's owner has an email address verified by this issuer.";
 export const PHONE_CLAIM = "This agent's owner has a phone number verified by this issuer.";
 
-type Fields = { code: string | null; agent: PublicIdentity; holder: PublicIdentity | null; holderSignal: Uint8Array | null };
+type Fields = { code: string | null; target: string | null; agent: PublicIdentity; holder: PublicIdentity | null; holderSignal: Uint8Array | null };
 interface RealContract {
   agentRequestFromWire(body: unknown): { bytes: Uint8Array; signatures: { agent: DualSignature; holder?: DualSignature } };
   checkAgentRequest(bytes: Uint8Array, signatures: { agent: DualSignature }, expected: { action: string; issuerAddress: string; now: number }): Promise<{ ok: true; request: { fields: Fields; agentId: string } } | { ok: false; fault: string; message: string }>;
   verifyAgentSignature(pub: PublicIdentity, bytes: Uint8Array, signature: DualSignature): Promise<boolean>;
 }
 
-export interface EnvelopeChange { type?: string; expiresAt?: number | null; claim?: string; payload?: Record<string, unknown>; subjectKind?: "account" | "agent"; subject?: string; address?: string; badSignature?: boolean }
+export interface EnvelopeChange { sameOperator?: boolean; supersedes?: string | null; type?: string; expiresAt?: number | null; claim?: string; payload?: Record<string, unknown>; subjectKind?: "account" | "agent"; subject?: string; address?: string; badSignature?: boolean }
 
 // Fixed, and public here, so a test server can be told to count this issuer before it starts.
 const seed = (name: string): Uint8Array => sha256(new TextEncoder().encode(`cello stand-in issuer: ${name}`));
@@ -52,6 +52,9 @@ export class StandInIssuer {
   // Email signup: the code each key was last sent, and every email "sent", newest last.
   readonly enrolling = new Map<string, { email: string; code: string; tries: number }>();
   readonly mail: { to: string; code: string; agentId: string }[] = [];
+  // Endorsements, keyed by signal hash: a small copy of the real issuer's rules (one current per author and subject, a refusal
+  // blocks that author for good, withdraw and refuse answer not_found for anything else). Its words are the real issuer's.
+  readonly endorsements = new Map<string, { file: string; subject: string; author: string; superseded: boolean; revoked: boolean; refused: boolean }>();
   // An issuer from before email signup answers its routes with a bare 404.
   enrollOffered = true;
   // Burn the code, then lose the answer: what a dropped connection looks like from the daemon.
@@ -89,9 +92,9 @@ export class StandInIssuer {
       schema_version: 1,
       payload: new Uint8Array(encodeCbor(change.payload ?? { claim: change.claim ?? EMAIL_CLAIM, verified_at: now })),
       issued_at: now,
-      same_operator: false,
+      same_operator: change.sameOperator ?? false,
       expires_at: change.expiresAt === undefined ? now + 180 * DAY : change.expiresAt,
-      supersedes_hash: null,
+      supersedes_hash: change.supersedes ? new Uint8Array(Buffer.from(change.supersedes, "hex")) : null,
       issuer_address: change.address ?? "127.0.0.1",
       signal_id: new Uint8Array(randomBytes(SIGNAL_ID_BYTES)),
     };
@@ -116,7 +119,8 @@ export class StandInIssuer {
       : proved === "both, email unlisted" ? [await this.sign(agentId, { address: "unlisted.example" }), await phone()]
       : [await this.sign(agentId)];
     for (const change of this.extras.get(agentId) ?? []) files.push(await this.sign(agentId, change));
-    return files.map((file) => Buffer.from(file).toString("base64"));
+    const live = [...this.endorsements.values()].filter((e) => e.subject === agentId && !e.superseded && !e.revoked).map((e) => e.file);
+    return [...files.map((file) => Buffer.from(file).toString("base64")), ...live];
   }
 
   async #handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -141,7 +145,7 @@ export class StandInIssuer {
       res.end("<!DOCTYPE html><title>404</title>");
       return;
     }
-    const action = route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route === "invites" ? "invite_make" : route === "invites/use" ? "invite_use" : route.replace("/", "_");
+    const action = route.startsWith("endorsements/") ? route.slice("endorsements/".length) : route === "agents" ? "add_agent" : route === "usage" ? "request_usage" : route === "invites" ? "invite_make" : route === "invites/use" ? "invite_use" : route.replace("/", "_");
     const body = JSON.parse(raw) as { usageFacts?: unknown; usageServer?: unknown; name?: unknown; replace?: unknown; revoke?: unknown };
     const read = this.#contract.agentRequestFromWire(body);
     const checked = await this.#contract.checkAgentRequest(read.bytes, read.signatures, { action, issuerAddress: "127.0.0.1", now: Math.floor(Date.now() / 1000) });
@@ -219,6 +223,36 @@ export class StandInIssuer {
       if (invite.agentId === agentId || this.owners.get(invite.agentId) === this.owners.get(agentId)) return refuse(409, "own", "That's your own invite code.");
       this.inviteUses.push({ code, inviter: invite.agentId, invitee: agentId, name: body.name });
       return send(200, { ok: true, agent_id: invite.agentId, address: this.addressFor(invite.agentId), name: invite.name });
+    }
+    if (route === "endorsements/endorse") {
+      const subject = fields.target;
+      if (!subject || fields.code === null) return refuse(400, "bad_request", "An endorsement names a subject and a statement.");
+      if (subject === agentId) return refuse(403, "self_endorsement", "An agent can't endorse itself.");
+      if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know the author.");
+      if (!this.owners.has(subject)) return refuse(404, "unknown_agent", "This issuer doesn't know the subject.");
+      const mine = [...this.endorsements.entries()].filter(([, e]) => e.subject === subject && e.author === agentId);
+      if (mine.some(([, e]) => e.refused)) return refuse(403, "refused_by_subject", "This agent refused your endorsement.");
+      const prior = mine.find(([, e]) => !e.superseded && !e.revoked);
+      if (prior) prior[1].superseded = true;
+      const sameOperator = this.owners.get(agentId) === this.owners.get(subject);
+      const file = await this.sign(subject, {
+        type: "endorsement", subjectKind: "agent", sameOperator, supersedes: prior?.[0] ?? null, expiresAt: null,
+        payload: { claim: "The issuer verified that the author's key signed this statement and that the text passed its scan. It did not verify the statement.", statement: fields.code, statement_is_untrusted: true, statement_author_pubkey: agentId, scanner_version: "stand-in", ...(sameOperator ? { co_ownership_note: "The author and the subject belong to the same account." } : {}) },
+      });
+      const checked = await checkSignal(file, { subject, now: Math.floor(Date.now() / 1000) });
+      if (!checked.ok) throw new Error(`the stand-in's endorsement fails its own check: ${checked.message}`);
+      const signalHash = toHex(checked.signal.hash);
+      this.endorsements.set(signalHash, { file: Buffer.from(file).toString("base64"), subject, author: agentId, superseded: false, revoked: false, refused: false });
+      return send(200, { ok: true, signalHash, sameOperator });
+    }
+    if (route === "endorsements/withdraw" || route === "endorsements/refuse") {
+      const by = route === "endorsements/withdraw" ? "author" : "subject";
+      const held = fields.target ? this.endorsements.get(fields.target) : undefined;
+      if (!fields.target) return refuse(400, "bad_request", "Name the signal.");
+      if (!held || held.revoked || held[by] !== agentId) return refuse(404, "not_found", "No such endorsement.");
+      held.revoked = true;
+      if (by === "subject") held.refused = true;
+      return send(200, { ok: true });
     }
     if (route === "collect") {
       if (!this.owners.has(agentId)) return refuse(404, "unknown_agent", "This issuer doesn't know this agent. Redeem a code first.");
