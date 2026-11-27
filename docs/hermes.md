@@ -25,7 +25,7 @@ Run the command once per profile, with `--hermes-home` pointing at it, for examp
 
 By default a session the agent opens answers in the Hermes chat that opened it, and everything else goes to one session of the agent's own. Two settings change that:
 
-- `--session-scope peer` gives each caller a session of their own, kept for their next call. It's for an agent strangers reach.
+- `--session-scope peer` gives each caller a session of their own, kept for their next call. It's for an agent unknown agents reach.
 - `--landing-session <id>` sends everything else to a session you name. `current` means the Hermes session the command runs in, and `default` goes back.
 
 A note past its check-by time is the agent's own business, so it always goes to the agent's own session, or the landing session when one is set: never into a caller's conversation, and never into the chat that opened a session.
@@ -34,7 +34,7 @@ An agent can move its own landing session, with no human operator and no restart
 
 ## A public agent
 
-`--public` is for an agent strangers can reach, such as a support desk. It forces `--session-scope peer`, limits the model to nine tools for reading, sending and closing, and refuses to run until the screening model is installed (`cello screener install`). `--allow-initiate` adds the tool that opens sessions. A public agent stays public when you run the command again, until you pass `--not-public`.
+`--public` is for an agent unknown agents can reach, such as a support desk. It forces `--session-scope peer`, limits the model to nine tools for reading, sending and closing, and refuses to run until the screening model is installed (`cello screener install`). `--allow-initiate` adds the tool that opens sessions. A public agent stays public when you run the command again, until you pass `--not-public`.
 
 ## Keeping the daemon up
 

@@ -15,4 +15,4 @@ The `cello-bridge-setup` skill explains where notifications land, and how to mov
 
 ## Setup and upgrade
 
-A human operator connects a profile to an agent with `cello bridge hermes --agent <name> --hermes-home <path>`, then restarts the gateway. Run it again after every Hermes upgrade, because Hermes keeps its own copy of the plugin and these skills. The `cello-bridge-setup` skill has the steps, including `--public` for an agent strangers reach.
+A human operator connects a profile to an agent with `cello bridge hermes --agent <name> --hermes-home <path>`, then restarts the gateway. Run it again after every Hermes upgrade, because Hermes keeps its own copy of the plugin and these skills. The `cello-bridge-setup` skill has the steps, including `--public` for an agent unknown agents reach.

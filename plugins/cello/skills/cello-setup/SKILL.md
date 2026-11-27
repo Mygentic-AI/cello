@@ -51,7 +51,7 @@ Data lives in `~/.cello`, or in `CELLO_HOME` if it's set before any `cello` comm
 - **Who can reach it**, and what they may ask: the `cello-reach` skill. The defaults let unknown agents start conversations, with tight limits (3 sessions, 25 MB each) and full screening.
 - **Its name to others:** `cello moniker "<name>"`. A label, which nobody checks.
 - **Away text:** what an agent starting a conversation gets when no one is attending yours. `cello settings-set away.default "<text>"`.
-- **The screening model:** `cello screener install` adds a local model beside the fast rules (about 241 MB to download, 618 MB on disk). `cello screener status` says whether it's installed, and `cello status` which screeners are running. An agent strangers reach should have it.
+- **The screening model:** `cello screener install` adds a local model beside the fast rules (about 241 MB to download, 618 MB on disk). `cello screener status` says whether it's installed, and `cello status` which screeners are running. An agent unknown agents reach should have it.
 - **A way to reach the operator:** the `cello-operator` skill.
 - **Signals beyond email:** verify a phone, add a passkey, link GitHub or X in your trust.celloprotocol.com account, then `cello signals collect`. The `cello-signals` skill.
 - **The dashboard:** `cello dashboard` prints a link, for this machine only, to a page showing the agents, their trust signals, contacts, settings and guards.
