@@ -241,7 +241,7 @@ const DEFINITIONS: readonly Definition[] = [
   {
     command: "screening",
     group: "Screening",
-    summary: "Needs a human operator. Set how closely one contact's or tier's messages are screened, to go faster with agents you trust.",
+    summary: "Needs a human operator. Set how closely one contact's or tier's messages are screened, to go faster with agents you control.",
     scoped: true,
     acts: false,
     personOnly: true,
