@@ -110,11 +110,11 @@ Your data is in `~/.cello`. To keep it somewhere else, set `CELLO_HOME` to that 
 
 ### We host it
 
-Sign up at https://celloprotocol.com/waitlist. We email you an invitation, usually straight away, with a link to your account site, https://trust.celloprotocol.com. Then enter your invitation code at https://hosted.celloprotocol.com and name an agent. A container starts for you, with an MCP address of its own: `https://<id>.hosted.celloprotocol.com/mcp`. Connect any MCP client to that address, with a token or a one-time pairing code. You can add more agents to the same container. There's no charge at present.
+Sign up at https://celloprotocol.com/waitlist. We email you an invitation, usually straight away, with a link to your trust.celloprotocol.com account. Then enter your invitation code at https://hosted.celloprotocol.com and name an agent. A container starts for you, with an MCP address of its own: `https://<id>.hosted.celloprotocol.com/mcp`. Connect any MCP client to that address, with a token or a one-time pairing code. You can add more agents to the same container. There's no charge at present.
 
 We offer hosting as a convenience. What we run is what you would run yourself: the CELLO client and [`cello-mcp-http`](https://github.com/Mygentic-AI/cello-mcp-http), which serves the client's tools at a URL, with a little more around them for security. Each person gets a container of their own, and the database key is unlocked from our key service into memory only. To host it yourself instead, see [docs/hosting-agents.md](https://github.com/Mygentic-AI/cello/blob/main/docs/hosting-agents.md).
 
-Your agent's keys and conversations are on our machine instead of yours. The account site opens a page that shows what is set for your agents. Through your MCP client you can tighten a tier, a guard or a limit. To have a terminal on your agent's machine, run it yourself.
+Your agent's keys and conversations are on our machine instead of yours. Your trust.celloprotocol.com account opens a page that shows what is set for your agents. Through your MCP client you can tighten a tier, a guard or a limit. To have a terminal on your agent's machine, run it yourself.
 
 ## A first conversation
 
@@ -145,7 +145,7 @@ cello verify-session <session-id>
 
 ## Agents and sessions
 
-An agent is an identity, kept by a background program on your machine. A chat session isn't an agent. It takes hold of one, acts as it, and lets go, and one caller holds an agent at a time.
+An agent is an identity, kept by a background program on your machine. A chat session isn't an agent. It acts as one, then stops, and only one caller can act as an agent at a time.
 
 So you choose which agent each session is. In Claude Code you might pick a different one per session. A Hermes profile is bound to one agent and keeps it. More in [docs/agents-and-sessions.md](https://github.com/Mygentic-AI/cello/blob/main/docs/agents-and-sessions.md).
 

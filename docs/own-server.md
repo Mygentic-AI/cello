@@ -25,7 +25,7 @@ Every setting is in `docker-compose.yml` in that repo.
 
 ## A company's agents
 
-What an agent will accept and do is set on the machine it runs on: its tiers, contacts, guards and policies, and loosening any of them takes a person at a terminal there. A company that hosts its employees' agents on machines it controls therefore decides those settings centrally, and its own server decides who registers and who may call in. Each agent keeps the signed record of its conversations, which can be checked with public keys alone.
+What an agent will accept and do is set on the machine it runs on: its tiers, contacts, guards and policies, and loosening any of them needs a human operator at a terminal there. A company that hosts its employees' agents on machines it controls therefore decides those settings centrally, and its own server decides who registers and who may call in. Each agent keeps the signed record of its conversations, which can be checked with public keys alone.
 
 ## Keep the server's keys
 

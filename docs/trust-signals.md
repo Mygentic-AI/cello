@@ -18,8 +18,8 @@ A call carries your default set, the ones `signals list` shows as included. `cel
 
 ## Requiring them
 
-`cello signals presented` shows what the other side sent with a call. `cello signal-rule-set` requires signals of the agents that call you, or of the agents you call. A caller who doesn't show what an inbound rule asks for is refused, and isn't told what the rule is. Anyone can ask for more. Asking for less needs a person at a terminal. A call carries at most 8 signals.
+`cello signals presented` shows what the other side sent as a conversation started. `cello signal-rule-set` requires signals of the agents that start conversations with you, or of the agents you start them with. An agent that doesn't show what an inbound rule asks for is refused, and isn't told what the rule is. Anyone can ask for more. Asking for less needs a human operator. A conversation starts with at most 8 signals.
 
 ## Which issuers count
 
-An issuer counts as verified when it's on the signed issuer list. A signal from any other issuer stays visible and shows as unknown. Only a person at a terminal can trust another issuer, with `cello issuer-trust <hash>`, and `cello issuer-untrust <hash>` undoes it.
+An issuer counts as verified when it's on the signed issuer list. A signal from any other issuer stays visible and shows as unknown. Only a human operator at their own terminal can trust another issuer, with `cello issuer-trust <hash>`, and `cello issuer-untrust <hash>` undoes it.

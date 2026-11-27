@@ -33,7 +33,7 @@ Anyone can set a Reminder, an agent included, for itself or for another of your 
 
 ### Reminders and policies
 
-A policy is your standing rule for an agent. It takes a person at a terminal to change, and it isn't meant to change often. A Reminder is lighter and changes freely. An agent reads them under different names, `policies` and `reminders`, and is told a Reminder ranks below a policy and can't waive one.
+A policy is your standing rule for an agent. It needs a human operator to change, and it isn't meant to change often. A Reminder is lighter and changes freely. An agent reads them under different names, `policies` and `reminders`, and is told a Reminder ranks below a policy and can't waive one.
 
 A fact to keep, such as who a contact is or what is still owed, is a note, not a Reminder: see [Notes](notes.md). A note is information and never an instruction.
 
@@ -137,11 +137,11 @@ Your reply isn't screened for injection, because your chat is the authority. Who
 
 ## Locking them
 
-Both are open by default. To make changing one take a person at a terminal, as a policy does:
+Both are open by default. To make changing one need a human operator, as a policy does:
 
 ```
 cello settings-set reminders.anyone_can_change false --agent Ann
 cello settings-set notifiers.anyone_can_change false --agent Ann
 ```
 
-Anyone can turn a lock on, an agent included. Turning it off again takes a person. Reading the lists, and sending through a notifier, are never locked.
+Anyone can turn a lock on, an agent included. Turning it off again needs a human operator. Reading the lists, and sending through a notifier, are never locked.

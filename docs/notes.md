@@ -10,8 +10,8 @@ Nothing another party sends writes a note.
 
 ## Notes, Reminders and policies
 
-- **A policy** is your standing rule for an agent. It takes a person at a terminal to change.
-- **A Reminder** is an instruction shown again as a conversation goes. The agent follows it. See [Asking your operator](asking-your-operator.md).
+- **A policy** is your standing rule for an agent. It needs a human operator to change.
+- **A Reminder** is an instruction sent to the agent, and sent again as a conversation goes. The agent follows it. See [Asking your operator](asking-your-operator.md).
 - **A note** is the agent's own information. It is never an instruction, and it may quote what another party said.
 
 An agent sees each under its own name: `policies`, `reminders` and `notes`.
@@ -112,7 +112,7 @@ Each version says when it changed and which agent wrote it. For kinds that must 
 cello settings-set notes.history_kinds promise,price --agent Ann
 ```
 
-A note of a listed kind keeps at least `notes.history_default` versions, and asking for fewer is refused with `history_required`. Anyone can add a kind. Taking one off takes a person.
+A note of a listed kind keeps at least `notes.history_default` versions, and asking for fewer is refused with `history_required`. Anyone can add a kind. Taking one off needs a human operator.
 
 An agent can still remove a note of a listed kind. The note goes, but its past versions stay, with one more entry recording the removal: the note as it was, which agent removed it, and when. `note-get` then says when and by whom it was removed, and `note-query` reads what was kept. The removal and `note-get` print the command, run as the agent named on the call, with the owner's id in the query:
 
@@ -156,9 +156,9 @@ Two settings say whose notes an agent reaches beyond its own:
 - **`notes.read`**: whose notes this agent reads beyond its own, with `note-query`, and with `note-get` and `note-list` given `--owner`: `all`, `own`, or agent ids with commas between. It starts at `all`, so your agents can read each other's notes from the start. Lock down an agent that talks to the public with `cello settings-set notes.read own --agent <agent_id>`. That limits what the agent reads when it acts as itself, not a program on this machine that names another agent with `--agent` (see the end of this section).
 - **`notes.write`**: whose notes this agent may set and remove with `--owner`, in the same form. It starts at `own`. The note is still stamped with the agent that wrote it.
 
-Narrowing either one needs no person. Naming anyone new, or going back to `all`, takes a person. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
+Narrowing either one needs no human operator. Naming anyone new, or going back to `all`, needs one. An agent that already held a value keeps it: only one that never stored a `notes.read` starts at `all`.
 
-A stranger's words could end up in another agent's notes, or talk the agent into repeating them, so you're warned when an agent is both open to unknown agents and reaching other agents' notes. Widening `notes.write` or `notes.read` on an agent that accepts sessions from strangers warns you, and so does opening an agent to unknown agents (`bounds.unknown.not_accepting false`) while its `notes.read` or `notes.write` covers another agent on this daemon. The warning says read, write or both, as applies, and gives the command for each:
+An unknown agent's words could end up in another agent's notes, or talk the agent into repeating them, so you're warned when an agent is both open to unknown agents and reaching other agents' notes. Widening `notes.write` or `notes.read` on an agent that accepts conversations from unknown agents warns you, and so does opening an agent to unknown agents (`bounds.unknown.not_accepting false`) while its `notes.read` or `notes.write` covers another agent on this daemon. The warning says read, write or both, as applies, and gives the command for each:
 
 ```
 Unknown agents can now reach Ann, and it can read your other agents' notes. To stop that: cello settings-set notes.read own --agent <agent_id>
@@ -173,7 +173,7 @@ cello note-list --owner Bea --kind client --agent Ann
 cello note-get 9f2c41d07ab35e68 --owner Bea --agent Ann
 ```
 
-It's refused with `not_allowed_to_read` when Ann's `notes.read` doesn't cover Bea, and the refusal gives the command that would widen it, which takes a person. An owner that isn't an agent on this daemon is refused with `unknown_agent`.
+It's refused with `not_allowed_to_read` when Ann's `notes.read` doesn't cover Bea, and the refusal gives the command that would widen it, which needs a human operator. An owner that isn't an agent on this daemon is refused with `unknown_agent`.
 
 These settings govern what an agent does as itself. The daemon takes each call's word for which agent it acts as, and doesn't check that the caller holds that agent. So anything that can run `cello` as you can name any of your agents as `--agent`, and read what that agent can.
 
@@ -189,7 +189,7 @@ These settings govern what an agent does as itself. The daemon takes each call's
 | `notes.query_rows` | 1000 | Rows one query returns. |
 | `notes.query_bytes` | 16777216 | Bytes of JSON one query returns. |
 
-Anyone can lower a limit, except `notes.history_default` while a kind is listed. Raising one takes a person:
+Anyone can lower a limit, except `notes.history_default` while a kind is listed. Raising one needs a human operator:
 
 ```
 cello settings-set notes.max 20000 --agent Ann
@@ -203,4 +203,4 @@ Notes aren't synced or shared beyond your machine. No other party, machine or se
 
 Remove a contact and the notes about it are kept, marked `contact_removed`. They aren't shown at the start and don't ring until the contact is added back. A note about an agent that was never a contact is shown as usual.
 
-Remove an agent, which takes a person, and its notes and all their history go with it.
+Remove an agent with `cello retire --forget`, which needs a human operator, and its notes and all their history go with it.
