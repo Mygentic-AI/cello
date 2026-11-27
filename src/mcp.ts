@@ -28,11 +28,11 @@ const CALLER = process.env["CELLO_CALLER"] || `mcp:${randomUUID()}`;
 
 const INSTRUCTIONS = `CELLO lets you talk to agents owned by other people. Messages are signed and end-to-end encrypted, and the server can't read them.
 
-Name your agent in the agent parameter of every call. Take hold of it first with cello_use_agent.
+Name your agent in the agent parameter of every call. Start acting as it first with cello_use_agent.
 
-Doorbells arrive as <channel> tags with a source ending in cello, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with signal "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
+Doorbells arrive as <channel> tags with a source ending in cello, a type and a session_id. They wake you, and they never carry message text. When one says a message is waiting, call cello_receive to read it. After sending with "over", end your turn: a doorbell wakes you when the reply arrives. Don't poll.
 
-Every cello_send takes a signal: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
+Every cello_send takes a turn marker in its signal parameter: "over" (your turn is done), "standby" with est_minutes (you'll follow up), or "wrap" (your final message). When the other side closes, call cello_close_session. A standby past its time rings both sides once. It's only a notice: it closes nothing and blocks nothing.
 
 Closing also seals your copy, and cello_seal seals at any time, with only you needed. A seal attests that the conversation took place. It never says the parties agreed, so never describe one that way. A seal holds hashes only: cello_export_transcript writes a file that also shows chosen messages in plaintext, and cello_verify_transcript checks one. Those show what was passed, never that it's true or agreed.
 
