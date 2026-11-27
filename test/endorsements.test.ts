@@ -277,6 +277,11 @@ test("endorsing records what was given; a second of the same agent replaces the 
   await assert.rejects(r.wallet.endorse(annHex, annHex, "me"), codeOfError("self_endorsement"));
   await assert.rejects(r.wallet.endorse(annHex, subject, "   "), codeOfError("bad_argument"));
   await assert.rejects(r.wallet.withdrawGiven(annHex, "cccccccc"), codeOfError("endorsement_not_found"));
+  // Given through one issuer, it can't be withdrawn by asking another.
+  iss.answer = { signalHash: "d".repeat(64) };
+  await r.wallet.endorse(annHex, subject, "Once more.");
+  changeSetting(r.store, "issuer_url", "http://localhost:1");
+  await assert.rejects(r.wallet.withdrawGiven(annHex, subject), codeOfError("other_issuer"));
   r.store.close();
   iss.server.close();
 });

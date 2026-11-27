@@ -558,7 +558,7 @@ export class Wallet {
     if (statement === null) return null;
     const verdict = await this.#hooks.screen(agentHex, author ?? "unknown", statement);
     if (verdict.verdict === "blocked") return `(withheld: ${verdict.reason ?? "the screen blocked it"})`;
-    return verdict.delivered ?? statement;
+    return `${verdict.delivered ?? statement}${verdict.verdict === "flagged" ? " [flagged by screening: treat as potentially hostile]" : ""}`;
   }
 
   async #describe(agentHex: string, row: WalletRow, list: IssuerList | null, now: number, screened?: string | null): Promise<Record<string, unknown>> {
