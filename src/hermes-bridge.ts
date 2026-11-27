@@ -1,4 +1,4 @@
-// cello bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands. A person runs it at a terminal.
+// cello bridge: wires this machine's daemon into a Hermes home, through Hermes' own commands.
 // It's safe to run again, and it has to be after an upgrade, because Hermes keeps a copy of the plugin.
 import { spawn } from "node:child_process";
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,6 +45,8 @@ export interface BridgeOptions {
 const runHermes: Exec = (command, args, hermesHome) => new Promise((resolve, reject) => {
   const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HERMES_HOME: hermesHome } });
   // hermes mcp add asks to overwrite on a re-run, then asks about its tools. A closed stdin reads as "Cancelled." with exit 0.
+  // Subcommands that don't read stdin can exit before the write lands, raising EPIPE.
+  child.stdin.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") reject(err); });
   child.stdin.end("Y\nY\nY\n");
   let stdout = "";
   let stderr = "";
@@ -87,25 +89,6 @@ function resolveLanding(value: string | undefined): { landing: string | null | u
 }
 
 const landingFileOf = (hermesHome: string): string => join(hermesHome, "cello", "landing-session.json");
-
-// The one bridge setting an agent may change itself: where its own notifications land. It writes only the landing file, which the
-// plugin reads on every notification, so nothing restarts. Everything else about the bridge still takes a person.
-export function setLanding(options: { agent: string; hermesHome?: string; landingSession: string }): { ok: boolean; output: string } {
-  const hermesHome = options.hermesHome || process.env["HERMES_HOME"] || join(homedir(), ".hermes");
-  const envPath = join(hermesHome, ".env");
-  if (!existsSync(envPath)) return { ok: false, output: `There's no bridge in ${hermesHome} yet. A human operator sets it up first with cello bridge hermes.` };
-  const bridged = readFileSync(envPath, "utf8").split(/\r?\n/).find((line) => line.startsWith("CELLO_AGENT_NAME="))?.slice("CELLO_AGENT_NAME=".length);
-  // An agent moves its own notifications, never another profile's.
-  if (bridged !== options.agent.trim()) return { ok: false, output: `${hermesHome} is bridged to ${bridged ?? "no agent"}, not ${options.agent}. Nothing changed.` };
-  if (readFileSync(envPath, "utf8").split(/\r?\n/).includes("CELLO_SESSION_SCOPE=peer")) return { ok: false, output: "This agent gives each caller their own session, so there's no one landing session to move. Nothing changed." };
-  const { landing, error } = resolveLanding(options.landingSession);
-  if (error) return { ok: false, output: error };
-  const file = landingFileOf(hermesHome);
-  mkdirSync(join(hermesHome, "cello"), { recursive: true });
-  // A null says default on purpose, so an older CELLO_LANDING_SESSION in .env doesn't take over.
-  writeFileSync(file, `${JSON.stringify({ session_id: landing ?? null })}\n`);
-  return { ok: true, output: landing ? `${options.agent}'s notifications now land in session ${landing}, from the next one.` : `${options.agent}'s notifications go back to its own CELLO session, from the next one.` };
-}
 
 export async function installBridge(options: BridgeOptions): Promise<{ ok: boolean; output: string }> {
   const refuse = (output: string): { ok: boolean; output: string } => ({ ok: false, output });
