@@ -21,7 +21,7 @@ To connect a Hermes profile to a CELLO agent:
 4. Restart the process that runs the gateway, so it loads the plugin. On a server that's `systemctl --user restart hermes-gateway.service`. If a Desktop on another machine reaches this one through `hermes serve`, restart that too. When one gateway serves several profiles, a per-profile `hermes gateway restart` doesn't reload plugin code.
 5. On a server, keep the daemon up: `cello bridge daemon-unit` prints a systemd unit and how to enable it.
 
-Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin, then step 4. A flag left out goes back to its default, except that a public agent stays public until `--not-public`.
+Run step 2 again after every upgrade, because Hermes keeps a copy of the plugin, then step 4. A flag left out keeps its existing value, and a public agent stays public until `--not-public`.
 
 ## Where notifications land
 

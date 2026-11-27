@@ -482,7 +482,7 @@ const BRIDGE_USAGE = `Usage: cello bridge hermes --agent <name> [--hermes-home <
        cello bridge daemon-unit
 
 hermes connects one Hermes profile to one CELLO agent on this machine. Run it again after an upgrade, because Hermes keeps a copy of the plugin.
-A flag you leave out goes back to its default.
+A flag you leave out keeps its existing value (or its default on a first install).
 
 The bridge decides where the agent's notifications go: a new session request, a message, a channel post.
   --session-scope agent    (default) a session the agent opens answers in the Hermes chat that opened it. Everything else goes
