@@ -190,9 +190,9 @@ export class SignalStore {
     this.#db.run("UPDATE signal_wallet SET status = 'withdrawn', public = CASE WHEN public = ? THEN ? ELSE public END WHERE agent_id = ? AND signal_hash = ?", [PUBLIC_YES, PUBLIC_WITHDRAWING, agentId, hash]);
   }
 
-  // A newer held signal names this one as what it replaces, whether or not the subject has accepted the newer one yet.
+  // A newer current signal names this one as what it replaces, accepted yet or not. A withdrawn renewal shields nothing.
   replacedByHeld(agentId: Uint8Array, hash: string): boolean {
-    return this.#db.get("SELECT 1 AS x FROM signal_wallet WHERE agent_id = ? AND supersedes_hash = ?", [agentId, hash]) !== undefined;
+    return this.#db.get("SELECT 1 AS x FROM signal_wallet WHERE agent_id = ? AND supersedes_hash = ? AND status = 'active'", [agentId, hash]) !== undefined;
   }
 
   // One given endorsement per subject is current, as at the issuer: a new one marks the last superseded.

@@ -186,12 +186,13 @@ function usageText(result: UsageAnswer): string {
 }
 
 interface Collected { stored: number; held: number; refused: { fault: string; message: string }[] }
-type CollectAnswer = Collected | { agents: ((Collected & { agent: string; ok: true }) | { agent: string; ok: false; message: string })[] };
+type CollectAnswer = (Collected & { withdrawn?: string[] }) | { agents: ((Collected & { withdrawn?: string[]; agent: string; ok: true }) | { agent: string; ok: false; message: string })[] };
 // "9 signals, all current, nothing new." — what a person needs from a collect, and each refusal by what failed.
-function collectSentence(c: Collected): string {
+function collectSentence(c: Collected & { withdrawn?: string[] }): string {
   const news = c.stored === 0 ? "nothing new" : `${c.stored} new`;
   const refused = c.refused.length === 0 ? "" : ` ${c.refused.length} failed a check and ${c.refused.length === 1 ? "was" : "were"} left out: ${c.refused.map((r) => r.fault).join(", ")}.`;
-  return `${c.held} signal${c.held === 1 ? "" : "s"}, all current, ${news}.${refused}`;
+  const withdrawn = c.withdrawn && c.withdrawn.length > 0 ? ` ${c.withdrawn.length} endorsement${c.withdrawn.length === 1 ? " was" : "s were"} withdrawn by ${c.withdrawn.length === 1 ? "its author" : "their authors"} and won't be shown.` : "";
+  return `${c.held} signal${c.held === 1 ? "" : "s"}, all current, ${news}.${refused}${withdrawn}`;
 }
 function collectText(result: CollectAnswer): string {
   if (!("agents" in result)) return `${collectSentence(result)}\n`;

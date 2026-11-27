@@ -5,7 +5,7 @@ interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
   same_operator?: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];
   subject_kind: string; issuer_kind: string; issuer_pubkey: string; supersedes_hash: string | null; counts_as_verified: boolean; schema_version?: number; payload?: unknown;
-  claim?: string | null; waiting_for?: string; endorsed_by?: string | null;
+  claim?: string | null; waiting_for?: string; endorsed_by?: string | null; statement?: string | null;
 }
 
 // The names a person reads, never the wire's type strings.
@@ -16,7 +16,12 @@ const TYPE_LABEL: Record<string, string> = {
 export const signalLabel = (type: string): string => TYPE_LABEL[type] ?? type;
 
 // A signal's own words, indented under its row, so the reader sees what it says and not only that it exists.
-const claimLines = (s: SignalLine): string[] => (s.claim ? s.claim.split("\n").map((line) => `      ${line}`) : []);
+// An endorsement also carries its author and their words, which are theirs, not the issuer's.
+const claimLines = (s: SignalLine): string[] => [
+  ...(s.claim ? s.claim.split("\n").map((line) => `      ${line}`) : []),
+  ...(s.endorsed_by !== undefined ? [`      Endorsed by ${s.endorsed_by ?? "(not readable)"}${s.same_operator ? ", an agent of the same owner" : ""}:`] : []),
+  ...(s.statement !== undefined ? [`      "${(s.statement ?? "(no readable statement)").replace(/\s+/g, " ")}"`] : []),
+];
 
 const date = (seconds: number): string => new Date(seconds * 1000).toISOString().slice(0, 10);
 

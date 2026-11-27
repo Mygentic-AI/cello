@@ -552,6 +552,15 @@ export class Wallet {
     return verdict.delivered ?? claim;
   }
 
+  // An endorsement's words are its author's, not the issuer's: screened like any message, and blocked words never come through.
+  async #statement(agentHex: string, payload: Uint8Array): Promise<string | null> {
+    const { author, statement } = readEndorsement(payload);
+    if (statement === null) return null;
+    const verdict = await this.#hooks.screen(agentHex, author ?? "unknown", statement);
+    if (verdict.verdict === "blocked") return `(withheld: ${verdict.reason ?? "the screen blocked it"})`;
+    return verdict.delivered ?? statement;
+  }
+
   async #describe(agentHex: string, row: WalletRow, list: IssuerList | null, now: number, screened?: string | null): Promise<Record<string, unknown>> {
     const envelopeKeys = issuerKeys({ issuer_pubkey: row.issuer_pubkey } as never);
     const standing = issuerStanding(row, envelopeKeys, list, this.#signals.trusted(), now);
@@ -606,6 +615,12 @@ export class Wallet {
       payload = decodeCbor(new Uint8Array(row.payload));
     } catch {
       payload = toHex(new Uint8Array(row.payload));
+    }
+    // An endorsement's statement is its author's words, so it reaches a reader only screened, never inside the raw payload.
+    if (row.type === ENDORSEMENT && payload !== null && typeof payload === "object") {
+      const rest = { ...(payload as Record<string, unknown>) };
+      delete rest["statement"];
+      return { ...described, schema_version: row.schema_version, payload: rest, statement: await this.#statement(agentHex, new Uint8Array(row.payload)) };
     }
     return { ...described, schema_version: row.schema_version, payload };
   }
@@ -686,7 +701,8 @@ export class Wallet {
         default_present: 1, consent_state: CONSENT_ACCEPTED, public: 1,
       };
       const claim = await this.#claim(agentHex, held);
-      signals.push({ ...(await this.#describe(agentHex, held, list, now, claim)), claim });
+      const statement = e.type === ENDORSEMENT ? await this.#statement(agentHex, e.payload) : undefined;
+      signals.push({ ...(await this.#describe(agentHex, held, list, now, claim)), claim, ...(statement === undefined ? {} : { statement }) });
     }
     return { signals, refused };
   }
@@ -817,8 +833,11 @@ export class Wallet {
     if (!bySubject && byHash.length > 1) throw new LocalError("ambiguous_prefix", `${t} matches ${byHash.length} endorsements. Give more of the hash.`);
     const hash = bySubject?.signal_hash ?? byHash[0]?.signal_hash ?? (HEX64.test(t) ? t : undefined);
     if (!hash) throw new LocalError("endorsement_not_found", `This agent gave no endorsement starting ${t} from this machine. cello signals endorsements lists them.`);
+    const recorded = rows.find((r) => r.signal_hash === hash);
+    const client = this.#client();
+    if (recorded && recorded.issuer_address !== client.address) throw new LocalError("other_issuer", `That endorsement was given through ${plainName(recorded.issuer_address)}, and this daemon's issuer is now ${plainName(client.address)}, so it can't be withdrawn from here. Set issuer_url back to that issuer, then run the same command again.`);
     try {
-      await this.#client().withdrawEndorsement(this.#hooks.keys(agentHex), hash);
+      await client.withdrawEndorsement(this.#hooks.keys(agentHex), hash);
     } catch (err: unknown) {
       if (err instanceof IssuerRefused && err.reason === "not_found") {
         const known = rows.find((r) => r.signal_hash === hash);
