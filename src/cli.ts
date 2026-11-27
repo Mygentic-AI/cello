@@ -145,6 +145,8 @@ const SECTIONS: readonly { group: string; intro: readonly string[]; rows: readon
     intro: ["A trust signal is an issuer's signed statement about an agent, such as a checked email or GitHub account.", "Each signals- command also works with a space: cello signals list."],
     rows: [
       "signals-list", "signals-view", "signals-collect", "signals-request", "signals-enable", "signals-disable", "signals-publish", "signals-unpublish", "signals-lookup", "signals-presented",
+      { text: "Endorsements:" },
+      "signals-endorse", "signals-endorsements", "signals-withdraw", "signals-accept", "signals-refuse",
       { text: "Rules for who you'll talk to:" },
       "signal-rules", "signal-rule-set", "signal-rule-clear",
       { text: "Issuers:" },

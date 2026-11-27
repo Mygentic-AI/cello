@@ -278,7 +278,7 @@ export class Governance {
     if (rule === null || isNoRule(rule)) return "no rule";
     const demands = [
       rule.require_types.length ? `the types ${rule.require_types.join(", ")}` : "",
-      rule.require_issuer_kind ? `a signal from an issuer of kind ${rule.require_issuer_kind}` : "",
+      rule.require_issuer_kind === "agent" ? "an endorsement" : rule.require_issuer_kind ? `a signal from an issuer of kind ${rule.require_issuer_kind}` : "",
       rule.min_count ? `at least ${rule.min_count} signal${rule.min_count === 1 ? "" : "s"}` : "",
     ].filter(Boolean);
     return `a rule asking for ${demands.join(", ")}`;

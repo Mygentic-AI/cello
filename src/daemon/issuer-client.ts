@@ -142,6 +142,26 @@ export class IssuerClient {
     return this.#send("collect", "collect", agent, { code: null, target: null, holder: null, holderSignal: null });
   }
 
+  // This agent vouches for another, in its own words. The issuer takes the author from the signature, never from a field. Answers the
+  // endorsement's hash, and whether the two share an operator when the issuer says so.
+  async endorse(agent: AgentKeys, subjectHex: string, statement: string): Promise<{ signalHash: string; sameOperator: boolean | null }> {
+    const answer = await this.#ask("endorsements/endorse", "endorse", agent, { code: statement, target: subjectHex, holder: null, holderSignal: null });
+    const hash = answer["signalHash"];
+    if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) throw new IssuerUnreachable(`${this.#base.origin} answered without the endorsement's hash`);
+    const same = answer["sameOperator"];
+    return { signalHash: hash, sameOperator: typeof same === "boolean" ? same : null };
+  }
+
+  // The author takes its endorsement back, by the signal's hash.
+  async withdrawEndorsement(agent: AgentKeys, signalHash: string): Promise<void> {
+    await this.#ask("endorsements/withdraw", "withdraw", agent, { code: null, target: signalHash, holder: null, holderSignal: null });
+  }
+
+  // The subject declines one, by the signal's hash. The issuer then refuses that author for this subject.
+  async refuseEndorsement(agent: AgentKeys, signalHash: string): Promise<void> {
+    await this.#ask("endorsements/refuse", "refuse", agent, { code: null, target: signalHash, holder: null, holderSignal: null });
+  }
+
   // A new agent on a daemon that already has one: the holder signs too, and hands over an account-level signal it holds.
   addAgent(agent: AgentKeys, holder: AgentKeys, holderSignal: Uint8Array): Promise<IssuerAnswer> {
     return this.#send("agents", "add_agent", agent, { code: null, target: null, holder: holder.identity, holderSignal }, holder.seeds);

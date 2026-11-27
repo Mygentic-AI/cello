@@ -60,6 +60,10 @@ export interface Evaluation {
 
 interface Shown { type: string; issuer_kind: string; counts_as_verified: boolean; same_operator: boolean }
 
+// An endorsement is signed by an issuer but written by another agent, so for a rule it comes from an agent. require_issuer_kind
+// "agent" is how rules asked for an endorsement before; --require-types endorsement asks the same.
+const kindOf = (s: Shown): string => (s.type === "endorsement" ? "agent" : s.issuer_kind);
+
 export function evaluate(rule: SignalRule, shown: readonly Shown[]): Evaluation {
   const recognised = shown.filter((s) => s.counts_as_verified);
   const unrecognised = shown.length - recognised.length;
@@ -67,7 +71,7 @@ export function evaluate(rule: SignalRule, shown: readonly Shown[]): Evaluation 
   const base = { counted: countable.length, ...(unrecognised > 0 ? { not_counted_unrecognised: unrecognised } : {}), ...(recognised.length !== countable.length ? { not_counted_same_operator: recognised.length - countable.length } : {}) };
   if (rule.min_count > 0 && countable.length < rule.min_count) return { pass: false, ...base };
   // The same signals count toward all three demands: one from the agent's own operator can't satisfy a type or a kind of issuer any more than a minimum.
-  if (rule.require_issuer_kind !== null && !countable.some((s) => s.issuer_kind === rule.require_issuer_kind)) return { pass: false, missing_issuer_kind: true, ...base };
+  if (rule.require_issuer_kind !== null && !countable.some((s) => kindOf(s) === rule.require_issuer_kind)) return { pass: false, missing_issuer_kind: true, ...base };
   const present = new Set(countable.map((s) => s.type));
   const missing = rule.require_types.filter((type) => !present.has(type));
   if (missing.length > 0) return { pass: false, missing_types: missing, ...base };

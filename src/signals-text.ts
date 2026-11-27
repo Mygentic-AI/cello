@@ -5,7 +5,7 @@ interface SignalLine {
   signal_hash: string; type: string; issuer_address: string; issuer_standing: string; status: string; consent_state: string;
   same_operator?: boolean; default_present: boolean; public?: boolean; issued_at: number; expires_at: number | null; notes: string[];
   subject_kind: string; issuer_kind: string; issuer_pubkey: string; supersedes_hash: string | null; counts_as_verified: boolean; schema_version?: number; payload?: unknown;
-  claim?: string | null;
+  claim?: string | null; waiting_for?: string; endorsed_by?: string | null;
 }
 
 // The names a person reads, never the wire's type strings.
@@ -34,7 +34,8 @@ export function signalsListText(result: { signals: SignalLine[]; not_shown: numb
   const legend = ["  include: ✓ = shown by default  – = left out", "           To change: cello signals enable <hash>  or  cello signals disable <hash>", "  public:  anyone with this agent's address can read it. To change: cello signals publish <hash>  or  cello signals unpublish <hash>"];
   if (signals.some((s) => s.same_operator)) legend.push("  co-own:  'own' = the endorser and the subject are your own agents. It's still shown, but doesn't count toward a counterparty's minimum.");
   if (signals.some((s) => !shown(s))) legend.push("  consent: PENDING = someone issued this about you, and nobody sees it until you accept.  ✗ = can't be shown, whatever 'include' says.");
-  if (notShown > 0) legend.push(`  (${notShown} superseded or expired not shown: run with --all to include)`);
+  for (const s of signals) if (s.waiting_for) legend.push(`  ${s.signal_hash.slice(0, 12)}… (${signalLabel(s.type)}) waits for ${s.waiting_for}`);
+  if (notShown > 0) legend.push(`  (${notShown} superseded, withdrawn or expired not shown: run with --all to include)`);
   // In its last 30 days, each current signal says so. How to renew depends on who issued it, which cello status says. Usage's two
   // varieties renew together, so they make one line.
   const now = Math.floor(Date.now() / 1000);
@@ -67,6 +68,8 @@ export function signalViewText(s: SignalLine): string {
     `expires_at:      ${when(s.expires_at)}`,
     `supersedes:      ${s.supersedes_hash ?? "—"}`,
   ];
+  if (s.endorsed_by !== undefined) lines.push(`endorsed_by:     ${s.endorsed_by ?? "(not readable)"}${s.same_operator ? " (one of your own agents)" : ""}`);
+  if (s.waiting_for) lines.push(`waiting for:     ${s.waiting_for}`);
   if (s.payload !== undefined) lines.push(`payload:         ${JSON.stringify(s.payload, null, 2)}`);
   return `${[...lines, ...s.notes.map((note) => `\n${note}`)].join("\n")}\n`;
 }

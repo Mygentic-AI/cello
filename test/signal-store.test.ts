@@ -44,6 +44,9 @@ test("endorsements from different authors all stay current, and a new one never 
   assert.equal(row(w, carol).default_present, 1, "Carol's arrives shown, whatever Bob's was set to");
   // Bob's own update names what it replaces, and that one alone is retired, keeping Bob's choice.
   const bobAgain = await put(w, "endorsement", { supersedes_hash: new Uint8Array(Buffer.from(bob, "hex")) });
+  assert.equal(row(w, bobAgain).consent_state, "pending", "the subject accepts the new words too");
+  assert.equal(row(w, bob).status, "active", "until then the words they accepted stay");
+  w.accept(agent.id, bobAgain);
   assert.equal(row(w, bob).status, "superseded");
   assert.equal(row(w, carol).status, "active");
   assert.equal(row(w, bobAgain).default_present, 0);
