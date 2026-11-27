@@ -267,7 +267,7 @@ test("the Mac app's own code shows, answers and catches up against a real daemon
   assert.deepEqual((ok(["notifier-list", "--agent", "Bea"]) as { notifiers: unknown[] }).notifiers, []);
   assert.equal((ok(["notifier-list", "--agent", "Ann"]) as { notifiers: unknown[] }).notifiers.length, 1);
   const told = ok(["receive", "--agent", "Bea"], "bea-shell") as { notices?: { text: string }[] };
-  assert.ok(told.notices?.some((n) => /took you off CELLO on their Mac/.test(n.text)), JSON.stringify(told.notices));
+  assert.ok(told.notices?.some((n) => /took you off the CELLO widget for Mac/.test(n.text)), JSON.stringify(told.notices));
 
   // 8d. Settings' Add or remove agents: Bea and Cy are on this Mac and not here. Cy's notifiers are locked, so the app
   // can't add her and says so by name; Bea is added, quietly, since the person just chose her, and she's told on no

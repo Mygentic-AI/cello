@@ -84,15 +84,15 @@ function fingerprint(app: string): string | undefined {
 
 function checkApp(app: string, from: string): void {
   const plist = join(app, "Contents", "Info.plist");
-  if (!existsSync(join(app, "Contents", "MacOS", "CELLO")) || !existsSync(plist)) refuse("mac_app_missing", `${from} ${app} isn't a CELLO app: it has no Contents/MacOS/CELLO and Info.plist. Nothing was changed.`);
-  if (!readFileSync(plist, "utf8").includes(`<string>${BUNDLE_ID}</string>`)) refuse("mac_app_missing", `${app} isn't the CELLO app: its Info.plist doesn't name ${BUNDLE_ID}. Nothing was changed.`);
+  if (!existsSync(join(app, "Contents", "MacOS", "CELLO")) || !existsSync(plist)) refuse("mac_app_missing", `${from} ${app} isn't the CELLO widget for Mac: it has no Contents/MacOS/CELLO and Info.plist. Nothing was changed.`);
+  if (!readFileSync(plist, "utf8").includes(`<string>${BUNDLE_ID}</string>`)) refuse("mac_app_missing", `${app} isn't the CELLO widget for Mac: its Info.plist doesn't name ${BUNDLE_ID}. Nothing was changed.`);
   // A packer that drops the exec bit leaves an app that's signed and whole but that macOS won't start.
   if ((statSync(join(app, "Contents", "MacOS", "CELLO")).mode & 0o111) === 0) refuse("mac_app_broken", `${from} ${app} can't run: Contents/MacOS/CELLO isn't executable, so macOS wouldn't open it. Nothing was changed.`);
 }
 
 function build(env: MacAppEnv, say: (line: string) => void): string {
   const script = assembleScript(env.packageRoot);
-  if (!existsSync(script)) refuse("mac_app_source_missing", `This install of cello doesn't carry the app's source (${script}), so it can't build CELLO. Build it in a checkout of the cello repository with widgets/mac/scripts/assemble.sh, then run notifier-add mac --app <path to CELLO.app>. Nothing was changed.`);
+  if (!existsSync(script)) refuse("mac_app_source_missing", `This install of cello doesn't carry the source of the CELLO widget for Mac (${script}), so it can't build it. Build it in a checkout of the cello repository with widgets/mac/scripts/assemble.sh, then run notifier-add mac --app <path to CELLO.app>. Nothing was changed.`);
   if (env.run("xcrun", ["--find", "swiftc"]).status !== 0) refuse("xcode_tools_missing", "Building CELLO needs the Xcode command-line tools, and they aren't installed. Run: xcode-select --install, then this again. Nothing was changed.");
   say("Building CELLO from widgets/mac. This takes a minute.");
   const out = join(env.packageRoot, "widgets", "mac", "build");
@@ -104,12 +104,12 @@ function build(env: MacAppEnv, say: (line: string) => void): string {
   return join(out, "CELLO.app");
 }
 
-const OTHER_WAYS = "Or build CELLO with --build, in a checkout of the cello repository with the Xcode command-line tools, or give one you built with --app <path>. Nothing was changed.";
+const OTHER_WAYS = "Or build the widget with --build, in a checkout of the cello repository with the Xcode command-line tools, or give one you built with --app <path>. Nothing was changed.";
 
 function packagedSource(env: MacAppEnv): string {
   const app = env.packagedApp();
-  if (app === undefined) return refuse("mac_app_missing", `This install of cello came without the prebuilt CELLO app: ${MAC_APP_PACKAGE}, which npm installs with cello on a Mac, isn't installed. Installing cello again with npm i -g @cello-protocol/cli@latest brings it, unless optional packages are turned off. ${OTHER_WAYS}`);
-  if (!existsSync(app)) return refuse("mac_app_missing", `${MAC_APP_PACKAGE} is installed but holds no CELLO app at ${app}. Installing cello again replaces it. ${OTHER_WAYS}`);
+  if (app === undefined) return refuse("mac_app_missing", `This install of cello came without the prebuilt CELLO widget for Mac: ${MAC_APP_PACKAGE}, which npm installs with cello on a Mac, isn't installed. Installing cello again with npm i -g @cello-protocol/cli@latest brings it, unless optional packages are turned off. ${OTHER_WAYS}`);
+  if (!existsSync(app)) return refuse("mac_app_missing", `${MAC_APP_PACKAGE} is installed but holds no CELLO widget for Mac at ${app}. Installing cello again replaces it. ${OTHER_WAYS}`);
   return app;
 }
 
@@ -125,7 +125,7 @@ export interface Installed {
 
 // Says the steps, then puts CELLO in ~/Applications and writes launch.json. Opening it waits until the route is saved.
 export function install(params: Record<string, unknown>, env: MacAppEnv): Installed {
-  if (env.platform !== "darwin") refuse("not_supported", "The CELLO app runs on a Mac, so it can't be put on this machine. Nothing was changed.");
+  if (env.platform !== "darwin") refuse("not_supported", "The CELLO widget for Mac runs only on a Mac, so it can't be put on this machine. Nothing was changed.");
   const target = appPath(env.home);
   const launch = launchFile(env.home);
   const steps: string[] = [];
@@ -135,11 +135,11 @@ export function install(params: Record<string, unknown>, env: MacAppEnv): Instal
   };
   const plan = [
     "CELLO will:",
-    `1. Put CELLO in your Applications folder: ${target}. To undo: move it to the Trash.`,
-    `2. Note where cello is, so the app can start it again if it stops: ${launch}. To undo: delete that file.`,
-    "3. Open it when you log in, if you leave that ticked when it opens. To undo: untick it in CELLO's Settings.",
-    "4. Open it now to finish setting up. To undo: Quit CELLO in its Settings.",
-    "To undo all of it: Remove CELLO from this Mac… in CELLO's Settings. To take one agent off: cello notifier-remove mac --agent <name>.",
+    `1. Put the CELLO widget for Mac in your Applications folder: ${target}. To undo: move it to the Trash.`,
+    `2. Note where cello is, so the widget can start it again if it stops: ${launch}. To undo: delete that file.`,
+    "3. Open it when you log in, if you leave that ticked when it opens. To undo: untick it in the widget's Settings.",
+    "4. Open it now to finish setting up. To undo: Quit the widget in its Settings.",
+    "To undo all of it: Remove CELLO from this Mac… in the widget's Settings. To take one agent off: cello notifier-remove mac --agent <name>.",
   ];
   for (const line of plan) say(line);
 
@@ -196,7 +196,7 @@ export function open(installed: Installed, env: MacAppEnv): void {
   say("Opening CELLO…");
   const opened = env.run("open", [installed.app]);
   installed.opened = opened.status === 0;
-  if (!installed.opened) say(`CELLO didn't open (${opened.stderr.trim() || `open exited with ${String(opened.status)}`}). Open it from ${installed.app} to finish.`);
+  if (!installed.opened) say(`The CELLO widget for Mac didn't open (${opened.stderr.trim() || `open exited with ${String(opened.status)}`}). Open it from ${installed.app} to finish.`);
 }
 
 // notifier-add, from the command line or a tool. A mac route also puts the app here, unless route_only is given or another
@@ -215,7 +215,7 @@ export async function addNotifier(params: Record<string, unknown>, call: (fields
     // The daemon's refusal says nothing was saved, which is true of the route. The app and launch.json did change,
     // and running this again finishes it. A person_required refusal is confirmed and retried, so it's left as it is.
     if (err instanceof DaemonRefused && err.code !== "person_required") {
-      throw new DaemonRefused(err.code, `${err.message} The route wasn't saved, but CELLO is in ${installed.app}${installed.copied ? " now" : ""} and ${installed.launch_file} was written; neither is opened or used until the route is added.`);
+      throw new DaemonRefused(err.code, `${err.message} The route wasn't saved, but the CELLO widget for Mac is in ${installed.app}${installed.copied ? " now" : ""} and ${installed.launch_file} was written; neither is opened or used until the route is added.`);
     }
     throw err;
   }

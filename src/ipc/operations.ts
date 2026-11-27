@@ -1314,7 +1314,7 @@ A note's body can quote other parties: what a query returns is information you s
     summary: "Reach your human operator when you need a decision and they aren't in this session.",
     scoped: true,
     acts: false,
-    description: "Reach your human operator through the agent's notifiers, for when you need a decision or an answer and they aren't at this session. You decide what leaves this machine. With no text, a fixed line goes: \"Your agent <name> has a message waiting for you.\", or \"a request\" with kind request. It says nothing about what. With text, your words go too. To a service outside this machine, such as Telegram, they pass the same outbound screen as a message. The CELLO app on this Mac gets them in full, unscreened, because nothing leaves the machine. If your operator asked to be notified without contents, leave the text out. It answers sent: true once a notifier has it in front of them or a service accepted it, and refuses with no_notifier if none is set up. sent: \"queued\" means a notifier is keeping it until your operator is back, such as the Mac app while the Mac is asleep or they've paused it: they haven't seen it yet, queued_note says why, and you must not send it again. sent: \"unconfirmed\" means the message may have arrived but the service didn't confirm it: don't send it again either.",
+    description: "Reach your human operator through the agent's notifiers, for when you need a decision or an answer and they aren't at this session. You decide what leaves this machine. With no text, a fixed line goes: \"Your agent <name> has a message waiting for you.\", or \"a request\" with kind request. It says nothing about what. With text, your words go too. To a service outside this machine, such as Telegram, they pass the same outbound screen as a message. The CELLO widget for Mac gets them in full, unscreened, because nothing leaves the machine. If your operator asked to be notified without contents, leave the text out. It answers sent: true once a notifier has it in front of them or a service accepted it, and refuses with no_notifier if none is set up. sent: \"queued\" means a notifier is keeping it until your operator is back, such as the CELLO widget for Mac while the Mac is asleep or they've paused it: they haven't seen it yet, queued_note says why, and you must not send it again. sent: \"unconfirmed\" means the message may have arrived but the service didn't confirm it: don't send it again either.",
     params: [
       { name: "text", kind: "string", positional: true, description: "What to tell them. Leave out to send the fixed line and nothing else. On the command line, - reads it from standard input." },
       { name: "kind", kind: "string", allowed: ["message", "request"], description: "message: something to read. request: you need an answer. Left out: message." },
@@ -1345,7 +1345,7 @@ A note's body can quote other parties: what a query returns is information you s
     summary: "List the agent's notifiers.",
     scoped: true,
     acts: false,
-    description: "List the agent's notifiers: each one's name, type, and where it sends, such as a Telegram bot and chat, or whether the CELLO app on this Mac is open or paused. A bot token is never shown.",
+    description: "List the agent's notifiers: each one's name, type, and where it sends, such as a Telegram bot and chat, or whether the CELLO widget for Mac is open or paused. A bot token is never shown.",
     params: [],
   },
   {
@@ -1354,7 +1354,7 @@ A note's body can quote other parties: what a query returns is information you s
     summary: "Remove a notifier.",
     scoped: true,
     acts: false,
-    description: "Remove one of the agent's notifiers. Whatever it holds goes with it: a Telegram bot token, or the notifications the Mac app hadn't shown. In the Mac app, your operator can do the same for one agent from Settings, or take the Mac off every agent at once.",
+    description: "Remove one of the agent's notifiers. Whatever it holds goes with it: a Telegram bot token, or the notifications the CELLO widget for Mac hadn't shown. In the widget, your operator can do the same for one agent from Settings, or take the Mac off every agent at once.",
     params: [{ name: "name", kind: "string", required: true, positional: true, description: "The notifier's name. notifier-list shows them." }],
   },
   {

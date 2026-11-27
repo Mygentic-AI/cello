@@ -1,6 +1,6 @@
 ---
 name: cello-operator
-description: Use when a CELLO agent needs to reach its human operator, be reminded of something, or keep something for later - connecting Telegram ("connect my Telegram") or the CELLO app on a Mac, notifying or asking the operator mid-conversation and how to ask well, offering answer buttons, reading their reply, setting Reminders the daemon shows again as a conversation goes, or keeping Notes (who a contact is, what is still owed, a client's details, a running count, a check-by time). Recipes - ask me before you agree, context for one counterparty.
+description: Use when a CELLO agent needs to reach its human operator, be reminded of something, or keep something for later - connecting Telegram ("connect my Telegram") or the CELLO widget for Mac, notifying or asking the operator mid-conversation and how to ask well, offering answer buttons, reading their reply, setting Reminders the daemon shows again as a conversation goes, or keeping Notes (who a contact is, what is still owed, a client's details, a running count, a check-by time). Recipes - ask me before you agree, context for one counterparty.
 ---
 
 # Reaching your operator, Reminders and Notes
@@ -29,11 +29,11 @@ It checks the token and the chat with Telegram, and sends a test line, before sa
 - **One machine per bot.** Only one machine can read a bot's replies, so an agent on a second machine needs its own bot. Sending works from anywhere.
 - `cello notifier-list`, `cello notifier-test`, `cello notifier-remove <name>`.
 
-## Connecting the Mac
+## Connecting the CELLO widget for Mac
 
-When your operator says "put CELLO on my Mac", run `cello_notifier_add` with `type` `mac`, or `cello notifier-add mac --agent <a>`. There's nothing secret to give. It puts the CELLO app, which npm installed with cello, in their Applications folder and opens it, and its answer lists each step with how to undo it: pass those on. If it answers `mac_app_missing` or `mac_app_broken`, the app didn't come with this install, or came damaged: pass on what it says, which is to install cello again, or to build it with `--build` in a checkout of the cello repository, or to give one they built with `--app <path>`. Then tell them to click Turn on in CELLO, and Allow when macOS asks. That covers every agent on the Mac: for the next agent, `cello notifier-add mac --same-as <agent that has it> --agent <next>`, which only adds the route.
+When your operator says "put CELLO on my Mac", run `cello_notifier_add` with `type` `mac`, or `cello notifier-add mac --agent <a>`. There's nothing secret to give. It puts the CELLO widget for Mac, which npm installed with cello, in their Applications folder and opens it, and its answer lists each step with how to undo it: pass those on. If it answers `mac_app_missing` or `mac_app_broken`, the widget didn't come with this install, or came damaged: pass on what it says, which is to install cello again, or to build it with `--build` in a checkout of the cello repository, or to give one they built with `--app <path>`. Then tell them to click Turn on in the widget, and Allow when macOS asks. That covers every agent on the Mac: for the next agent, `cello notifier-add mac --same-as <agent that has it> --agent <next>`, which only adds the route.
 
-The Mac gets your words in full, without the outbound screen, because nothing leaves the machine. They answer with a click on a choice or by typing, and it comes back as their reply like Telegram's. `cello notifier-add -h` lists every kind of notifier.
+The CELLO widget for Mac gets your words in full, without the outbound screen, because nothing leaves the machine. They answer with a click on a choice or by typing, and it comes back as their reply like Telegram's. `cello notifier-add -h` lists every kind of notifier.
 
 ## Asking well
 
@@ -54,11 +54,11 @@ Your operator reads this on a phone, often in a spare moment, and every message 
 `cello_notify` reaches your operator through every notifier the agent has.
 
 - **With no text**, a fixed line goes: "Your agent <name> has a message waiting for you", or "a request" with `kind` `request`. It says nothing about the conversation.
-- **With text**, your words go too. To a service outside this machine, such as Telegram, they pass the same outbound screen as a message. The Mac gets them unscreened. If your operator asked to be notified without contents, never send text.
+- **With text**, your words go too. To a service outside this machine, such as Telegram, they pass the same outbound screen as a message. The CELLO widget for Mac gets them unscreened. If your operator asked to be notified without contents, never send text.
 - **`session_id`**: pass the session it's about, so their answer comes back for that conversation.
 - **`choices`**: 2 to 8 answers of up to 40 characters, separated by `|`, such as `"Agree|Disagree|Ask me later"`. Each shows as a button. The one they tap comes back as their reply, in exactly those words. They can still type instead.
 
-The answer is `sent: true` once a notifier has it in front of them or a service accepted it. `sent: "queued"` means it's kept until they're back, such as when their Mac is asleep or they've paused CELLO there: they haven't seen it yet, `queued_note` says why, and **don't send it again**. It waits for them: shown when CELLO is back, or in their panel while they're paused. `sent: "unconfirmed"` means it may have arrived but Telegram didn't confirm: **don't send it again** either. `no_notifier` means none is set up: tell your operator, in the session if they're there.
+The answer is `sent: true` once a notifier has it in front of them or a service accepted it. `sent: "queued"` means it's kept until they're back, such as when their Mac is asleep or they've paused the CELLO widget for Mac: they haven't seen it yet, `queued_note` says why, and **don't send it again**. It waits for them: shown when CELLO is back, or in their panel while they're paused. `sent: "unconfirmed"` means it may have arrived but Telegram didn't confirm: **don't send it again** either. `no_notifier` means none is set up: tell your operator, in the session if they're there.
 
 **While you wait**, tell the other agent: send `standby` with a realistic `est_minutes` ("I'm checking with my operator"). Then end your turn.
 

@@ -310,7 +310,7 @@ export class Notifiers {
     if (name !== undefined) return [this.#row(agentHex, name)];
     const rows = this.#rows(agentHex);
     if (rows.length === 0) {
-      throw new LocalError("no_notifier", `${this.#host.agentName(agentHex)} has no notifier, so ${command === "notify" ? "nobody was told" : "there's nothing to test"}. Your operator can set one up: cello notifier-add -h lists the kinds, such as Telegram or the CELLO app on a Mac, and how to add each for this agent (--agent ${agentHex}).`);
+      throw new LocalError("no_notifier", `${this.#host.agentName(agentHex)} has no notifier, so ${command === "notify" ? "nobody was told" : "there's nothing to test"}. Your operator can set one up: cello notifier-add -h lists the kinds, such as Telegram or the CELLO widget for Mac, and how to add each for this agent (--agent ${agentHex}).`);
     }
     return rows;
   }

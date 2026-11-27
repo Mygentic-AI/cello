@@ -27,16 +27,16 @@ export const NOTIFIER_TYPES = [
   {
     name: "mac",
     label: "Mac",
-    summary: "The CELLO app on this Mac: banners and a menu-bar panel, where your operator answers with a click or by typing.",
-    setup: "It needs nothing secret: one CELLO app serves every agent on this Mac, and your operator turns it on once in the app. Adding it says each step and how to undo it, then does them with no prompt: it puts CELLO in ~/Applications, notes where cello is so the app can start it again, and opens it. Your operator clicks Turn on there, and Allow when macOS asks. The default uses the prebuilt app that npm installs with cello on a Mac, build compiles it in a checkout of the cello repository, and app takes a CELLO.app your operator built. If the prebuilt one wasn't installed, it refuses by name, says those two ways, and changes nothing. same_as, for a further agent, only adds the route, since the app is already there. Your words reach it in full, without the outbound screen, because nothing leaves this machine. If the app is closed, the Mac is asleep or your operator paused it, notify answers sent: \"queued\" and the app shows it when it's back: never send it again. To stop, your operator removes it in the app, which takes it off every agent, or you run notifier-remove for one agent.",
+    summary: "The CELLO widget for Mac: banners and a menu-bar panel, where your operator answers with a click or by typing.",
+    setup: "It needs nothing secret: one CELLO widget for Mac serves every agent on this Mac, and your operator turns it on once in the widget. Adding it says each step and how to undo it, then does them with no prompt: it puts the widget's app in ~/Applications, notes where cello is so the widget can start it again, and opens it. Your operator clicks Turn on there, and Allow when macOS asks. The default uses the prebuilt widget that npm installs with cello on a Mac, build compiles it in a checkout of the cello repository, and app takes a CELLO.app your operator built. If the prebuilt one wasn't installed, it refuses by name, says those two ways, and changes nothing. same_as, for a further agent, only adds the route, since the widget is already there. Your words reach it in full, without the outbound screen, because nothing leaves this machine. If the widget is closed, the Mac is asleep or your operator paused it, notify answers sent: \"queued\" and the widget shows it when it's back: never send it again. To stop, your operator removes it in the widget, which takes it off every agent, or you run notifier-remove for one agent.",
     steps: [
-      "Run: cello notifier-add mac --agent <name>. It puts CELLO in your Applications folder and opens it. For each further agent: cello notifier-add mac --same-as <first agent> --agent <name>.",
-      "Open CELLO on this Mac if it isn't open, click Turn on, and choose Allow when macOS asks. That covers every agent on this Mac.",
+      "Run: cello notifier-add mac --agent <name>. It puts the CELLO widget for Mac in your Applications folder and opens it. For each further agent: cello notifier-add mac --same-as <first agent> --agent <name>.",
+      "Open the CELLO widget for Mac if it isn't open, click Turn on, and choose Allow when macOS asks. That covers every agent on this Mac.",
     ],
     params: [
-      { name: "build", kind: "boolean", description: "Build CELLO from widgets/mac in this checkout of cello, instead of using the prebuilt app. Needs the Xcode command-line tools: xcode-select --install." },
+      { name: "build", kind: "boolean", description: "Build the CELLO widget for Mac from widgets/mac in this checkout of cello, instead of using the prebuilt one. Needs the Xcode command-line tools: xcode-select --install." },
       { name: "app", kind: "string", description: "A CELLO.app you built yourself, to put in ~/Applications instead of the prebuilt one." },
-      { name: "route_only", kind: "boolean", description: "Only save the route: CELLO isn't copied or opened, and nothing is noted. For a Mac where CELLO is already set up." },
+      { name: "route_only", kind: "boolean", description: "Only save the route: the CELLO widget for Mac isn't copied or opened, and nothing is noted. For a Mac where the widget is already set up." },
     ],
   },
 ] as const satisfies readonly NotifierType[];

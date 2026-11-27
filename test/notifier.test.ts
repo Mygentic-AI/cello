@@ -854,7 +854,7 @@ test("notifier-add's help lists the types, a type's help shows only its own opti
   // The Mac's page has its install options, and says how to finish in the app.
   const mac = cli(["notifier-add", "mac", "-h"]);
   assert.equal(mac.status, 0);
-  assert.ok(mac.out.includes("Open CELLO on this Mac") && mac.out.includes("Turn on") && !mac.out.includes("--bot-token"), mac.out);
+  assert.ok(mac.out.includes("Open the CELLO widget for Mac") && mac.out.includes("Turn on") && !mac.out.includes("--bot-token"), mac.out);
   for (const option of ["  --build", "  --app", "  --route-only"]) assert.ok(mac.out.includes(option), `${option} on the Mac's page`);
   assert.ok(!telegram.out.includes("--route-only"), "and only there");
 });
@@ -873,7 +873,7 @@ test("the Mac gets the agent's words whole while Telegram gets them screened, an
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });
   const mac = await notifiers.add(AGENT, { type: "mac" }) as { told_existing: string[]; app: string };
   assert.deepEqual([mac.told_existing, mac.app], [["telegram"], "not open"]);
-  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Ann: mac, the CELLO app on this Mac\./);
+  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Ann: mac, the CELLO widget for Mac\./);
   await assert.rejects(notifiers.add(AGENT, { type: "mac", name: "second" }), refusal("notifier_exists"));
   // Off a Mac there's no door, so it's refused by name rather than queued for ever.
   assert.deepEqual([operatorSocketPath("/h", "linux"), operatorSocketPath("/h", "win32"), operatorSocketPath("/h", "darwin")], [undefined, undefined, "/h/operator.sock"]);
@@ -1024,7 +1024,7 @@ test("while paused the app gets each one silently and the agent hears the operat
   assert.equal(paused["ok"], true);
   const answer = await notifiers.notify(AGENT, { kind: "request", text: "During the pause" }) as { sent: unknown; queued_note: string };
   assert.equal(answer.sent, "queued");
-  assert.match(answer.queued_note, /paused CELLO.*away\. It's waiting in their CELLO panel for when they're back\. Don't send it again\./);
+  assert.match(answer.queued_note, /paused the CELLO widget for Mac.*away\. It's waiting in the widget's panel for when they're back\. Don't send it again\./);
   const quiet = await app.waitFor((f) => f["op"] === "notification" && f["text"] === "During the pause", "the silent push");
   assert.equal(quiet["silent"], true);
   // A second app connecting during the pause gets what's waiting silently too, and its subscribe says it's paused.
@@ -1065,7 +1065,7 @@ test("the app takes one agent off the Mac: it's told, the app hears it went, and
   assert.match(lockedAll["message"] as string, /^Nothing was removed: the notifiers of Bea are locked/);
   assert.equal((notifiers.list(AGENT) as { notifiers: unknown[] }).notifiers.length, 1);
   assert.ok((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.some((n) => n.type === "mac"));
-  assert.ok(!told.some((t) => /CELLO on their Mac/.test(t.text)), "nobody was told of a removal that didn't happen");
+  assert.ok(!told.some((t) => /CELLO widget for Mac/.test(t.text)), "nobody was told of a removal that didn't happen");
   locked.delete(AGENT2);
   // Bea never sent anything, and the app still hears she went.
   const removed = await app.request({ op: "remove_agent", agent: AGENT2 });
@@ -1078,7 +1078,7 @@ test("the app takes one agent off the Mac: it's told, the app hears it went, and
   const again = await StandInMacApp.open(door);
   await again.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Ann's question, waiting", "Ann's question still waiting after Bea went");
   await again.app.close();
-  assert.ok(told.some((t) => t.agent === AGENT2 && /took you off CELLO on their Mac/.test(t.text)));
+  assert.ok(told.some((t) => t.agent === AGENT2 && /took you off the CELLO widget for Mac/.test(t.text)));
   assert.ok(!told.some((t) => t.agent === AGENT), "the other agent isn't told anything");
   await app.close();
 });
@@ -1107,7 +1107,7 @@ test("the app lists the agents on this machine and adds one to the Mac as notifi
   assert.deepEqual([added["ok"], (added["added"] as { agent: string }).agent, added["told_existing"], added["could_not_tell"]], [true, "Bea", ["telegram"], []]);
   await app.waitFor((f) => f["op"] === "agent_added" && f["agent_id"] === AGENT2, "the app to hear Bea joined");
   assert.deepEqual((notifiers.list(AGENT2) as { notifiers: { type: string }[] }).notifiers.map((n) => n.type).sort(), ["mac", "telegram"]);
-  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Bea: mac, the CELLO app on this Mac\./);
+  assert.match(sent.at(-1)?.text ?? "", /^A new notifier was added for your agent Bea: mac, the CELLO widget for Mac\./);
   // A route that can't be told is named in the answer, so the app can say so.
   notifiers.remove(AGENT, "mac");
   await notifiers.add(AGENT, { type: "telegram", bot_token: TOKEN, chat_id: "55" });

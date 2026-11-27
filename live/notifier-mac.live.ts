@@ -118,7 +118,7 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   // test is about the daemon's side, and putting the app in Applications would open it on the screen of the Mac running it.
   const added = ok(["notifier-add", "mac", "--route-only", "--agent", "Ann"], "ann-shell");
   assert.deepEqual([added["added"], added["type"], added["app"]], [true, "mac", "not open"]);
-  assert.match(added["next"] as string, /Open CELLO on this Mac/);
+  assert.match(added["next"] as string, /Open the CELLO widget for Mac/);
   ok(["notifier-add", "mac", "--same-as", "Ann", "--agent", "Bea"], "bea-shell");
 
   // 1. The app isn't open: queued, and the agent is told not to send it again. Kept words are the agent's own, in full,
@@ -261,7 +261,7 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   assert.equal(paused["ok"], true);
   const away = await notify(["Lunch order?", "--kind", "request", "--choices", "Pizza|Salad"], "Ann");
   assert.equal(away["sent"], "queued");
-  assert.match(away["queued_note"] as string, /paused CELLO on their Mac until .*away.*Don't send it again/);
+  assert.match(away["queued_note"] as string, /paused the CELLO widget for Mac until .*away.*Don't send it again/);
   const quiet = await back.app.waitFor((f) => f["op"] === "notification" && f["text"] === "Lunch order?", "the question, silently, during the pause");
   assert.equal(quiet["silent"], true);
   const duringPause = await openApp();
@@ -287,7 +287,7 @@ test("the Mac app gets notifications whole, answers as the operator once, and no
   for (const name of ["Ann", "Bea"]) {
     assert.deepEqual((ok(["notifier-list", "--agent", name]) as { notifiers: unknown[] }).notifiers, [], `${name} has no notifier left`);
     const read = ok(["receive", "--agent", name], `${name.toLowerCase()}-shell`) as Read;
-    assert.ok(read.notices?.some((n) => /removed CELLO from their Mac/.test(n.text)), `${name} is told: ${JSON.stringify(read.notices)}`);
+    assert.ok(read.notices?.some((n) => /removed the CELLO widget for Mac/.test(n.text)), `${name} is told: ${JSON.stringify(read.notices)}`);
   }
   const gone = cello(["notify", "--agent", "Ann"], "ann-shell");
   assert.equal(gone.json["error"], "no_notifier");

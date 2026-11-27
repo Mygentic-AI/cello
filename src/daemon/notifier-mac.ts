@@ -79,7 +79,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     // The door failing to open costs the Mac route, never the daemon, and it's said by name wherever the route is used.
     this.#door?.open().then(() => { this.#doorProblem = undefined; }, (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      this.#doorProblem = `CELLO's door for the Mac app, ${this.#door?.path ?? "operator.sock"}, couldn't open (${message}), so the app can't connect. Restarting CELLO (cello logout, then cello login) tries again.`;
+      this.#doorProblem = `The door for the CELLO widget for Mac, ${this.#door?.path ?? "operator.sock"}, couldn't open (${message}), so the widget can't connect. Restarting CELLO (cello logout, then cello login) tries again.`;
       logEvent("operator_door.unavailable", { message });
     });
   }
@@ -110,21 +110,21 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
   }
 
   prepare(params: Record<string, unknown>, copied: (() => string) | undefined): (agentName: string, agentHex: string) => Promise<Connected> {
-    if (this.#door === undefined) throw new LocalError("not_supported", "The CELLO app runs on a Mac, so a mac notifier can't be added on this machine.");
+    if (this.#door === undefined) throw new LocalError("not_supported", "The CELLO widget for Mac runs only on a Mac, so a mac notifier can't be added on this machine.");
     if (this.#doorProblem !== undefined) throw new LocalError("notifier_check_failed", `Nothing was saved. ${this.#doorProblem}`);
     // Nothing secret to copy, but naming an agent that has none is still a mistake worth saying.
     copied?.();
     return async (agentName, agentHex) => {
       const theirs = this.#ctx.rows().find((row) => row.agentHex === agentHex);
-      if (theirs) throw new LocalError("notifier_exists", `${agentName} already reaches its operator through CELLO on this Mac, as ${theirs.name}. One is enough.`);
+      if (theirs) throw new LocalError("notifier_exists", `${agentName} already reaches its operator through the CELLO widget for Mac, as ${theirs.name}. One is enough.`);
       const open = this.#subscribers().length > 0;
       return Promise.resolve({
         config: {},
         shown: {
           app: open ? "open" : "not open",
-          next: open ? `CELLO on this Mac shows ${agentName}'s notifications from now on.` : `Open CELLO on this Mac to finish. One Allow there covers every agent on this Mac. Until then, notify says queued and keeps each one for when it opens.`,
+          next: open ? `The CELLO widget for Mac shows ${agentName}'s notifications from now on.` : `Open the CELLO widget for Mac to finish. One Allow there covers every agent on this Mac. Until then, notify says queued and keeps each one for when it opens.`,
         },
-        route: "the CELLO app on this Mac",
+        route: "the CELLO widget for Mac",
         saved: () => {
           this.#reaching.add(agentHex);
           this.#push({ op: "agent_added", agent_id: agentHex, agent: agentName });
@@ -165,15 +165,15 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
       // The app must not ack a silent one until it's actually on screen, such as when the panel is opened. Until then
       // it stays unseen, so the summary banner after the pause includes it.
       if (row) this.#push(this.#frame(row, true));
-      return `Your operator hasn't seen this yet: they've paused CELLO on their Mac until ${new Date(paused).toISOString()}, so they're away. It's waiting in their CELLO panel for when they're back. Don't send it again.`;
+      return `Your operator hasn't seen this yet: they've paused the CELLO widget for Mac until ${new Date(paused).toISOString()}, so they're away. It's waiting in the widget's panel for when they're back. Don't send it again.`;
     }
     const listening = this.#subscribers();
     if (listening.length === 0) {
       const seen = Number(this.#ctx.store.getConfig(SEEN_KEY) ?? 0);
-      if (seen === 0) return "Your operator hasn't seen this yet: CELLO hasn't been opened on their Mac since it was set up. It's kept, and shows when they open it. Don't send it again.";
+      if (seen === 0) return "Your operator hasn't seen this yet: the CELLO widget for Mac hasn't been opened since it was set up. It's kept, and shows when they open it. Don't send it again.";
       const days = Math.floor((Date.now() - seen) / DAY_MS);
-      if (days >= 1) return `Your operator hasn't seen this yet: CELLO on their Mac hasn't connected for ${days} day${days === 1 ? "" : "s"}, so it may have been quit or removed. It's kept, and shows if it comes back. Don't send it again. If it can't wait, ask in the session if they're there.`;
-      return "Your operator hasn't seen this yet: CELLO on their Mac isn't connected right now, as when the Mac is asleep. It's kept, and shows as soon as it's back. Don't send it again.";
+      if (days >= 1) return `Your operator hasn't seen this yet: the CELLO widget for Mac hasn't connected for ${days} day${days === 1 ? "" : "s"}, so it may have been quit or removed. It's kept, and shows if it comes back. Don't send it again. If it can't wait, ask in the session if they're there.`;
+      return "Your operator hasn't seen this yet: the CELLO widget for Mac isn't connected right now, as when the Mac is asleep. It's kept, and shows as soon as it's back. Don't send it again.";
     }
     const row = this.#row(id);
     if (!row) return undefined;
@@ -193,7 +193,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     for (const connection of listening) connection.send(frame);
     const on = await shown;
     if (this.#waiting.get(id)?.size === 0) this.#waiting.delete(id);
-    return on || this.#row(id)?.shown_at != null ? undefined : "Your operator may not have seen this yet: CELLO on their Mac took it but didn't say it was on screen. It's kept until it is. Don't send it again.";
+    return on || this.#row(id)?.shown_at != null ? undefined : "Your operator may not have seen this yet: the CELLO widget for Mac took it but didn't say it was on screen. It's kept until it is. Don't send it again.";
   }
 
   async settle(_config: string, remoteId: string, settled: Settled): Promise<void> {
@@ -260,7 +260,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
 
   async #reply(request: Record<string, unknown>): Promise<DoorReply> {
     const ref = request["ref"];
-    if (typeof ref !== "string" || !REF_RULE.test(ref)) throw new LocalError("bad_request", "A reply needs ref: the app's own id for it, 8 to 64 letters, digits, dashes or underscores, so it reaches the agent once even if sent again.");
+    if (typeof ref !== "string" || !REF_RULE.test(ref)) throw new LocalError("bad_request", "A reply needs ref: the widget's own id for it, 8 to 64 letters, digits, dashes or underscores, so it reaches the agent once even if sent again.");
     const raw = request["text"];
     const text = typeof raw === "string" ? raw.trim() : "";
     if (text.length === 0) throw new LocalError("bad_request", "A reply needs text.");
@@ -300,7 +300,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     const until = typeof request["until"] === "string" ? Date.parse(request["until"]) : Number.NaN;
     const now = Date.now();
     if (!Number.isFinite(until) || until <= now) throw new LocalError("bad_request", "until must be a time to come, such as 2026-11-19T09:00:00Z.");
-    if (until - now > LONGEST_PAUSE_MS) throw new LocalError("bad_request", "A pause lasts at most a year. To stop CELLO on this Mac, remove it.");
+    if (until - now > LONGEST_PAUSE_MS) throw new LocalError("bad_request", "A pause lasts at most a year. To stop the CELLO widget for Mac, remove it.");
     this.#ctx.store.setConfig(PAUSED_KEY, String(until));
     logEvent("operator_door.paused", { until: new Date(until).toISOString() });
     return Promise.resolve({ fields: { paused_until: new Date(until).toISOString() } });
@@ -327,7 +327,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#ctx.store.setConfig(PAUSED_KEY, "");
     for (const agent of agents) {
       logEvent("notifier.removed", { agent: agent.agent_id, notifier: agent.notifier, by: "operator_door" });
-      this.#ctx.host.tell(agent.agent_id, "Your operator removed CELLO from their Mac, so notify no longer reaches them there.");
+      this.#ctx.host.tell(agent.agent_id, "Your operator removed the CELLO widget for Mac, so notify no longer reaches them there.");
     }
     return Promise.resolve({ fields: { removed_from: agents.map((a) => ({ agent_id: a.agent_id, agent: a.agent })) } });
   }
@@ -345,7 +345,7 @@ export class MacNotifier implements NotifierAdapter, DoorHandler {
     this.#ctx.store.prepare("DELETE FROM notifiers WHERE type = 'mac' AND agent_id = ?").run(idOf(agent));
     this.prune();
     for (const row of theirs) logEvent("notifier.removed", { agent, notifier: row.name, by: "operator_door" });
-    this.#ctx.host.tell(agent, "Your operator took you off CELLO on their Mac, so notify no longer reaches them there. Their other notifiers are as they were.");
+    this.#ctx.host.tell(agent, "Your operator took you off the CELLO widget for Mac, so notify no longer reaches them there. Their other notifiers are as they were.");
     return Promise.resolve({ fields: { removed: { agent_id: agent, agent: name } } });
   }
 

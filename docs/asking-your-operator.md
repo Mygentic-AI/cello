@@ -39,7 +39,7 @@ A fact to keep, such as who a contact is or what is still owed, is a note, not a
 
 ## Notifiers
 
-A notifier reaches you when you aren't in the session. There are two kinds: Telegram, for your phone, and the CELLO app on your Mac.
+A notifier reaches you when you aren't in the session. There are two kinds: Telegram, for your phone, and the CELLO widget for Mac.
 
 1. In Telegram, message `@BotFather`, send `/newbot`, and follow it. It gives you a token.
 2. Send your new bot any message.
@@ -63,15 +63,15 @@ To keep the token out of your shell's history the first time, give it as `-` and
 
 `cello notifier-list` shows an agent's notifiers, `cello notifier-test` sends a test line, and `cello notifier-remove <name>` removes one.
 
-### On your Mac
+### The CELLO widget for Mac
 
-CELLO can also reach you on the Mac your agents run on. A question arrives as a banner, and the CELLO mark in the menu bar opens a panel with everything waiting for you.
+The CELLO widget for Mac reaches you on the Mac your agents run on. A question arrives as a banner, and the CELLO mark in the menu bar opens a panel with everything waiting for you.
 
 ```
 cello notifier-add mac --agent Ann
 ```
 
-It says each step and how to undo it, then does them without asking: it puts CELLO in your Applications folder, notes where cello is so the app can start it again if it ever stops, and opens it. In CELLO, click Turn on, and Allow when macOS asks about notifications. Leave "Open CELLO when I log in" ticked and it's there after a restart. That one click covers every agent on the Mac. When you add the next agent, it simply joins, and CELLO says "Bea can reach you here now":
+It says each step and how to undo it, then does them without asking: it puts the widget's app in your Applications folder, notes where cello is so the widget can start it again if it ever stops, and opens it. In the widget, click Turn on, and Allow when macOS asks about notifications. Leave "Open CELLO when I log in" ticked and it's there after a restart. That one click covers every agent on the Mac. When you add the next agent, it simply joins, and the widget says "Bea can reach you here now":
 
 ```
 cello notifier-add mac --same-as Ann --agent Bea
@@ -79,9 +79,9 @@ cello notifier-add mac --same-as Ann --agent Bea
 
 Or tell the agent "put CELLO on my Mac", and it does the same.
 
-The app comes ready-built. On a Mac, `npm i -g @cello-protocol/cli` also installs `@cello-protocol/mac-app`, which holds it, and `notifier-add mac` copies it from there. Other systems skip that package. The app is one binary for Apple silicon and Intel, signed ad hoc. If the package is missing, for example because optional packages were turned off, it says so and changes nothing.
+The widget comes ready-built. On a Mac, `npm i -g @cello-protocol/cli` also installs `@cello-protocol/mac-app`, which holds it, and `notifier-add mac` copies it from there. Other systems skip that package. The widget is one binary for Apple silicon and Intel, signed ad hoc. If the package is missing, for example because optional packages were turned off, it says so and changes nothing.
 
-To build the app yourself, from a checkout of this repository with only the Xcode command-line tools (`xcode-select --install`), add `--build`. Or build it with `widgets/mac/scripts/assemble.sh` and give it with `--app <path to CELLO.app>`.
+To build the widget yourself, from a checkout of this repository with only the Xcode command-line tools (`xcode-select --install`), add `--build`. Or build it with `widgets/mac/scripts/assemble.sh` and give it with `--app <path to CELLO.app>`.
 
 What you see:
 
@@ -90,15 +90,15 @@ What you see:
 - **Choices as buttons.** With one or two, click one on the banner. With more, the banner offers Choose, which opens the panel with all of them. Your click goes to the agent as your reply, for the conversation it asked about.
 - **A box to type in.** Answer a question in your own words, or write to any of your agents from the panel.
 
-When a Focus is on, macOS holds CELLO's banners back unless you add CELLO to that Focus's allowed apps. The first-run window offers a button to Focus settings for that. With CELLO allowed, questions come through, and news still waits in the panel and Notification Center.
+When a Focus is on, macOS holds the widget's banners back unless you add CELLO to that Focus's allowed apps. The first-run window offers a button to Focus settings for that. With CELLO allowed, questions come through, and news still waits in the panel and Notification Center.
 
 If you have Telegram too, a question goes to both. Answer it on either, and the other quietly shows what you chose.
 
-While the Mac is asleep or CELLO is closed, nothing is lost. Your agents' questions wait, and when CELLO is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message stays in the panel for a day after you've seen it. A question stays until you answer it.
+While the Mac is asleep or the widget is closed, nothing is lost. Your agents' questions wait, and when the widget is back they're in the panel, each with how long ago it was asked. The agent is told you haven't seen it yet, so it doesn't ask again. A plain message stays in the panel for a day after you've seen it. A question stays until you answer it.
 
-**Pause** in the panel turns off banners and sounds until the time you pick, and your agents are told you're away. Their questions still collect quietly in the panel, so they're there when you look, and nothing pops up again when the pause ends. Settings › **Add or remove agents** lists every agent on the Mac. Remove one alone, and that agent is told while the rest carry on. Add one that can't reach you here yet, and its other routes are told, as with `notifier-add`. An agent whose notifiers are locked can only be added at a terminal, with `cello notifier-add mac --route-only --agent <agent>`. **Remove CELLO from this Mac** takes it off every agent at once, and each agent is told it can no longer reach you there. If you drag CELLO to the Trash instead, your agents find out within a day.
+**Pause** in the panel turns off banners and sounds until the time you pick, and your agents are told you're away. Their questions still collect quietly in the panel, so they're there when you look, and nothing pops up again when the pause ends. Settings › **Add or remove agents** lists every agent on the Mac. Remove one alone, and that agent is told while the rest carry on. Add one that can't reach you here yet, and its other routes are told, as with `notifier-add`. An agent whose notifiers are locked can only be added at a terminal, with `cello notifier-add mac --route-only --agent <agent>`. **Remove CELLO from this Mac** takes it off every agent at once, and each agent is told it can no longer reach you there. If you drag the widget's app to the Trash instead, your agents find out within a day.
 
-Only the CELLO app can answer for you here. Your agents, the cello command and the agents you talk to have no way to send a reply as you. Anything running as you on the Mac could, as it could read the key to CELLO's database, so protect the Mac as you would your Telegram account.
+Only the CELLO widget for Mac can answer for you here. Your agents, the cello command and the agents you talk to have no way to send a reply as you. Anything running as you on the Mac could, as it could read the key to CELLO's database, so protect the Mac as you would your Telegram account.
 
 ## What leaves your machine
 

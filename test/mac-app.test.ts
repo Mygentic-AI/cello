@@ -102,7 +102,7 @@ test("with no prebuilt app, or an app that isn't CELLO, it stops by name and sav
   for (const prebuilt of ["absent", "empty"] as const) {
     const missing = world({ prebuilt });
     await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, daemon(missing), () => missing.env), (err: unknown) => err instanceof DaemonRefused && err.code === "mac_app_missing"
-      && err.message.includes(MAC_APP_PACKAGE) && /--build.*--app/.test(err.message) && err.message.includes(prebuilt === "absent" ? "isn't installed" : "holds no CELLO app"));
+      && err.message.includes(MAC_APP_PACKAGE) && /--build.*--app/.test(err.message) && err.message.includes(prebuilt === "absent" ? "isn't installed" : "holds no CELLO widget for Mac"));
     assert.deepEqual(missing.calls, [], "the route isn't saved without the app");
     assert.equal(existsSync(launchFile(missing.home)), false);
     assert.equal(existsSync(appPath(missing.home)), false);
@@ -110,7 +110,7 @@ test("with no prebuilt app, or an app that isn't CELLO, it stops by name and sav
   const other = world();
   const stranger = join(other.root, "Other.app");
   fakeApp(stranger, "x", "com.example.other");
-  await assert.rejects(addNotifier({ type: "mac", app: stranger }, daemon(other), () => other.env), /isn't the CELLO app/);
+  await assert.rejects(addNotifier({ type: "mac", app: stranger }, daemon(other), () => other.env), /isn't the CELLO widget for Mac/);
   assert.deepEqual(opened(other), []);
   // Signed and whole, but packed without its exec bit: macOS wouldn't start it, so it isn't copied.
   const flat = world();
@@ -157,7 +157,7 @@ test("off a Mac it's refused, and when the daemon refuses the route the app isn'
   const refusing = (): Promise<unknown> => Promise.reject(new DaemonRefused("notifier_exists", "Ann already has one."));
   // The refusal says what did change: the app is in Applications, and launch.json was written.
   await assert.rejects(addNotifier({ type: "mac", agent: "Ann" }, refusing, () => w.env), (err: unknown) => err instanceof DaemonRefused && err.code === "notifier_exists"
-    && err.message.startsWith("Ann already has one.") && err.message.includes(`CELLO is in ${appPath(w.home)} now`) && err.message.includes(launchFile(w.home)));
+    && err.message.startsWith("Ann already has one.") && err.message.includes(`the CELLO widget for Mac is in ${appPath(w.home)} now`) && err.message.includes(launchFile(w.home)));
   assert.deepEqual(opened(w), []);
   // A refusal that a person confirms and retries is passed on untouched.
   const person = (): Promise<unknown> => Promise.reject(new DaemonRefused("person_required", "Adding a notifier needs a human operator. Nothing changed."));

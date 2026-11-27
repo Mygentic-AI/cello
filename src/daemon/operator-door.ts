@@ -157,7 +157,7 @@ export class OperatorDoor {
   #hello(open: Open, ref: unknown, request: Record<string, unknown>): void {
     const theirs = request["protocol"];
     if (theirs !== OPERATOR_PROTOCOL) {
-      this.#refuse(open, ref, "protocol_mismatch", `This app speaks version ${String(theirs)} of the operator protocol and CELLO here speaks ${OPERATOR_PROTOCOL}. Update ${typeof theirs === "number" && theirs > OPERATOR_PROTOCOL ? "CELLO on this machine" : "the CELLO app"} so they match. Nothing else was done.`);
+      this.#refuse(open, ref, "protocol_mismatch", `This widget speaks version ${String(theirs)} of the operator protocol and CELLO here speaks ${OPERATOR_PROTOCOL}. Update ${typeof theirs === "number" && theirs > OPERATOR_PROTOCOL ? "CELLO on this machine" : "the CELLO widget for Mac"} so they match. Nothing else was done.`);
       open.socket.end();
       return;
     }
